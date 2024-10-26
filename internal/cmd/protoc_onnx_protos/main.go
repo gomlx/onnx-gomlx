@@ -22,7 +22,7 @@ import (
 
 const (
 	onnxSrcEnvVar   = "ONNX_SRC"
-	goProtosPackage = "github.com/janpfeifer/onnx-gomlx/internal/protos"
+	goProtosPackage = "github.com/gomlx/onnx-gomlx/internal/protos"
 )
 
 var protoFiles = []string{

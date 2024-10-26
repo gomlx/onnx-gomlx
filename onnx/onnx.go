@@ -10,7 +10,7 @@ package onnx
 import (
 	. "github.com/gomlx/gomlx/graph"
 	"github.com/gomlx/gomlx/ml/context"
-	"github.com/janpfeifer/onnx-gomlx/internal/protos"
+	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
 	"google.golang.org/protobuf/proto"
 	"os"
