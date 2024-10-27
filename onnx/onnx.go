@@ -8,9 +8,6 @@
 package onnx
 
 import (
-	"github.com/gomlx/exceptions"
-	. "github.com/gomlx/gomlx/graph"
-	"github.com/gomlx/gomlx/ml/context"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
 	"google.golang.org/protobuf/proto"
@@ -81,20 +78,4 @@ func (m *Model) Inputs() (names []string, dshapes []DynamicShape) {
 // Outputs returns a description of the outputs.
 func (m *Model) Outputs() (names []string, dshapes []DynamicShape) {
 	return m.OutputsNames, m.OutputsShapes
-}
-
-// BuildGraph that can be used both for inference and training.
-// ctx can be set to nil if the model doesn't have any variables.
-//
-// As in GoMLX graph functions, it panics (throw exceptions) in case of errors.
-func (m *Model) BuildGraph(ctx *context.Context, inputs []*Node) (outputs []*Node) {
-	// Sanity check of things we don't support yet.
-	if len(m.Proto.Functions) > 0 {
-		exceptions.Panicf("onnx.BuildGraph does not support yet ONNX functions")
-	}
-	if len(m.Proto.Graph.SparseInitializer) > 0 {
-		exceptions.Panicf("onnx.BuildGraph does not support yet ONNX SparseTensors")
-	}
-
-	return nil
 }

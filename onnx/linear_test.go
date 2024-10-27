@@ -14,4 +14,9 @@ func TestParse(t *testing.T) {
 
 	require.Equal(t, m.OutputsShapes[0].Rank(), 1)
 	require.Equal(t, "batch_size", m.OutputsShapes[0].Names[0])
+
+	sortedNodes := m.sortedGraph()
+	require.Len(t, sortedNodes, 2)
+	require.Equal(t, "XA", sortedNodes[0].Name)
+	require.Equal(t, "Y", sortedNodes[1].Name)
 }
