@@ -3,8 +3,8 @@ package togomlx
 
 import (
 	"github.com/gomlx/gopjrt/dtypes"
+	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
-	"onnx-gomlx/internal/protos"
 )
 
 // DType converts an ONNX data type to a gomlx data type.
