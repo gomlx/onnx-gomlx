@@ -8,8 +8,6 @@ import (
 	"github.com/gomlx/onnx-gomlx/internal/togomlx"
 	"maps"
 	"slices"
-	"strconv"
-	"strings"
 )
 
 // String implements fmt.Stringer, and pretty prints model information.
@@ -132,19 +130,9 @@ func ppSeqType(seq *protos.TypeProto_Sequence) string {
 }
 
 func ppTensorType(t *protos.TypeProto_Tensor) string {
-	dtype, _ := togomlx.DType(protos.TensorProto_DataType(t.GetElemType()))
-	dims := make([]string, len(t.GetShape().Dim))
-	for ii, dProto := range t.GetShape().Dim {
-		if dim, ok := dProto.GetValue().(*protos.TensorShapeProto_Dimension_DimValue); ok {
-			dims[ii] = strconv.Itoa(int(dim.DimValue))
-		} else if dimParam, ok := dProto.GetValue().(*protos.TensorShapeProto_Dimension_DimParam); ok {
-			dims[ii] = dimParam.DimParam
-		} else {
-			dims[ii] = "???"
-		}
+	dshape, err := makeDynamicShapeFromProto(t)
+	if err != nil {
+		return "(invalid dtype)"
 	}
-	if len(dims) == 0 {
-		return fmt.Sprintf("(%s)", dtype)
-	}
-	return fmt.Sprintf("(%s) [%s]", dtype, strings.Join(dims, ", "))
+	return dshape.String()
 }
