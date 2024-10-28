@@ -6,6 +6,8 @@ import (
 	"github.com/gomlx/gomlx/types"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/gomlx/onnx-gomlx/internal/togomlx"
+	"github.com/pkg/errors"
+	"io"
 	"maps"
 	"slices"
 )
@@ -135,4 +137,36 @@ func ppTensorType(t *protos.TypeProto_Tensor) string {
 		return "(invalid dtype)"
 	}
 	return dshape.String()
+}
+
+// PrintGraph prints a +/- human-readable (or debuggable) version of the graph to the given writer.
+func (m *Model) PrintGraph(writer io.Writer) error {
+	var err error
+	w := func(format string, args ...any) {
+		if err != nil {
+			return
+		}
+		_, err = fmt.Fprintf(writer, format, args...)
+		if err != nil {
+			err = errors.Wrapf(err, "Model.PrintGraph() failed to write")
+		}
+	}
+
+	// Convenient writing to buffer that will hold result.
+	for _, n := range m.Proto.Graph.Node {
+		w("%q:\t[%s]\n", n.GetName(), n.GetOpType())
+		w("\tInputs: %q\n", n.GetInput())
+		w("\tOutputs: %q\n", n.GetOutput())
+		if len(n.Attribute) > 0 {
+			w("\tAttributes: ")
+			for ii, attr := range n.Attribute {
+				if ii > 0 {
+					w(", ")
+				}
+				w("%s (%s)", attr.Name, attr.Type)
+			}
+			w("\n")
+		}
+	}
+	return err
 }
