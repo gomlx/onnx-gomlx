@@ -7,24 +7,68 @@ import (
 	"github.com/gomlx/gomlx/types"
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/onnx-gomlx/internal/togomlx"
+	"github.com/pkg/errors"
 	"maps"
 	"slices"
+	"strings"
 )
+
+// ModelScope is the default model scope to use when for the ONNX model variables when converting to GoMLX.
+var ModelScope = "ONNX"
 
 // This file defines the methods that build the computation graph using GoMLX.
 
-// BuildGraph that can be used both for inference and training.
+// SetVariables will initialize variables in the context (it creates scope called "onnx") from
+// all variables present in the model.
 //
-// The context in ctx can be set to nil if the model doesn't have any variables.
+// Call this once in your context, before using the model with Model.CallGraph.
+// Or instead load the variables from a checkpoint and don't call this.
+func (m *Model) SetVariables(ctx *context.Context) error {
+	if len(m.Proto.Graph.SparseInitializer) > 0 {
+		exceptions.Panicf("onnx.SetVariables does not support ONNX SparseTensors")
+	}
+	ctx = ctx.In(ModelScope).Checked(false)
+	for _, tensorProto := range m.Proto.Graph.Initializer {
+		tensor, err := togomlx.Tensor(tensorProto)
+		if err != nil {
+			return errors.WithMessagef(err, "Model.SetVariables()")
+		}
+		tensorName := SafeVarName(tensorProto.Name)
+		ctx.VariableWithValue(tensorName, tensor)
+	}
+	return nil
+}
+
+// SafeVarName converts an ONNX variable name to a GoMLX safe variable name by replacing the scope separator with a "|".
+func SafeVarName(onnxName string) (gomlxName string) {
+	return strings.ReplaceAll(onnxName, context.ScopeSeparator, "|")
+}
+
+// CallGraph calls the ONNX graph, and hence building it with GoMLX ops.
+// This can be used for inference or training.
 //
-// As in GoMLX graph functions, it panics (throw exceptions) in case of errors.
-func (m *Model) BuildGraph(ctx *context.Context, inputs []*Node) (outputs []*Node) {
+// If the model has any variables, call Model.SetVariables first (only once) to upload all
+// variable values from the ONNX model to the context -- or load them from a checkpoint if you saved one.
+//
+// If the model has no variables, the context in ctx can be set to nil.
+//
+// As in GoMLX graph functions, it panics (throws exceptions) in case of errors.
+func (m *Model) CallGraph(ctx *context.Context, inputs []*Node) (outputs []*Node) {
+	if len(inputs) == 0 {
+		exceptions.Panicf("onnx.CallGraph requires at least one input, got zero inputs")
+	}
+	g := inputs[0].Graph()
+	if ctx != nil {
+		ctx = ctx.In(ModelScope).Checked(false)
+	}
+
 	// Sanity check of things we don't support yet.
 	if len(m.Proto.Functions) > 0 {
-		exceptions.Panicf("onnx.BuildGraph does not support ONNX functions")
+		exceptions.Panicf("onnx.CallGraph does not support ONNX functions")
 	}
 	if len(m.Proto.Graph.SparseInitializer) > 0 {
-		exceptions.Panicf("onnx.BuildGraph does not support ONNX SparseTensors")
+		exceptions.Panicf("onnx.CallGraph does not support ONNX SparseTensors")
 	}
 	if err := m.ValidateInputs(sliceMap(inputs, func(n *Node) shapes.HasShape { return n })...); err != nil {
 		panic(err)
@@ -34,6 +78,18 @@ func (m *Model) BuildGraph(ctx *context.Context, inputs []*Node) (outputs []*Nod
 	convertedNodes := make(map[string]*Node)
 	for inputIdx, nodeName := range m.InputsNames {
 		convertedNodes[nodeName] = inputs[inputIdx]
+	}
+	if len(m.Proto.Graph.Initializer) > 0 && ctx == nil {
+		exceptions.Panicf("onnx.CallGraph(): model has variables, but a nil context was give")
+	}
+	for _, tensorProto := range m.Proto.Graph.Initializer {
+		varName := SafeVarName(tensorProto.Name)
+		v := ctx.InspectVariableInScope(varName)
+		if v == nil {
+			exceptions.Panicf("variable %q (from the ONNX model %q) has not been uploaded yet to context -- did you forget to call onnx.Model.SetVariables?",
+				varName, tensorProto.Name)
+		}
+		convertedNodes[tensorProto.Name] = v.ValueGraph(g)
 	}
 
 	// Convert all nodes in topological order.
@@ -129,6 +185,11 @@ func (m *Model) sortedGraph() []*protos.NodeProto {
 		doneOutputs.Insert(input)
 		nextDoneScan.Insert(input)
 	}
+	for _, tensorProto := range m.Proto.Graph.Initializer {
+		// Mark variable node as done.
+		doneOutputs.Insert(tensorProto.Name)
+		nextDoneScan.Insert(tensorProto.Name)
+	}
 	for _, node := range m.Proto.Graph.Node {
 		if len(node.Input) > 0 {
 			continue
@@ -166,6 +227,10 @@ func (m *Model) sortedGraph() []*protos.NodeProto {
 //
 // It panics (throw exceptions) in case of errors.
 func (m *Model) convertNode(ctx *context.Context, node *protos.NodeProto, convertedNodes map[string]*Node) {
+	if node.Overload != "" {
+		exceptions.Panicf("overload %q to in-model function in ONNX model not implemented in node %q", node.Overload, node.Name)
+	}
+
 	// Convert the node: the usual case is that there is only one output.
 	// If res is not nil, it is set to convertedNodes[output[0]].
 	// Anything different must be implemented by the specific op switch.

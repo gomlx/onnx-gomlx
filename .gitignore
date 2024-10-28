@@ -27,3 +27,6 @@ go.work.sum
 
 # GoLand IDE
 .idea/
+
+# scc: estimate code complexity, https://github.com/boyter/scc
+.ignore
