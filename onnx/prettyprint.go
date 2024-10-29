@@ -42,24 +42,8 @@ func (m *Model) String() string {
 	w("\t# nodes:\t%d\n", len(m.Proto.Graph.Node))
 
 	// Tensors (variables):
-	if len(m.Proto.Graph.Initializer) > 0 {
-		w("\t# tensors (variables):\t%d\n", len(m.Proto.Graph.Initializer))
-		for _, t := range m.Proto.Graph.Initializer {
-			shape, _ := togomlx.Shape(t)
-			w("\t\t%q: %s", t.Name, shape)
-			if t.DocString != "" {
-				w(" # %s", t.DocString)
-			}
-			w("\n")
-		}
-	}
-	if len(m.Proto.Graph.SparseInitializer) > 0 {
-		w("\t# sparse tensors (variables):\t%d\n", len(m.Proto.Graph.SparseInitializer))
-		for _, st := range m.Proto.Graph.SparseInitializer {
-			shape, _ := togomlx.SparseShape(st)
-			w("\t\t%q: dense shape=%d\n", st.Values.Name, shape)
-		}
-	}
+	w("\t# tensors (variables):\t%d\n", len(m.Proto.Graph.Initializer))
+	w("\t# sparse tensors (variables):\t%d\n", len(m.Proto.Graph.SparseInitializer))
 
 	// List op-types used.
 	opTypesSet := types.MakeSet[string]()
@@ -152,6 +136,7 @@ func (m *Model) PrintGraph(writer io.Writer) error {
 		}
 	}
 
+	w("Model Graph %q:\n", m.Proto.Graph.Name)
 	// Convenient writing to buffer that will hold result.
 	for _, n := range m.Proto.Graph.Node {
 		w("%q:\t[%s]\n", n.GetName(), n.GetOpType())
@@ -167,6 +152,43 @@ func (m *Model) PrintGraph(writer io.Writer) error {
 			}
 			w("\n")
 		}
+	}
+	return err
+}
+
+func (m *Model) PrintVariables(writer io.Writer) error {
+	var err error
+	w := func(format string, args ...any) {
+		if err != nil {
+			return
+		}
+		_, err = fmt.Fprintf(writer, format, args...)
+		if err != nil {
+			err = errors.Wrapf(err, "Model.PrintGraph() failed to write")
+		}
+	}
+
+	w("%d tensors (variables)", len(m.Proto.Graph.Initializer))
+	if len(m.Proto.Graph.Initializer) > 0 {
+		w(":")
+	}
+	w("\n")
+	for _, t := range m.Proto.Graph.Initializer {
+		shape, _ := togomlx.Shape(t)
+		w("\t%q: %s", t.Name, shape)
+		if t.DocString != "" {
+			w(" # %s", t.DocString)
+		}
+		w("\n")
+	}
+	w("%d sparse tensors (variables)", len(m.Proto.Graph.SparseInitializer))
+	if len(m.Proto.Graph.SparseInitializer) > 0 {
+		w(":")
+	}
+	w("\n")
+	for _, st := range m.Proto.Graph.SparseInitializer {
+		shape, _ := togomlx.SparseShape(st)
+		w("\t\t%q: dense shape=%d\n", st.Values.Name, shape)
 	}
 	return err
 }

@@ -19,20 +19,20 @@ var ModelScope = "ONNX"
 
 // This file defines the methods that build the computation graph using GoMLX.
 
-// SetVariables will initialize variables in the context (it creates scope called "onnx") from
-// all variables present in the model.
+// VariablesToContext will create variables in the context (within scope ModelScope) from
+// all variables present in the model initializer list.
 //
 // Call this once in your context, before using the model with Model.CallGraph.
-// Or instead load the variables from a checkpoint and don't call this.
-func (m *Model) SetVariables(ctx *context.Context) error {
+// Alternatively, if you have already checkpoint-ed your model, load the variables from a checkpoint and don't call this.
+func (m *Model) VariablesToContext(ctx *context.Context) error {
 	if len(m.Proto.Graph.SparseInitializer) > 0 {
-		exceptions.Panicf("onnx.SetVariables does not support ONNX SparseTensors")
+		exceptions.Panicf("onnx.VariablesToContext does not support ONNX SparseTensors")
 	}
 	ctx = ctx.In(ModelScope).Checked(false)
 	for _, tensorProto := range m.Proto.Graph.Initializer {
 		tensor, err := togomlx.Tensor(tensorProto)
 		if err != nil {
-			return errors.WithMessagef(err, "Model.SetVariables()")
+			return errors.WithMessagef(err, "Model.VariablesToContext()")
 		}
 		tensorName := SafeVarName(tensorProto.Name)
 		ctx.VariableWithValue(tensorName, tensor)
@@ -48,7 +48,7 @@ func SafeVarName(onnxName string) (gomlxName string) {
 // CallGraph calls the ONNX graph, and hence building it with GoMLX ops.
 // This can be used for inference or training.
 //
-// If the model has any variables, call Model.SetVariables first (only once) to upload all
+// If the model has any variables, call Model.VariablesToContext first (only once) to upload all
 // variable values from the ONNX model to the context -- or load them from a checkpoint if you saved one.
 //
 // If the model has no variables, the context in ctx can be set to nil.
@@ -86,7 +86,7 @@ func (m *Model) CallGraph(ctx *context.Context, inputs []*Node) (outputs []*Node
 		varName := SafeVarName(tensorProto.Name)
 		v := ctx.InspectVariableInScope(varName)
 		if v == nil {
-			exceptions.Panicf("variable %q (from the ONNX model %q) has not been uploaded yet to context -- did you forget to call onnx.Model.SetVariables?",
+			exceptions.Panicf("variable %q (from the ONNX model %q) has not been uploaded yet to context -- did you forget to call onnx.Model.VariablesToContext?",
 				varName, tensorProto.Name)
 		}
 		convertedNodes[tensorProto.Name] = v.ValueGraph(g)

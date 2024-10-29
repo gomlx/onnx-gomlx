@@ -24,7 +24,7 @@ func TestParse(t *testing.T) {
 
 	// Verify correct setting of variables.
 	ctx := context.New()
-	require.NoError(t, m.SetVariables(ctx))
+	require.NoError(t, m.VariablesToContext(ctx))
 	for v := range ctx.IterVariables() {
 		fmt.Printf("\tVariable %q: %s\n", v.ScopeAndName(), v.Shape())
 	}
