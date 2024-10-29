@@ -251,7 +251,15 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 		res = ConvertGather(node, inputs)
 	case "Shape":
 		res = ConvertShape(node, inputs)
-
+	case "Unsqueeze":
+		res = ConvertUnsqueeze(node, inputs)
+	case "Concat":
+		res = ConvertConcat(node, inputs)
+	case "Slice":
+		exceptions.Try(func() {
+			res = ConvertSlice(node, inputs)
+		})
+		exceptions.Panicf("unimplemented ONNX %s", nodeToString(node))
 	default:
 		exceptions.Panicf("unimplemented ONNX %s", nodeToString(node))
 	}
