@@ -10,6 +10,7 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"strings"
 )
 
 // String implements fmt.Stringer, and pretty prints model information.
@@ -154,6 +155,27 @@ func (m *Model) PrintGraph(writer io.Writer) error {
 		}
 	}
 	return err
+}
+
+// nodeToString converts a NodeProto to a one-line string, that can be used for debugging.
+func nodeToString(n *protos.NodeProto) string {
+	var buf bytes.Buffer
+	w := func(format string, args ...any) { buf.WriteString(fmt.Sprintf(format, args...)) }
+
+	w("Node %q [%s]", n.Name, n.OpType)
+	w("(%s)", strings.Join(n.Input, ", "))    // Inputs
+	w(" -> %s", strings.Join(n.Output, ", ")) // Output(s)
+	if len(n.Attribute) > 0 {
+		w(" - attrs[")
+		for ii, attr := range n.Attribute {
+			if ii > 0 {
+				w(", ")
+			}
+			w("%s (%s)", attr.Name, attr.Type)
+		}
+		w("]")
+	}
+	return buf.String()
 }
 
 func (m *Model) PrintVariables(writer io.Writer) error {

@@ -94,8 +94,12 @@ func (m *Model) CallGraph(ctx *context.Context, inputs []*Node) (outputs []*Node
 
 	// Convert all nodes in topological order.
 	sortedNodes := m.sortedGraph()
-	for _, node := range sortedNodes {
-		m.convertNode(ctx, node, convertedNodes)
+	for ii, node := range sortedNodes {
+		err := exceptions.TryCatch[error](func() { m.convertNode(ctx, g, node, convertedNodes) })
+		if err != nil {
+			err = errors.WithMessagef(err, "while converting node %d out of %d", ii, len(sortedNodes))
+			panic(err)
+		}
 	}
 
 	// Pick the outputs.
@@ -226,7 +230,7 @@ func (m *Model) sortedGraph() []*protos.NodeProto {
 // The converted output(s) are updated into `convertedNodes`.
 //
 // It panics (throw exceptions) in case of errors.
-func (m *Model) convertNode(ctx *context.Context, node *protos.NodeProto, convertedNodes map[string]*Node) {
+func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodeProto, convertedNodes map[string]*Node) {
 	if node.Overload != "" {
 		exceptions.Panicf("overload %q to in-model function in ONNX model not implemented in node %q", node.Overload, node.Name)
 	}
@@ -241,8 +245,15 @@ func (m *Model) convertNode(ctx *context.Context, node *protos.NodeProto, conver
 		res = Add(inputs[0], inputs[1])
 	case "MatMul":
 		res = MatMul(inputs[0], inputs[1])
+	case "Constant":
+		res = ConvertConstant(node, g)
+	case "Gather":
+		res = ConvertGather(node, inputs)
+	case "Shape":
+		res = ConvertShape(node, inputs)
+
 	default:
-		exceptions.Panicf("unimplemented ONNX node type %q", node.OpType)
+		exceptions.Panicf("unimplemented ONNX %s", nodeToString(node))
 	}
 	if res != nil {
 		convertedNodes[node.Output[0]] = res

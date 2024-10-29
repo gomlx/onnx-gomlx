@@ -1,7 +1,6 @@
 package togomlx
 
 import (
-	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/gomlx/types/tensors"
 	"github.com/gomlx/gopjrt/dtypes"
@@ -49,9 +48,6 @@ func SparseShape(proto *protos.SparseTensorProto) (shape shapes.Shape, err error
 
 // Tensor converts a protos.TensorProto object to a tensors.Tensor object, handling errors and different data types.
 func Tensor(proto *protos.TensorProto) (t *tensors.Tensor, err error) {
-	if proto.Name == "" {
-		exceptions.Panicf("initializer has no name")
-	}
 	var shape shapes.Shape
 	shape, err = Shape(proto)
 	if err != nil {
