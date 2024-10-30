@@ -218,3 +218,30 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	}
 	return Slice(operand, specs...)
 }
+
+// convertReshape converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Reshape.html
+func convertReshape(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	operand := inputs[0]
+	if !inputs[1].DType().IsInt() {
+		exceptions.Panicf("shape must be integer, got %s for node %s", inputs[1].DType(), nodeToString(node))
+	}
+	allowZero := getIntAttrOr(node, "allowZero", 0)
+
+	dimsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+	if err != nil {
+		panic(errors.WithMessagef(err, "while converting 'shape' for node %s", nodeToString(node)))
+	}
+	dims := convertToInts(dimsT)
+	if allowZero == 0 {
+		// If new shape dim is 0, copy over from previous shape.
+		for newAxis, dim := range dims {
+			if dim == 0 && newAxis < operand.Rank() {
+				dims[newAxis] = operand.Shape().Dim(newAxis) // Copy over dimension from previous shape.
+			}
+		}
+	}
+	return Reshape(inputs[0], dims...)
+}

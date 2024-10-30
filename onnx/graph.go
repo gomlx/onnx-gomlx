@@ -306,6 +306,8 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 		res = convertConcat(node, inputs)
 	case "Slice":
 		res = convertSlice(m, convertedOutputs, node, inputs)
+	case "Reshape":
+		res = convertReshape(m, convertedOutputs, node, inputs)
 	default:
 		exceptions.Panicf("unimplemented ONNX %s", nodeToString(node))
 	}
