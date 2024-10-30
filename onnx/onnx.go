@@ -8,6 +8,7 @@
 package onnx
 
 import (
+	"github.com/gomlx/gomlx/types"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
 	"google.golang.org/protobuf/proto"
@@ -16,9 +17,18 @@ import (
 
 // Model represents a parsed ONNX file.
 type Model struct {
-	Proto                       protos.ModelProto
+	Proto            protos.ModelProto
+	nodeOutputToNode map[string]*protos.NodeProto
+
+	// names used for variables and inputs: these are like internal outputs, but they come not from a node,
+	// but from an input or variable. Used to introspect the graph.
+	variablesNameSet, inputsNameSet types.Set[string]
+
 	InputsNames, OutputsNames   []string
 	InputsShapes, OutputsShapes []DynamicShape
+
+	// inputsAsConstants: see WithInputsAsConstants
+	inputsAsConstants map[string]any
 }
 
 // Parse parses an ONNX model into an internal representation that can be used to build a GoMLX graph.
@@ -30,10 +40,13 @@ func Parse(contents []byte) (*Model, error) {
 	}
 
 	// Parse inputs and outputs.
+	m.inputsNameSet = types.MakeSet[string]()
 	m.InputsNames = make([]string, len(m.Proto.Graph.Input))
 	m.InputsShapes = make([]DynamicShape, len(m.Proto.Graph.Input))
 	for ii, input := range m.Proto.Graph.Input {
 		m.InputsNames[ii] = input.Name
+		m.inputsNameSet.Insert(input.Name)
+
 		tensorType, ok := input.Type.Value.(*protos.TypeProto_TensorType)
 		if !ok {
 			return nil, errors.Errorf("output #%d (%q) is not a tensor, not sure how to handle it", ii, input.Name)
@@ -57,6 +70,23 @@ func Parse(contents []byte) (*Model, error) {
 		}
 	}
 
+	// Set of variable names.
+	m.variablesNameSet = types.MakeSet[string]()
+	for _, tensorProto := range m.Proto.Graph.Initializer {
+		m.variablesNameSet.Insert(tensorProto.Name)
+	}
+
+	// Maps the intermediary node outputs to the nodes that create them.
+	m.nodeOutputToNode = make(map[string]*protos.NodeProto)
+	for _, node := range m.Proto.Graph.Node {
+		for _, outputName := range node.Output {
+			if otherNode, found := m.nodeOutputToNode[outputName]; found {
+				return nil, errors.Errorf("invalid graph: node output name %q used by 2 different nodes: (1) %s, (2) %s",
+					outputName, nodeToString(otherNode), nodeToString(node))
+			}
+			m.nodeOutputToNode[outputName] = node
+		}
+	}
 	return m, nil
 }
 
@@ -78,4 +108,21 @@ func (m *Model) Inputs() (names []string, dshapes []DynamicShape) {
 // Outputs returns a description of the outputs.
 func (m *Model) Outputs() (names []string, dshapes []DynamicShape) {
 	return m.OutputsNames, m.OutputsShapes
+}
+
+// NumInputs returns the number of inputs this graph takes.
+func (m *Model) NumInputs() int {
+	return len(m.InputsNames)
+}
+
+// WithInputsAsConstants marks inputs to be considered as constants, and not vary for different examples in training
+// or inference.
+// Use this just immediately after the creation of the Model. Later changes can cause inconsistencies.
+//
+// This makes them become constants in the graph, and they shouldn't be passed to CallGraph as inputs.
+//
+// The value each input maps to will be converted to a tensors.FromAnyValue.
+func (m *Model) WithInputsAsConstants(inputsAsConstants map[string]any) *Model {
+	m.inputsAsConstants = inputsAsConstants
+	return m
 }

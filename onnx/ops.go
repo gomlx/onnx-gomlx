@@ -33,8 +33,8 @@ func assertNodeAttrType(node *protos.NodeProto, attr *protos.AttributeProto, att
 	}
 }
 
-// ConvertConstant converts a ONNX node to a GoMLX node.
-func ConvertConstant(node *protos.NodeProto, g *Graph) *Node {
+// convertConstant converts a ONNX node to a GoMLX node.
+func convertConstant(node *protos.NodeProto, g *Graph) *Node {
 	valueAttr := getNodeAttr(node, "value", true)
 	assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
 	tensor, err := togomlx.Tensor(valueAttr.T)
@@ -75,11 +75,11 @@ func mustGetIntsAttrOr(node *protos.NodeProto, attrName string) []int {
 	return sliceMap(attr.Ints, func(i int64) int { return int(i) })
 }
 
-// ConvertGather converts a ONNX node to a GoMLX node.
+// convertGather converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Gather.html
-func ConvertGather(node *protos.NodeProto, inputs []*Node) *Node {
+func convertGather(node *protos.NodeProto, inputs []*Node) *Node {
 	axis := getIntAttrOr(node, "axis", 0)
 	if axis == 0 {
 		indices := ExpandDims(inputs[1], -1)
@@ -89,11 +89,11 @@ func ConvertGather(node *protos.NodeProto, inputs []*Node) *Node {
 	return nil
 }
 
-// ConvertShape converts a ONNX node to a GoMLX node.
+// convertShape converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Shape.html
-func ConvertShape(node *protos.NodeProto, inputs []*Node) *Node {
+func convertShape(node *protos.NodeProto, inputs []*Node) *Node {
 	shape := inputs[0].Shape()
 	start := getIntAttrOr(node, "start", 0)
 	if start < 0 {
@@ -123,69 +123,98 @@ func convertToInts(t *tensors.Tensor) []int {
 	return res
 }
 
-// ConvertUnsqueeze converts a ONNX node to a GoMLX node.
+// convertUnsqueeze converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Unsqueeze.html
-func ConvertUnsqueeze(node *protos.NodeProto, inputs []*Node) *Node {
-	var axesT *tensors.Tensor
-	err := exceptions.TryCatch[error](func() { axesT = materializeConstantExpression(inputs[1]) })
-	if err != nil {
-		panic(errors.WithMessagef(err, "while converting node %s", nodeToString(node)))
+func convertUnsqueeze(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	if !inputs[1].DType().IsInt() {
+		exceptions.Panicf("axes must be integer, got %s for node %s", inputs[1].DType(), nodeToString(node))
 	}
-	if !axesT.DType().IsInt() {
-		exceptions.Panicf("axes must be integer, got dtype=%s for node %s", axesT.DType(), nodeToString(node))
+
+	axesT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+	if err != nil {
+		panic(errors.WithMessagef(err, "while converting 'axes' for node %s", nodeToString(node)))
 	}
 	axes := convertToInts(axesT)
 	return ExpandAxes(inputs[0], axes...)
 }
 
-// ConvertConcat converts a ONNX node to a GoMLX node.
+// convertConcat converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Concat.html
-func ConvertConcat(node *protos.NodeProto, inputs []*Node) *Node {
+func convertConcat(node *protos.NodeProto, inputs []*Node) *Node {
 	axis := mustGetIntAttr(node, "axis")
 	return Concatenate(inputs, axis)
 }
 
-// ConvertSlice converts a ONNX node to a GoMLX node.
+// convertSlice converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Slice.html
-func ConvertSlice(node *protos.NodeProto, inputs []*Node) *Node {
+func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	if len(inputs) < 3 {
 		exceptions.Panicf("Slice requires at least 3 inputs, got %d in node %s", len(inputs), nodeToString(node))
 	}
 
-	var dataN, startsN, endsN, axesN, stridesN *Node
-	for ii, nodePtr := range []**Node{&dataN, &startsN, &endsN, &axesN, &stridesN} {
-		if ii < len(inputs) {
-			*nodePtr = inputs[ii]
-		}
-	}
+	operand := inputs[0]
 
-	for ii, node := range []*Node{dataN, startsN, endsN, axesN, stridesN} {
-		if node != nil {
-			fmt.Printf("\tinput[%d].IsConstantExpression=%v\n", ii, node.IsConstantExpression())
-		}
+	startsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+	if err != nil {
+		panic(errors.WithMessagef(err, "while converting 'starts' for node %s", nodeToString(node)))
 	}
+	starts := convertToInts(startsT)
 
-	starts := convertToInts(materializeConstantExpression(startsN))
-	ends := convertToInts(materializeConstantExpression(endsN))
+	endsT, err := m.materializeConstantExpression(node.Input[2], convertedOutputs)
+	if err != nil {
+		panic(errors.WithMessagef(err, "while converting 'ends' for node %s", nodeToString(node)))
+	}
+	fmt.Printf("endsT=%s\n", endsT.GoStr())
+	ends := convertToInts(endsT)
+
 	var axes []int
-	if axesN != nil {
-		axes = convertToInts(materializeConstantExpression(axesN))
+	if len(inputs) > 3 {
+		axesT, err := m.materializeConstantExpression(node.Input[3], convertedOutputs)
+		if err != nil {
+			panic(errors.WithMessagef(err, "while converting 'axes' for node %s", nodeToString(node)))
+		}
+		axes = convertToInts(axesT)
 	}
+
 	var strides []int
-	if stridesN != nil {
-		strides = convertToInts(materializeConstantExpression(stridesN))
+	if len(inputs) > 4 {
+		stridesT, err := m.materializeConstantExpression(node.Input[4], convertedOutputs)
+		if err != nil {
+			panic(errors.WithMessagef(err, "while converting 'strides' for node %s", nodeToString(node)))
+		}
+		strides = convertToInts(stridesT)
 	}
-	fmt.Printf("Slice:\n")
-	fmt.Printf("\toperand.shape=%s\n", dataN.Shape())
-	fmt.Printf("\tstarts=%v\n", starts)
-	fmt.Printf("\tends=%v\n", ends)
-	fmt.Printf("\taxes=%v\n", axes)
-	fmt.Printf("\tstrides=%v\n", strides)
-	return nil
+
+	//fmt.Printf("Slice:\n")
+	//fmt.Printf("\toperand.shape=%s\n", dataN.Shape())
+	//fmt.Printf("\tstarts=%v\n", starts)
+	//fmt.Printf("\tends=%v\n", ends)
+	//fmt.Printf("\taxes=%v\n", axes)
+	//fmt.Printf("\tstrides=%v\n", strides)
+	specs := make([]SliceAxisSpec, operand.Rank())
+	numAxesToDefine := operand.Rank()
+	if len(axes) != 0 {
+		// Define only given axes, and slice the other axes as full range.
+		for ii := range specs {
+			specs[ii] = AxisRange() // Full range.
+		}
+		numAxesToDefine = len(axes)
+	}
+	for ii := range numAxesToDefine {
+		axis := ii
+		if len(axes) != 0 {
+			axis = axes[ii]
+		}
+		specs[axis] = AxisRange(starts[ii], ends[ii])
+		if len(strides) != 0 {
+			specs[axis] = specs[axis].Stride(strides[ii])
+		}
+	}
+	return Slice(operand, specs...)
 }

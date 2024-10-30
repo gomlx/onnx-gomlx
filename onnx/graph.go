@@ -1,6 +1,7 @@
 package onnx
 
 import (
+	"fmt"
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/graph"
 	"github.com/gomlx/gomlx/ml/context"
@@ -53,12 +54,15 @@ func SafeVarName(onnxName string) (gomlxName string) {
 //
 // If the model has no variables, the context in ctx can be set to nil.
 //
+// The inputs (a map of input name to its graph.Node) can be given as normal input parameters to the graph or as
+// static constants -- see WithInputsAsConstants.
+// Set the inputs as constants if they are meant to be interpreted as constants (static) values, that won't change
+// in different inference/training steps.
+//
+// The graph being built is given in g.
+//
 // As in GoMLX graph functions, it panics (throws exceptions) in case of errors.
-func (m *Model) CallGraph(ctx *context.Context, inputs []*Node) (outputs []*Node) {
-	if len(inputs) == 0 {
-		exceptions.Panicf("onnx.CallGraph requires at least one input, got zero inputs")
-	}
-	g := inputs[0].Graph()
+func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Node) (outputs []*Node) {
 	if ctx != nil {
 		ctx = ctx.In(ModelScope).Checked(false)
 	}
@@ -70,32 +74,77 @@ func (m *Model) CallGraph(ctx *context.Context, inputs []*Node) (outputs []*Node
 	if len(m.Proto.Graph.SparseInitializer) > 0 {
 		exceptions.Panicf("onnx.CallGraph does not support ONNX SparseTensors")
 	}
-	if err := m.ValidateInputs(sliceMap(inputs, func(n *Node) shapes.HasShape { return n })...); err != nil {
+
+	// Map the given inputs to the corresponding ONNX inputs, and report (throw exception) if there are
+	// any discrepancies.
+	// Also initialize convertedOutputs with the given/converted inputs.
+	convertedOutputs := make(map[string]*Node)
+	missingInputs := types.MakeSet[string]()
+	repeatedInputs := types.MakeSet[string]()
+	unknownInputs := types.MakeSet[string]()
+	for inputIdx, inputName := range m.InputsNames {
+		if inputName == "" {
+			inputName = fmt.Sprintf("#%d", inputIdx)
+		}
+		inputN := inputs[inputName]
+		if inputN == nil {
+			staticValue := m.inputsAsConstants[inputName]
+			if staticValue != nil {
+				inputN = Const(g, staticValue)
+			} else {
+				missingInputs.Insert(inputName)
+				continue
+			}
+		} else {
+			if _, found := m.inputsAsConstants[inputName]; found {
+				repeatedInputs.Insert(inputName)
+			}
+		}
+		convertedOutputs[inputName] = inputN
+	}
+	for givenName := range inputs {
+		if _, found := convertedOutputs[givenName]; !found {
+			unknownInputs.Insert(givenName)
+		}
+	}
+	for givenName := range m.inputsAsConstants {
+		if _, found := convertedOutputs[givenName]; !found {
+			unknownInputs.Insert(givenName)
+		}
+	}
+	if len(missingInputs) > 0 || len(unknownInputs) > 0 {
+		exceptions.Panicf("onnx.CallGraph() called with wrong inputs: missing inputs=%q; unknown given inputs=%q; inputs given normally and as constant inputs=%q",
+			missingInputs, unknownInputs, repeatedInputs)
+	}
+
+	// Validate the input shapes.
+	err := m.ValidateInputs(sliceMap(m.InputsNames, func(inputName string) shapes.Shape { return convertedOutputs[inputName].Shape() })...)
+	if err != nil {
 		panic(err)
 	}
 
-	// ONNX nodes for which we already have a GoMLX node: start with inputs and variables.
-	convertedNodes := make(map[string]*Node)
-	for inputIdx, nodeName := range m.InputsNames {
-		convertedNodes[nodeName] = inputs[inputIdx]
-	}
-	if len(m.Proto.Graph.Initializer) > 0 && ctx == nil {
-		exceptions.Panicf("onnx.CallGraph(): model has variables, but a nil context was give")
-	}
-	for _, tensorProto := range m.Proto.Graph.Initializer {
-		varName := SafeVarName(tensorProto.Name)
-		v := ctx.InspectVariableInScope(varName)
-		if v == nil {
-			exceptions.Panicf("variable %q (from the ONNX model %q) has not been uploaded yet to context -- did you forget to call onnx.Model.VariablesToContext?",
-				varName, tensorProto.Name)
+	// Convert variables: create the GoMLX nodes corresponding to the ONNX model variables.
+	if len(m.Proto.Graph.Initializer) > 0 {
+		if ctx == nil {
+			exceptions.Panicf("onnx.CallGraph(): model has variables, but a nil context was give")
+			panic(nil) // for lint benefit.
 		}
-		convertedNodes[tensorProto.Name] = v.ValueGraph(g)
+		for _, tensorProto := range m.Proto.Graph.Initializer {
+			varName := SafeVarName(tensorProto.Name)
+			v := ctx.InspectVariableInScope(varName)
+			if v == nil {
+				exceptions.Panicf("variable %q (from the ONNX model %q) has not been uploaded yet to context -- did you forget to call onnx.Model.VariablesToContext?",
+					varName, tensorProto.Name)
+				panic(nil) // for lint benefit.
+			}
+			convertedOutputs[tensorProto.Name] = v.ValueGraph(g)
+		}
 	}
 
 	// Convert all nodes in topological order.
 	sortedNodes := m.sortedGraph()
 	for ii, node := range sortedNodes {
-		err := exceptions.TryCatch[error](func() { m.convertNode(ctx, g, node, convertedNodes) })
+		err := exceptions.TryCatch[error](func() { m.convertNode(g, node, convertedOutputs) })
 		if err != nil {
 			err = errors.WithMessagef(err, "while converting node %d out of %d", ii, len(sortedNodes))
 			panic(err)
@@ -106,7 +155,7 @@ func (m *Model) CallGraph(ctx *context.Context, inputs []*Node) (outputs []*Node
 	outputs = make([]*Node, len(m.OutputsNames))
 	var found bool
 	for outputIdx, nodeName := range m.OutputsNames {
-		outputs[outputIdx], found = convertedNodes[nodeName]
+		outputs[outputIdx], found = convertedOutputs[nodeName]
 		if !found {
 			exceptions.Panicf("output node %q not found", nodeName)
 		}
@@ -230,40 +279,37 @@ func (m *Model) sortedGraph() []*protos.NodeProto {
 // The converted output(s) are updated into `convertedNodes`.
 //
 // It panics (throw exceptions) in case of errors.
-func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodeProto, convertedNodes map[string]*Node) {
+func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs map[string]*Node) {
 	if node.Overload != "" {
 		exceptions.Panicf("overload %q to in-model function in ONNX model not implemented in node %q", node.Overload, node.Name)
 	}
 
 	// Convert the node: the usual case is that there is only one output.
-	// If res is not nil, it is set to convertedNodes[output[0]].
+	// If res is not nil, it is set to convertedOutputs[output[0]].
 	// Anything different must be implemented by the specific op switch.
 	var res *Node
-	inputs := sliceMap(node.Input, func(n string) *Node { return convertedNodes[n] })
+	inputs := sliceMap(node.Input, func(n string) *Node { return convertedOutputs[n] })
 	switch node.OpType {
 	case "Add":
 		res = Add(inputs[0], inputs[1])
 	case "MatMul":
 		res = MatMul(inputs[0], inputs[1])
 	case "Constant":
-		res = ConvertConstant(node, g)
+		res = convertConstant(node, g)
 	case "Gather":
-		res = ConvertGather(node, inputs)
+		res = convertGather(node, inputs)
 	case "Shape":
-		res = ConvertShape(node, inputs)
+		res = convertShape(node, inputs)
 	case "Unsqueeze":
-		res = ConvertUnsqueeze(node, inputs)
+		res = convertUnsqueeze(m, convertedOutputs, node, inputs)
 	case "Concat":
-		res = ConvertConcat(node, inputs)
+		res = convertConcat(node, inputs)
 	case "Slice":
-		exceptions.Try(func() {
-			res = ConvertSlice(node, inputs)
-		})
-		exceptions.Panicf("unimplemented ONNX %s", nodeToString(node))
+		res = convertSlice(m, convertedOutputs, node, inputs)
 	default:
 		exceptions.Panicf("unimplemented ONNX %s", nodeToString(node))
 	}
 	if res != nil {
-		convertedNodes[node.Output[0]] = res
+		convertedOutputs[node.Output[0]] = res
 	}
 }

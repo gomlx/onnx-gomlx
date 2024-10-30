@@ -62,13 +62,13 @@ func (dshape DynamicShape) String() string {
 }
 
 // ValidateInputs checks the inputs has a shape that is compatible with the DynamicShapes of the inputs for the model.
-func (m *Model) ValidateInputs(inputs ...shapes.HasShape) error {
-	if len(inputs) != len(m.InputsNames) {
+func (m *Model) ValidateInputs(inputsShapes ...shapes.Shape) error {
+	if len(inputsShapes) != len(m.InputsNames) {
 		return errors.Errorf("model takes %d inputs, but %d inputs provided",
-			len(m.InputsNames), len(inputs))
+			len(m.InputsNames), len(inputsShapes))
 	}
 	dimValues := make(map[string]int)
-	for idx, input := range inputs {
+	for idx, input := range inputsShapes {
 		name := m.InputsNames[idx]
 		givenShape := input.Shape()
 		wantShape := m.InputsShapes[idx]
