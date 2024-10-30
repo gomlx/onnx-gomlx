@@ -104,6 +104,9 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 		// Already calculated.
 		return
 	}
+
+	// Check in the original graph being converted if this node was converted as a constant (for instance for nodes like "Shape"),
+	// in which case we take the constant value and inject it directly in the new constant expression graph.
 	if originalNode, found := originalConvertedOutput[nodeOutputName]; found {
 		if originalNode.Type() == NodeTypeConstant {
 			// Duplicate the constant in the new graph.
