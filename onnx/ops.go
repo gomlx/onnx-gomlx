@@ -1,7 +1,6 @@
 package onnx
 
 import (
-	"fmt"
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/graph"
 	"github.com/gomlx/gomlx/types/tensors"
@@ -13,14 +12,14 @@ import (
 
 // This file implements the ONNX operators that don't have a direct corresponding GoMLX operator.
 
-// GOMLXBinaryOp
-type GOMLXBinaryOp func(lhs, rhs *Node) *Node
+// gomlxBinaryOp is a GoMLX binary op. Used by convertBinaryOp.
+type gomlxBinaryOp func(lhs, rhs *Node) *Node
 
 // convertBinaryOp applies ONNX broadcasting rule before calling the fn.
 //
 // It differs from GoMLX and XLA in that it automatically prepend 1-dimensional axes to
 // any of the operands, if they differ in rank.
-func convertBinaryOp(fn GOMLXBinaryOp, lhs, rhs *Node) *Node {
+func convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
 	if lhs.IsScalar() || rhs.IsScalar() {
 		return fn(lhs, rhs)
 	}
@@ -86,6 +85,17 @@ func getIntAttrOr(node *protos.NodeProto, attrName string, defaultValue int) int
 	}
 	assertNodeAttrType(node, attr, protos.AttributeProto_INT)
 	return int(attr.I)
+}
+
+// getIntsAttrOr gets an integer list attribute for node if present or return the given defaultValues.
+// It panics with an error message if the attribute is present but is of the wrong type.
+func getIntsAttrOr(node *protos.NodeProto, attrName string, defaultValues []int) []int {
+	attr := getNodeAttr(node, attrName, false)
+	if attr == nil {
+		return defaultValues
+	}
+	assertNodeAttrType(node, attr, protos.AttributeProto_INTS)
+	return sliceMap(attr.Ints, func(i int64) int { return int(i) })
 }
 
 // convertConstant converts a ONNX node to a GoMLX node.
@@ -172,6 +182,23 @@ func convertCast(node *protos.NodeProto, inputs []*Node) *Node {
 	return ConvertDType(operand, toDtype)
 }
 
+// convertTranspose converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Transpose.html
+func convertTranspose(node *protos.NodeProto, inputs []*Node) *Node {
+	operand := inputs[0]
+	permutations := getIntsAttrOr(node, "perm", nil)
+	if permutations == nil {
+		// Reverse axes.
+		permutations = make([]int, operand.Rank())
+		for axis := range permutations {
+			permutations[axis] = operand.Rank() - axis - 1
+		}
+	}
+	return TransposeAllDims(operand, permutations...)
+}
+
 ////////////////////////////////////////////////////////////////////
 //
 // Ops that require materialization of constant sub-expressions
@@ -229,7 +256,6 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	if err != nil {
 		panic(errors.WithMessagef(err, "while converting 'ends' for node %s", nodeToString(node)))
 	}
-	fmt.Printf("endsT=%s\n", endsT.GoStr())
 	ends := tensorToInts(endsT)
 
 	var axes []int
@@ -250,12 +276,6 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		strides = tensorToInts(stridesT)
 	}
 
-	//fmt.Printf("Slice:\n")
-	//fmt.Printf("\toperand.shape=%s\n", dataN.Shape())
-	//fmt.Printf("\tstarts=%v\n", starts)
-	//fmt.Printf("\tends=%v\n", ends)
-	//fmt.Printf("\taxes=%v\n", axes)
-	//fmt.Printf("\tstrides=%v\n", strides)
 	specs := make([]SliceAxisSpec, operand.Rank())
 	numAxesToDefine := operand.Rank()
 	if len(axes) != 0 {
@@ -270,7 +290,9 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		if len(axes) != 0 {
 			axis = axes[ii]
 		}
-		specs[axis] = AxisRange(starts[ii], ends[ii])
+		// ONNX often uses INT64_MAX as end value.
+		endValue := min(ends[ii], operand.Shape().Dim(axis))
+		specs[axis] = AxisRange(starts[ii], endValue)
 		if len(strides) != 0 {
 			specs[axis] = specs[axis].Stride(strides[ii])
 		}
