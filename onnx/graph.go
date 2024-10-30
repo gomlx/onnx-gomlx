@@ -279,6 +279,14 @@ func (m *Model) sortedGraph() []*protos.NodeProto {
 // The converted output(s) are updated into `convertedNodes`.
 //
 // It panics (throw exceptions) in case of errors.
+//
+// TODO: One of ONNX broadcasting rule is not applied by default in GoMLX/XLA for binary operators, namely:
+//
+//	"The tensors that have too few dimensions can have their shapes prepended with a dimension of length 1 to satisfy property 2."
+//
+// See the definitions in:
+// . https://openxla.org/xla/broadcasting
+// . https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
 func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs map[string]*Node) {
 	if node.Overload != "" {
 		exceptions.Panicf("overload %q to in-model function in ONNX model not implemented in node %q", node.Overload, node.Name)
@@ -290,24 +298,65 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 	var res *Node
 	inputs := sliceMap(node.Input, func(n string) *Node { return convertedOutputs[n] })
 	switch node.OpType {
+	// Binary operators: see note on differences on default broadcasting.
 	case "Add":
-		res = Add(inputs[0], inputs[1])
+		res = convertBinaryOp(Add, inputs[0], inputs[1])
+	case "Sub":
+		res = convertBinaryOp(Sub, inputs[0], inputs[1])
+	case "Mul":
+		res = convertBinaryOp(Mul, inputs[0], inputs[1])
+	case "Div":
+		res = convertBinaryOp(Div, inputs[0], inputs[1])
+	case "Pow":
+		res = convertBinaryOp(Pow, inputs[0], inputs[1])
+	case "Equal":
+		res = convertBinaryOp(Equal, inputs[0], inputs[1])
+
+	// Unary operators
+	case "Sqrt":
+		res = Sqrt(inputs[0])
+	case "Exp":
+		res = Exp(inputs[0])
+	case "Log":
+		res = Log(inputs[0])
+	case "Erf":
+		res = Erf(inputs[0])
+
+		// Ops with equivalents:
 	case "MatMul":
 		res = MatMul(inputs[0], inputs[1])
+	case "Where":
+		res = Where(inputs[0], inputs[1], inputs[2])
+
+		// Ops with attributes:
 	case "Constant":
 		res = convertConstant(node, g)
 	case "Gather":
 		res = convertGather(node, inputs)
 	case "Shape":
 		res = convertShape(node, inputs)
-	case "Unsqueeze":
-		res = convertUnsqueeze(m, convertedOutputs, node, inputs)
 	case "Concat":
 		res = convertConcat(node, inputs)
+	case "Softmax":
+		res = convertSoftmax(node, inputs)
+	case "Cast":
+		res = convertCast(node, inputs)
+
+		// Ops that require contant-expression materialization:
+		// they take dynamic (graph) values in ONNX, but only take static values in XLA
+	case "Unsqueeze":
+		res = convertUnsqueeze(m, convertedOutputs, node, inputs)
 	case "Slice":
 		res = convertSlice(m, convertedOutputs, node, inputs)
 	case "Reshape":
 		res = convertReshape(m, convertedOutputs, node, inputs)
+	case "ReduceMean":
+		res = convertReduceMean(m, convertedOutputs, node, inputs)
+	case "ConstantOfShape":
+		res = convertConstantOfShape(m, convertedOutputs, node, inputs)
+	case "Expand":
+		res = convertExpand(m, convertedOutputs, node, inputs)
+
 	default:
 		exceptions.Panicf("unimplemented ONNX %s", nodeToString(node))
 	}
