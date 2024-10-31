@@ -160,7 +160,7 @@ func (m *Model) PrintGraph(writer io.Writer) error {
 // nodeToString converts a NodeProto to a one-line string, that can be used for debugging.
 func nodeToString(n *protos.NodeProto) string {
 	var buf bytes.Buffer
-	w := func(format string, args ...any) { buf.WriteString(fmt.Sprintf(format, args...)) }
+	w := func(format string, args ...any) { _, _ = fmt.Fprintf(&buf, format, args...) }
 
 	w("Node %q [%s]", n.Name, n.OpType)
 	w("(%s)", strings.Join(n.Input, ", "))    // Inputs
