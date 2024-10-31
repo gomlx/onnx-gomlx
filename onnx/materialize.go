@@ -18,7 +18,7 @@ func (m *Model) nonConstantDependencies(nodeOutputName string) (inputs, variable
 // Use nonConstantDependencies.
 func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes types.Set[string], nonConstInputs, variables []string) ([]string, []string) {
 	visitedNodes.Insert(name)
-	if m.variablesNameSet.Has(name) {
+	if _, found := m.variableNameToValue[name]; found {
 		// Record a variable dependency.
 		variables = append(variables, name)
 		return nonConstInputs, variables
@@ -101,7 +101,7 @@ func (m *Model) materializeConstantExpression(nodeOutputName string, convertedOu
 // It may use the original converted graph in originalConvertedOutput, but it doesn't change it.
 func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g *Graph, constConvertedOutputs, originalConvertedOutput map[string]*Node) {
 	if _, found := constConvertedOutputs[nodeOutputName]; found {
-		// Already calculated.
+		// Already converted.
 		return
 	}
 

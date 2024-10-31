@@ -28,11 +28,11 @@ func TestParse(t *testing.T) {
 	for v := range ctx.IterVariables() {
 		fmt.Printf("\tVariable %q: %s\n", v.ScopeAndName(), v.Shape())
 	}
-	vA := ctx.In(ModelScope).InspectVariableInScope("A")
+	vA := ctx.In(ModelScope).GetVariable("A")
 	require.NotNil(t, vA)
 	require.Equal(t, 1, vA.Shape().Rank())
 	require.Equal(t, 5, vA.Shape().Dim(0))
-	vB := ctx.In(ModelScope).InspectVariableInScope("B")
+	vB := ctx.In(ModelScope).GetVariable("B")
 	require.NotNil(t, vB)
 	require.Equal(t, 0, vB.Shape().Rank())
 }

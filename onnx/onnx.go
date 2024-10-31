@@ -22,8 +22,10 @@ type Model struct {
 
 	// names used for variables and inputs: these are like internal outputs, but they come not from a node,
 	// but from an input or variable. Used to introspect the graph.
-	variablesNameSet, inputsNameSet types.Set[string]
+	inputsNameSet       types.Set[string]
+	variableNameToValue map[string]*protos.TensorProto
 
+	name                        string
 	InputsNames, OutputsNames   []string
 	InputsShapes, OutputsShapes []DynamicShape
 
@@ -40,6 +42,7 @@ func Parse(contents []byte) (*Model, error) {
 	}
 
 	// Parse inputs and outputs.
+	m.name = m.Proto.Graph.Name
 	m.inputsNameSet = types.MakeSet[string]()
 	m.InputsNames = make([]string, len(m.Proto.Graph.Input))
 	m.InputsShapes = make([]DynamicShape, len(m.Proto.Graph.Input))
@@ -71,9 +74,9 @@ func Parse(contents []byte) (*Model, error) {
 	}
 
 	// Set of variable names.
-	m.variablesNameSet = types.MakeSet[string]()
+	m.variableNameToValue = make(map[string]*protos.TensorProto)
 	for _, tensorProto := range m.Proto.Graph.Initializer {
-		m.variablesNameSet.Insert(tensorProto.Name)
+		m.variableNameToValue[tensorProto.Name] = tensorProto
 	}
 
 	// Maps the intermediary node outputs to the nodes that create them.
@@ -99,6 +102,9 @@ func ReadFile(filePath string) (*Model, error) {
 	}
 	return Parse(contents)
 }
+
+// Name of the model graph.
+func (m *Model) Name() string { return m.name }
 
 // Inputs returns the names and DynamicShapes of the inputs.
 func (m *Model) Inputs() (names []string, dshapes []DynamicShape) {

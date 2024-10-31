@@ -8,42 +8,15 @@ import (
 	"github.com/gomlx/gomlx/types"
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
-	"github.com/gomlx/onnx-gomlx/internal/togomlx"
-	"github.com/pkg/errors"
-	"maps"
-	"slices"
-	"strings"
 )
 
-// ModelScope is the default model scope to use when for the ONNX model variables when converting to GoMLX.
-var ModelScope = "ONNX"
-
-// This file defines the methods that build the computation graph using GoMLX.
-
-// VariablesToContext will create variables in the context (within scope ModelScope) from
-// all variables present in the model initializer list.
-//
-// Call this once in your context, before using the model with Model.CallGraph.
-// Alternatively, if you have already checkpoint-ed your model, load the variables from a checkpoint and don't call this.
-func (m *Model) VariablesToContext(ctx *context.Context) error {
-	if len(m.Proto.Graph.SparseInitializer) > 0 {
-		exceptions.Panicf("onnx.VariablesToContext does not support ONNX SparseTensors")
+// sliceMap executes the given function sequentially for every element on in, and returns a mapped slice.
+func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
+	out = make([]Out, len(in))
+	for ii, e := range in {
+		out[ii] = fn(e)
 	}
-	ctx = ctx.In(ModelScope).Checked(false)
-	for _, tensorProto := range m.Proto.Graph.Initializer {
-		tensor, err := togomlx.Tensor(tensorProto)
-		if err != nil {
-			return errors.WithMessagef(err, "Model.VariablesToContext()")
-		}
-		tensorName := SafeVarName(tensorProto.Name)
-		ctx.VariableWithValue(tensorName, tensor)
-	}
-	return nil
-}
-
-// SafeVarName converts an ONNX variable name to a GoMLX safe variable name by replacing the scope separator with a "|".
-func SafeVarName(onnxName string) (gomlxName string) {
-	return strings.ReplaceAll(onnxName, context.ScopeSeparator, "|")
+	return
 }
 
 // CallGraph calls the ONNX graph, and hence building it with GoMLX ops.
@@ -59,10 +32,13 @@ func SafeVarName(onnxName string) (gomlxName string) {
 // Set the inputs as constants if they are meant to be interpreted as constants (static) values, that won't change
 // in different inference/training steps.
 //
+// If outputNames is not given, it will output the model's registered outputs. Alternatively, you can select
+// any list of node outputs to generate. It will return the values for the selected outputs.
+//
 // The graph being built is given in g.
 //
 // As in GoMLX graph functions, it panics (throws exceptions) in case of errors.
-func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Node) (outputs []*Node) {
+func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Node, outputNames ...string) (outputs []*Node) {
 	if ctx != nil {
 		ctx = ctx.In(ModelScope).Checked(false)
 	}
@@ -73,6 +49,11 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 	}
 	if len(m.Proto.Graph.SparseInitializer) > 0 {
 		exceptions.Panicf("onnx.CallGraph does not support ONNX SparseTensors")
+	}
+
+	// If no outputNames were given, take the model outputs.
+	if len(outputNames) == 0 {
+		outputNames = m.OutputsNames
 	}
 
 	// Map the given inputs to the corresponding ONNX inputs, and report (throw exception) if there are
@@ -124,37 +105,20 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 	}
 
 	// Convert variables: create the GoMLX nodes corresponding to the ONNX model variables.
-	if len(m.Proto.Graph.Initializer) > 0 {
-		if ctx == nil {
-			exceptions.Panicf("onnx.CallGraph(): model has variables, but a nil context was give")
-			panic(nil) // for lint benefit.
-		}
-		for _, tensorProto := range m.Proto.Graph.Initializer {
-			varName := SafeVarName(tensorProto.Name)
-			v := ctx.InspectVariableInScope(varName)
-			if v == nil {
-				exceptions.Panicf("variable %q (from the ONNX model %q) has not been uploaded yet to context -- did you forget to call onnx.Model.VariablesToContext?",
-					varName, tensorProto.Name)
-				panic(nil) // for lint benefit.
-			}
-			convertedOutputs[tensorProto.Name] = v.ValueGraph(g)
-		}
+	if len(m.Proto.Graph.Initializer) > 0 && ctx == nil {
+		exceptions.Panicf("onnx.CallGraph(): model has variables, but a nil context was give")
+		panic(nil) // for lint benefit.
 	}
 
-	// Convert all nodes in topological order.
-	sortedNodes := m.sortedGraph()
-	for ii, node := range sortedNodes {
-		err := exceptions.TryCatch[error](func() { m.convertNode(g, node, convertedOutputs) })
-		if err != nil {
-			err = errors.WithMessagef(err, "while converting node %d out of %d", ii, len(sortedNodes))
-			panic(err)
-		}
+	// Convert all nodes recursively, which will implicitly yield a topological order.
+	for _, target := range outputNames {
+		m.recursiveCallGraph(ctx, g, target, convertedOutputs)
 	}
 
 	// Pick the outputs.
-	outputs = make([]*Node, len(m.OutputsNames))
+	outputs = make([]*Node, len(outputNames))
 	var found bool
-	for outputIdx, nodeName := range m.OutputsNames {
+	for outputIdx, nodeName := range outputNames {
 		outputs[outputIdx], found = convertedOutputs[nodeName]
 		if !found {
 			exceptions.Panicf("output node %q not found", nodeName)
@@ -163,114 +127,39 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 	return outputs
 }
 
-// sliceMap executes the given function sequentially for every element on in, and returns a mapped slice.
-func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
-	out = make([]Out, len(in))
-	for ii, e := range in {
-		out[ii] = fn(e)
-	}
-	return
-}
-
-// sortedGraph returns a DAG sorting of the graph, so the returned nodes can be converted in order.
-//
-// It assumes the inputs and variables are given.
-//
-// Careful not to mix up node.Name and node.Output (there can be more than one output).
-func (m *Model) sortedGraph() []*protos.NodeProto {
-	sortedNodes := make([]*protos.NodeProto, 0, len(m.Proto.Graph.Node))
-
-	// Build reverse dependency map.
-	outputToDependants := make(map[string]types.Set[*protos.NodeProto])
-	for _, node := range m.Proto.Graph.Node {
-		for _, input := range node.Input {
-			deps, found := outputToDependants[input]
-			if !found {
-				deps = types.SetWith(node)
-				outputToDependants[input] = deps
-			} else {
-				deps.Insert(node)
-			}
-		}
+// recursiveCallGraph recursively creates a GoMLX graph for the target output name.
+// The convertedOutputs is used both as input, and as output to store the converted nodes.
+func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputName string, convertedOutputs map[string]*Node) {
+	if _, found := convertedOutputs[nodeOutputName]; found {
+		// Already converted.
+		return
 	}
 
-	// Check whether node is done.
-	doneOutputs := types.MakeSet[string]() // It includes both: Node.Name and Node.Output.
-	isReady := func(node *protos.NodeProto) bool {
-		for _, input := range node.Input {
-			_, found := doneOutputs[input]
-			if !found {
-				return false
-			}
+	// Is it the output of a variable ?
+	if _, found := m.variableNameToValue[nodeOutputName]; found {
+		varName := SafeVarName(nodeOutputName)
+		v := ctx.GetVariable(varName)
+		if v == nil {
+			exceptions.Panicf("variable %q (named %q in ONNX) has not been uploaded yet to context -- did you forget to call onnx.Model.VariablesToContext?",
+				varName, nodeOutputName)
+			panic(nil) // for lint benefit.
 		}
-		return true
+		convertedOutputs[nodeOutputName] = v.ValueGraph(g)
+		return
 	}
 
-	// Tabs on finished nodes, and process of marking one node as done.
-	nextDoneScan := types.MakeSet[string]()
-	markDone := func(outputName string) {
-		deps, found := outputToDependants[outputName]
-		if !found {
-			return
-		}
-		delete(outputToDependants, outputName)
-		for dep := range maps.Keys(deps) {
-			if doneOutputs.Has(dep.Name) {
-				// This dependant is already marked as done.
-				continue
-			}
-			if !isReady(dep) {
-				// This dependant has other dependencies and is not done yet.
-				continue
-			}
-			// One of the dependents is ready, so mark this node as done.
-			sortedNodes = append(sortedNodes, dep)
-			doneOutputs.Insert(dep.Name)
-			for _, output := range dep.Output {
-				doneOutputs.Insert(output)
-				nextDoneScan.Insert(output)
-			}
-		}
+	onnxNode, found := m.nodeOutputToNode[nodeOutputName]
+	if !found {
+		exceptions.Panicf("ONNX node output %q not found as the output of an Op, and not a variable or input either!?", nodeOutputName)
 	}
 
-	// Mark inputs (inputs names and outputs are the same), variables and nodes without any inputs as finished.
-	for _, input := range m.InputsNames {
-		doneOutputs.Insert(input)
-		nextDoneScan.Insert(input)
-	}
-	for _, tensorProto := range m.Proto.Graph.Initializer {
-		// Mark variable node as done.
-		doneOutputs.Insert(tensorProto.Name)
-		nextDoneScan.Insert(tensorProto.Name)
-	}
-	for _, node := range m.Proto.Graph.Node {
-		if len(node.Input) > 0 {
-			continue
-		}
-		// No inputs: mark as done and append to sortedNodes.
-		sortedNodes = append(sortedNodes, node)
-		doneOutputs.Insert(node.Name)
-		for _, output := range node.Output {
-			doneOutputs.Insert(output)
-			nextDoneScan.Insert(output)
-		}
+	// Recursively converts the inputs of the onnxNode:
+	for _, inputName := range onnxNode.Input {
+		m.recursiveCallGraph(ctx, g, inputName, convertedOutputs)
 	}
 
-	// Loop marking nodes as done, and collecting nextDoneScan for the next iteration.
-	for len(nextDoneScan) > 0 {
-		nextDoneScanSlice := slices.Collect(maps.Keys(nextDoneScan))
-		clear(nextDoneScan) // Clear for next batch.
-		for _, nodeName := range nextDoneScanSlice {
-			markDone(nodeName)
-		}
-	}
-	//fmt.Printf("nodes: %v\n", sliceMap(m.Proto.Graph.Node, func(n *protos.NodeProto) string { return n.Name }))
-	//fmt.Printf("sortedNodes: %v\n", sliceMap(sortedNodes, func(n *protos.NodeProto) string { return n.Name }))
-	if len(sortedNodes) != len(m.Proto.Graph.Node) {
-		exceptions.Panicf("sorting operations graph failed: found %d nodes connected to inputs, but there were %d nodes!?",
-			len(sortedNodes), len(m.Proto.Graph.Node))
-	}
-	return sortedNodes
+	// Convert the node itself.
+	m.convertNode(g, onnxNode, convertedOutputs)
 }
 
 // convertNode converts a single ONNX node to a GoMLX node.
