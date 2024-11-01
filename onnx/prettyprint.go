@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/gomlx/gomlx/types"
+	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/gomlx/onnx-gomlx/internal/togomlx"
 	"github.com/pkg/errors"
@@ -211,6 +212,91 @@ func (m *Model) PrintVariables(writer io.Writer) error {
 	for _, st := range m.Proto.Graph.SparseInitializer {
 		shape, _ := togomlx.SparseShape(st)
 		w("\t\t%q: dense shape=%d\n", st.Values.Name, shape)
+	}
+	return err
+}
+
+// PrintGraphviz outputs the model graph using the "dot" language, starting from the target nodes towards
+// its dependencies.
+//
+// If targets is left empty, it takes the default graph outputs as targets.
+func (m *Model) PrintGraphviz(writer io.Writer, targets ...string) error {
+	if targets == nil {
+		targets = m.OutputsNames
+	}
+
+	var err error
+	w := func(format string, args ...any) {
+		if err != nil {
+			return
+		}
+		_, err = fmt.Fprintf(writer, format, args...)
+		if err != nil {
+			err = errors.Wrapf(err, "Model.PrintGraphviz() failed to write")
+		}
+	}
+
+	w("digraph %s {\n", m.Name())
+	visited := types.MakeSet[string]()
+	for _, target := range targets {
+		if err != nil {
+			break
+		}
+		err = m.recursiveGraphviz(writer, visited, target)
+	}
+	w("}")
+	return err
+}
+
+var (
+	GraphvizInputColor = "#FFF59E"
+	GraphvizVarColor   = "#E0E0E0"
+)
+
+func (m *Model) recursiveGraphviz(writer io.Writer, visited types.Set[string], target string) error {
+	if visited.Has(target) {
+		return nil
+	}
+	visited.Insert(target)
+
+	// Define w.
+	var err error
+	w := func(format string, args ...any) {
+		if err != nil {
+			return
+		}
+		_, err = fmt.Fprintf(writer, format, args...)
+		if err != nil {
+			err = errors.Wrapf(err, "Model.PrintGraphviz() failed to write")
+		}
+	}
+
+	// target is an input.
+	if m.inputsNameSet.Has(target) {
+		w("\t%q [shape=box, style=filled, fillcolor=%q];\n", target, GraphvizInputColor)
+		return err
+	}
+
+	// target is a label.
+	if v, found := m.variableNameToValue[target]; found {
+		var vShape shapes.Shape
+		vShape, err = togomlx.Shape(v)
+		w("\t%q [shape=box, style=filled, fillcolor=%q, tooltip=%q];\n", target, GraphvizVarColor, vShape)
+		return err
+	}
+
+	node, found := m.nodeOutputToNode[target]
+	if !found {
+		err = errors.Errorf("couldn't find target %q in model graph!?", target)
+		return err
+	}
+
+	for _, input := range node.Input {
+		w("\t%q -> %q\n", input, target)
+		if err != nil {
+			return err
+		}
+		err = m.recursiveGraphviz(writer, visited, input)
 	}
 	return err
 }
