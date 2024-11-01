@@ -8,6 +8,8 @@ github.com/gomlx/exceptions v0.0.3 h1:HKnTgEjj4jlmhr8zVFkTP9qmV1ey7ypYYosQ8GzXWu
 github.com/gomlx/exceptions v0.0.3/go.mod h1:uHL0TQwJ0xaV2/snJOJV6hSE4yRmhhfymuYgNredGxU=
 github.com/gomlx/gomlx v0.14.0 h1:qLAFtws4ADPKWEPZna4WT4e+AvC6pHs9AknZV2GdVF8=
 github.com/gomlx/gomlx v0.14.0/go.mod h1:nHkPBFi4z8CyZ5pOmViS8cUbImEB19XH3CVUwlbWjfk=
+github.com/gomlx/gomlx v0.15.0 h1:+gRsUzT6O/kcx+wa8pZqGi1JeQKyoCN17IQ9d7d8+gc=
+github.com/gomlx/gomlx v0.15.0/go.mod h1:nHkPBFi4z8CyZ5pOmViS8cUbImEB19XH3CVUwlbWjfk=
 github.com/gomlx/gopjrt v0.4.4 h1:Pc3jcBTsWmkf58pEuGnTfsf3eFhnX7UHhm/u/6VKczU=
 github.com/gomlx/gopjrt v0.4.4/go.mod h1:KkKFWTOGpJ1gludkzITb5/VOxpr5sy7qsTHvehcjTQA=
 github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
