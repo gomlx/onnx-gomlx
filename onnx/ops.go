@@ -349,12 +349,24 @@ func convertReduceMean(m *Model, convertedOutputs map[string]*Node, node *protos
 		axes = tensorToInts(axesT)
 	}
 
+	axesFromAttr := getIntsAttrOr(node, "axes", nil)
+	if len(axesFromAttr) > 0 {
+		if len(axes) > 0 {
+			exceptions.Panicf("ReduceMean(operand, [axes]): axes and axes attribute cannot be used together for node %s", nodeToString(node))
+		}
+		axes = axesFromAttr
+	}
+
 	// If there are no axes to reduce, this is a no-op.
 	if len(axes) == 0 {
 		if noOpIfEmpty {
 			return Identity(operand)
 		} else {
-			return ReduceAllMean(operand)
+			res := ReduceAllMean(operand)
+			if keepDims {
+				res = ExpandLeftToRank(res, operand.Rank())
+			}
+			return res
 		}
 	}
 

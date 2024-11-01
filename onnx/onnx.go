@@ -82,7 +82,7 @@ func Parse(contents []byte) (*Model, error) {
 	// Maps the intermediary node outputs to the nodes that create them.
 	m.nodeOutputToNode = make(map[string]*protos.NodeProto)
 	for _, node := range m.Proto.Graph.Node {
-		for _, outputName := range node.Output {
+		for _, outputName := range node.GetOutput() {
 			if otherNode, found := m.nodeOutputToNode[outputName]; found {
 				return nil, errors.Errorf("invalid graph: node output name %q used by 2 different nodes: (1) %s, (2) %s",
 					outputName, nodeToString(otherNode), nodeToString(node))

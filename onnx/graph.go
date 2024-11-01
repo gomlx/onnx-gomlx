@@ -150,7 +150,7 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 
 	onnxNode, found := m.nodeOutputToNode[nodeOutputName]
 	if !found {
-		exceptions.Panicf("ONNX node output %q not found as the output of an Op, and not a variable or input either!?", nodeOutputName)
+		exceptions.Panicf("ONNX node output %q not found as the output of any Op, and not a variable or input either -- could it be a node name, and note a node **output** name ?", nodeOutputName)
 	}
 
 	// Recursively converts the inputs of the onnxNode:
