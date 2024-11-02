@@ -1,7 +1,7 @@
 # ONNX-GoMLX from ONNX to GoMLX and back
 
 ## 📖 Overview
-ONNX-GoMLX converts [ONNX models](https://onnx.ai/) (`.onnx`) suffix to 
+ONNX-GoMLX converts [ONNX models](https://onnx.ai/) (`.onnx` suffix) to 
 [GoMLX (an accelerated machine learning framework for Go](https://github.com/gomlx/gomlx) and optionally back to ONNX.
 
 The main use cases so far are:
@@ -36,10 +36,14 @@ and used [github.com/eliben/go-sentencepiece](https://github.com/eliben/go-sente
 (more tools to facilitate tokenization coming later):
 
 ```go
+import "github.com/gomlx/onnx-gomlx/onnx"
+
+...
+
 // Parse ONNX model.
 model := must.M1(onnx.ReadFile(modelPath))
 
-// Convert ONNX variables (model weights) to GoMLX context (which stores variables):
+// Convert ONNX variables (model weights) to GoMLX Context -- which stores variables and can be checkpointed (saved):
 ctx := context.New()
 must.M(model.VariablesToContext(ctx))
 
