@@ -66,12 +66,12 @@ embeddings = context.ExecOnceN( // Execute a GoMLX computation graph with a cont
 	backends.New(),  // GoMLX backend to use (defaults to XLA) 
 	ctx, // Context store the model variables/weights and optional hyperparameters.
 	func (ctx *context.Context, inputs []*Node) []*Node {
-        // Convert ONNX model (in `model`) to a GoMLX computation graph. It returns a slice of values (with only one for this model)
-        return model.CallGraph(ctx, inputs[0].Graph(), map[string]*Node{
-            "input_ids": inputs[0],
-            "attention_mask": inputs[1],
-            "token_type_ids": inputs[2]}, targetOutputs...)
-    }, 
+		// Convert ONNX model (in `model`) to a GoMLX computation graph. It returns a slice of values (with only one for this model)
+		return model.CallGraph(ctx, inputs[0].Graph(), map[string]*Node{
+			"input_ids": inputs[0],
+			"attention_mask": inputs[1],
+			"token_type_ids": inputs[2]}, targetOutputs...)
+	}, 
 	inputIDs, attentionMask, tokenTypeIDs)  // Inputs to the GoMLX function.
 fmt.Printf("Embeddings: %s", embeddings)
 ```
