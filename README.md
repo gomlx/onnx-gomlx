@@ -108,8 +108,8 @@ If you are interested, we have two notebooks we use to compare results. They are
 
 ## 🥳 Thanks
 
-ONNX parser based on:
-
+* This project was born from brainstorming with the talented folks at [KnightAnalytics](https://www.knightsanalytics.com/).
+  Without their insights and enthusiasm this wouldn't have gotten off the ground.
 * [ONNX models](https://onnx.ai/) is such a nice open source standard to communicate models across different implementations.
 * [OpenXLA/XLA](https://github.com/openxla/xla) the open-source backend engine by Google that powers this implementation.
 * Sources of inspiration:
