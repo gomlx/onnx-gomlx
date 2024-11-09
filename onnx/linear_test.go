@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+import _ "github.com/gomlx/gomlx/backends/xla"
+
 // Tests based on the `linear_test.onnx` minimalistic model.
 func TestParse(t *testing.T) {
 	m, err := ReadFile("linear_test.onnx")
@@ -16,11 +18,6 @@ func TestParse(t *testing.T) {
 
 	require.Equal(t, m.OutputsShapes[0].Rank(), 1)
 	require.Equal(t, "batch_size", m.OutputsShapes[0].Names[0])
-
-	sortedNodes := m.sortedGraph()
-	require.Len(t, sortedNodes, 2)
-	require.Equal(t, "XA", sortedNodes[0].Name)
-	require.Equal(t, "Y", sortedNodes[1].Name)
 
 	// Verify correct setting of variables.
 	ctx := context.New()

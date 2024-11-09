@@ -116,12 +116,55 @@ func convertConstant(node *protos.NodeProto, g *Graph) *Node {
 // https://onnx.ai/onnx/operators/onnx__Gather.html
 func convertGather(node *protos.NodeProto, inputs []*Node) *Node {
 	axis := getIntAttrOr(node, "axis", 0)
-	if axis == 0 {
-		indices := ExpandAxes(inputs[1], -1)
-		return Gather(inputs[0], indices)
+	gatherAxis := AdjustAxisToOperandRank(inputs[0], axis)
+	if gatherAxis >= inputs[0].Rank() || gatherAxis < 0 {
+		exceptions.Panicf("Gather(data, indices, axis=%d), axis within d.Rank()=%d range", axis, inputs[0].Rank())
 	}
-	exceptions.Panicf("conversion of Gather with gather axis_%d != 0 not implemented while converting ONNX %s", axis, nodeToString(node))
-	return nil
+	return onnxGather(inputs[0], inputs[1], gatherAxis)
+}
+
+func onnxGather(data, indices *Node, gatherAxis int) *Node {
+	expandedIndices := ExpandAxes(indices, -1)
+	if gatherAxis == 0 {
+		// Trivial case, like GoMLX version.
+		return Gather(data, expandedIndices)
+	}
+
+	// We want to transpose data, such that we can gather on the first axis.
+	axesPermutation := make([]int, data.Rank())
+	for axis := range axesPermutation {
+		if axis == 0 {
+			// The first axis will be the one we are gathering on.
+			axesPermutation[axis] = gatherAxis
+		} else if axis <= gatherAxis {
+			// These axes have been shifted to the right, to give space for the gatherAxis
+			axesPermutation[axis] = axis - 1
+		} else {
+			// The tail axes remain the same.
+			axesPermutation[axis] = axis
+		}
+	}
+	transposedData := TransposeAllDims(data, axesPermutation...)
+	transposed := Gather(transposedData, expandedIndices)
+
+	// Now we have to transpose back the result.
+	// transposed is shaped [<indices_dims...>, <data_dims...>] and we want to transpose to
+	// [<data_prefix_dims...>, <indices_dims...>, <data_suffix_dims...>], where data_prefix_dims and
+	// data_suffix_dims is divided by the gatherAxis.
+	axesPermutation = make([]int, transposed.Rank())
+	for axis := range axesPermutation {
+		if axis < gatherAxis {
+			// data_prefix_dims:
+			axesPermutation[axis] = indices.Rank() + axis
+		} else if axis < gatherAxis+indices.Rank() {
+			// indices_dims
+			axesPermutation[axis] = axis - gatherAxis
+		} else {
+			// data_suffix_dims, which don't change from the transposed results.
+			axesPermutation[axis] = axis
+		}
+	}
+	return TransposeAllDims(transposed, axesPermutation...)
 }
 
 // convertShape converts a ONNX node to a GoMLX node.
