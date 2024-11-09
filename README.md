@@ -1,5 +1,7 @@
 # ONNX-GoMLX from ONNX to GoMLX and back
 
+[![GoDev](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/gomlx/onnx-gomlx?tab=doc)
+
 ## 📖 Overview
 ONNX-GoMLX converts [ONNX models](https://onnx.ai/) (`.onnx` suffix) to 
 [GoMLX (an accelerated machine learning framework for Go](https://github.com/gomlx/gomlx) and optionally back to ONNX.
@@ -31,9 +33,11 @@ We'll leave this "experimental" note here for now. If we don't bump into any iss
 
 ## 🎓 Example
 
-We downloaded the [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) to `modelPath`,
-and used [github.com/eliben/go-sentencepiece](https://github.com/eliben/go-sentencepiece) to generate the token ids
-(more tools to facilitate tokenization coming later):
+We download (and cache) the [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)  
+using [github.com/gomlx/go-huggingface](https://github.com/gomlx/go-huggingface).
+
+The tokens were for now hardcoded -- eventually [github.com/gomlx/go-huggingface](https://github.com/gomlx/go-huggingface) should also
+do the tokenization for various models.
 
 ```go
 import (
