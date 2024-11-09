@@ -36,7 +36,10 @@ and used [github.com/eliben/go-sentencepiece](https://github.com/eliben/go-sente
 (more tools to facilitate tokenization coming later):
 
 ```go
-import "github.com/gomlx/onnx-gomlx/onnx"
+import (
+	"github.com/gomlx/onnx-gomlx/onnx"
+    "github.com/gomlx/go-huggingface/hub"
+)
 
 ...
 
