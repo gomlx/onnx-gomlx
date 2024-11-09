@@ -40,6 +40,12 @@ import "github.com/gomlx/onnx-gomlx/onnx"
 
 ...
 
+// Download ONNX model from HuggingFace.
+hfAuthToken := os.Getenv("HF_TOKEN")
+hfModelID := "sentence-transformers/all-MiniLM-L6-v2"
+repo := hub.New(modelID).WithAuth(hfAuthToken)
+modelPath := must.M1(repo.DownloadFile("onnx/model.onnx"))
+
 // Parse ONNX model.
 model := must.M1(onnx.ReadFile(modelPath))
 
@@ -49,18 +55,18 @@ must.M(model.VariablesToContext(ctx))
 
 // Execute it with GoMLX/XLA:
 sentences := []string{
-"This is an example sentence",
-"Each sentence is converted"}
+    "This is an example sentence",
+    "Each sentence is converted"}
 //... tokenize ...
 inputIDs := [][]int64{
-{101, 2023, 2003, 2019, 2742, 6251,  102},
-{ 101, 2169, 6251, 2003, 4991,  102,    0}}
+    {101, 2023, 2003, 2019, 2742, 6251,  102},
+    { 101, 2169, 6251, 2003, 4991,  102,    0}}
 tokenTypeIDs := [][]int64{
-{0, 0, 0, 0, 0, 0, 0},
-{0, 0, 0, 0, 0, 0, 0}}
+    {0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0}}
 attentionMask := [][]int64{
-{1, 1, 1, 1, 1, 1, 1},
-{1, 1, 1, 1, 1, 1, 0}}
+    {1, 1, 1, 1, 1, 1, 1},
+    {1, 1, 1, 1, 1, 1, 0}}
 var embeddings []*tensors.Tensor
 embeddings = context.ExecOnceN( // Execute a GoMLX computation graph with a context
 	backends.New(),  // GoMLX backend to use (defaults to XLA) 
