@@ -43,7 +43,7 @@ import (
 
 ...
 
-// Download ONNX model from HuggingFace.
+// Download and cache ONNX model from HuggingFace.
 hfAuthToken := os.Getenv("HF_TOKEN")
 hfModelID := "sentence-transformers/all-MiniLM-L6-v2"
 repo := hub.New(modelID).WithAuth(hfAuthToken)
