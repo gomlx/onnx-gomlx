@@ -223,15 +223,19 @@ func tensorToInts(t *tensors.Tensor) []int {
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Unsqueeze.html
 func convertUnsqueeze(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
-	if !inputs[1].DType().IsInt() {
-		exceptions.Panicf("axes must be integer, got %s for node %s", inputs[1].DType(), nodeToString(node))
+	// Version 11 and earlier take the axes from the attribute:
+	axes := getIntsAttrOr(node, "axes", nil)
+	if len(axes) == 0 {
+		// Instead take axes from inputs[1].
+		if !inputs[1].DType().IsInt() {
+			exceptions.Panicf("axes must be integer, got %s for node %s", inputs[1].DType(), nodeToString(node))
+		}
+		axesT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+		if err != nil {
+			panic(errors.WithMessagef(err, "while converting 'axes' for node %s", nodeToString(node)))
+		}
+		axes = tensorToInts(axesT)
 	}
-
-	axesT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
-	if err != nil {
-		panic(errors.WithMessagef(err, "while converting 'axes' for node %s", nodeToString(node)))
-	}
-	axes := tensorToInts(axesT)
 	return ExpandAxes(inputs[0], axes...)
 }
 
