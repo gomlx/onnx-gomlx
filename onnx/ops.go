@@ -1,6 +1,7 @@
 package onnx
 
 import (
+	"fmt"
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/graph"
 	"github.com/gomlx/gomlx/types/tensors"
@@ -85,6 +86,28 @@ func getIntAttrOr(node *protos.NodeProto, attrName string, defaultValue int) int
 	}
 	assertNodeAttrType(node, attr, protos.AttributeProto_INT)
 	return int(attr.I)
+}
+
+// getBoolAttrOr gets a boolean attribute (ONNX uses a int value of 0 or 1) for node if present or return the given defaultValue.
+// It panics with an error message if the attribute is present but is of the wrong type.
+func getBoolAttrOr(node *protos.NodeProto, attrName string, defaultValue bool) bool {
+	defaultInt := 0
+	if defaultValue {
+		defaultInt = 1
+	}
+	intValue := getIntAttrOr(node, attrName, defaultInt)
+	return intValue != 0
+}
+
+// getFloatAttrOr gets an integer attribute for node if present or return the given defaultValue.
+// It panics with an error message if the attribute is present but is of the wrong type.
+func getFloatAttrOr(node *protos.NodeProto, attrName string, defaultValue float32) float32 {
+	attr := getNodeAttr(node, attrName, false)
+	if attr == nil {
+		return defaultValue
+	}
+	assertNodeAttrType(node, attr, protos.AttributeProto_FLOAT)
+	return attr.F
 }
 
 // getIntsAttrOr gets an integer list attribute for node if present or return the given defaultValues.
@@ -240,6 +263,45 @@ func convertTranspose(node *protos.NodeProto, inputs []*Node) *Node {
 		}
 	}
 	return TransposeAllDims(operand, permutations...)
+}
+
+// convertGemm converts a ONNX node to a GoMLX node.
+// Gemm stands for general matrix multiplication.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Gemm.html
+func convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
+	operandA := inputs[0]
+	operandB := inputs[1]
+
+	transposeA := getBoolAttrOr(node, "transA", false)
+	transposeB := getBoolAttrOr(node, "transB", false)
+	alpha := getFloatAttrOr(node, "alpha", 1.0)
+	beta := getFloatAttrOr(node, "alpha", 1.0)
+
+	aAxes, bAxes := "ij", "jk"
+	if transposeA {
+		aAxes = "ji"
+	}
+	if transposeB {
+		bAxes = "kj"
+	}
+	equation := fmt.Sprintf("%s,%s->ik", aAxes, bAxes)
+	result := Einsum(equation, operandA, operandB)
+	if alpha != 1.0 {
+		result = MulScalar(result, alpha)
+	}
+
+	// Include the C term if given.
+	if len(inputs) > 2 {
+		operandC := inputs[2]
+		if beta != 1.0 {
+			operandC = MulScalar(operandC, beta)
+		}
+		// Add with ONNX broadcast semantics.
+		result = convertBinaryOp(Add, result, operandC)
+	}
+	return result
 }
 
 ////////////////////////////////////////////////////////////////////
