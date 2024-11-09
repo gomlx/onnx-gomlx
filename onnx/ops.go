@@ -323,6 +323,37 @@ func tensorToInts(t *tensors.Tensor) []int {
 	return res
 }
 
+// convertSqueeze converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Squeeze.html
+func convertSqueeze(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	operand := inputs[0]
+
+	// Version 11 and earlier take the axes from the attribute:
+	axes := getIntsAttrOr(node, "axes", nil)
+	if len(axes) == 0 && len(inputs) >= 2 {
+		// Instead take axes from inputs[1].
+		if !inputs[1].DType().IsInt() {
+			exceptions.Panicf("axes must be integer, got %s for node %s", inputs[1].DType(), nodeToString(node))
+		}
+		axesT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+		if err != nil {
+			panic(errors.WithMessagef(err, "while converting 'axes' for node %s", nodeToString(node)))
+		}
+		axes = tensorToInts(axesT)
+	}
+	if len(axes) == 0 {
+		// If axes is not given, pick all axes that have dimension == 1.
+		for axis, dim := range operand.Shape().Dimensions {
+			if dim == 1 {
+				axes = append(axes, axis)
+			}
+		}
+	}
+	return Squeeze(operand, axes...)
+}
+
 // convertUnsqueeze converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:

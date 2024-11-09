@@ -213,6 +213,8 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 		res = Erf(inputs[0])
 	case "Relu":
 		res = activations.Relu(inputs[0])
+	case "Identity":
+		res = Identity(inputs[0])
 
 		// Ops with equivalents:
 	case "MatMul":
@@ -240,6 +242,8 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 
 		// Ops that require contant-expression materialization:
 		// they take dynamic (graph) values in ONNX, but only take static values in XLA
+	case "Squeeze":
+		res = convertSqueeze(m, convertedOutputs, node, inputs)
 	case "Unsqueeze":
 		res = convertUnsqueeze(m, convertedOutputs, node, inputs)
 	case "Slice":
