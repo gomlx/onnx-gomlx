@@ -5,6 +5,7 @@ import (
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/graph"
 	"github.com/gomlx/gomlx/ml/context"
+	"github.com/gomlx/gomlx/ml/layers/activations"
 	"github.com/gomlx/gomlx/types"
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -210,6 +211,8 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 		res = Log(inputs[0])
 	case "Erf":
 		res = Erf(inputs[0])
+	case "Relu":
+		res = activations.Relu(inputs[0])
 
 		// Ops with equivalents:
 	case "MatMul":
