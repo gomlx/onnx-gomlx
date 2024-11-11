@@ -1,8 +1,11 @@
 package onnx
 
 import (
+	"fmt"
 	. "github.com/gomlx/gomlx/graph"
 	"github.com/gomlx/gomlx/graph/graphtest"
+	"github.com/gomlx/gomlx/types/tensors"
+	"github.com/stretchr/testify/assert"
 	"testing"
 )
 
@@ -67,4 +70,24 @@ func TestTile(t *testing.T) {
 			{4.5, 5.7, 4.5, 5.7},
 		},
 	}, -1)
+}
+
+func TestRangeCount(t *testing.T) {
+	backend := graphtest.BuildTestBackend()
+	testFn := func(start, limit, delta any, want int) {
+		startT := tensors.FromAnyValue(start)
+		limitT := tensors.FromAnyValue(limit)
+		deltaT := tensors.FromAnyValue(delta)
+		got := rangeCount(backend, startT, limitT, deltaT)
+		fmt.Printf("\trangeCount(start=%s, limit=%s, delta=%s) = %d (want %d)\n", startT, limitT, deltaT, got, want)
+		assert.Equal(t, want, got)
+	}
+
+	testFn(uint8(3), uint8(9), uint8(3), 2)
+	testFn(uint8(3), uint8(8), uint8(3), 2)
+	testFn(uint8(3), uint8(7), uint8(3), 2)
+	testFn(float32(3), float32(9.1), float32(3), 3)
+	testFn(int32(10), int32(4), int32(-2), 3)
+	testFn(int32(10), int32(5), int32(-2), 3)
+	testFn(float64(10), float64(3.9), float64(-2), 4)
 }

@@ -199,8 +199,22 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 		res = convertBinaryOp(Div, inputs[0], inputs[1])
 	case "Pow":
 		res = convertBinaryOp(Pow, inputs[0], inputs[1])
+	case "And":
+		res = convertBinaryOp(And, inputs[0], inputs[1])
+	case "Or":
+		res = convertBinaryOp(Or, inputs[0], inputs[1])
+	case "Xor":
+		res = convertBinaryOp(Xor, inputs[0], inputs[1])
 	case "Equal":
 		res = convertBinaryOp(Equal, inputs[0], inputs[1])
+	case "Less":
+		res = convertBinaryOp(LessThan, inputs[0], inputs[1])
+	case "LessOrEqual":
+		res = convertBinaryOp(LessOrEqual, inputs[0], inputs[1])
+	case "Greater":
+		res = convertBinaryOp(GreaterThan, inputs[0], inputs[1])
+	case "GreaterOrEqual":
+		res = convertBinaryOp(GreaterOrEqual, inputs[0], inputs[1])
 
 	// Unary operators
 	case "Sqrt":
@@ -258,11 +272,15 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 		res = convertExpand(m, convertedOutputs, node, inputs)
 	case "Tile":
 		res = convertTile(m, convertedOutputs, node, inputs)
+	case "Range":
+		res = convertRange(m, convertedOutputs, node, inputs)
 
 	default:
 		exceptions.Panicf("unimplemented ONNX %s", nodeToString(node))
 	}
 	if res != nil {
 		convertedOutputs[node.Output[0]] = res
+	} else {
+		exceptions.Panicf("nil output for ONNX node %q", node.Name)
 	}
 }

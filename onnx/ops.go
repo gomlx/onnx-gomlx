@@ -3,8 +3,11 @@ package onnx
 import (
 	"fmt"
 	"github.com/gomlx/exceptions"
+	"github.com/gomlx/gomlx/backends"
 	. "github.com/gomlx/gomlx/graph"
+	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/gomlx/types/tensors"
+	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/gomlx/onnx-gomlx/internal/togomlx"
 	"github.com/pkg/errors"
@@ -542,7 +545,7 @@ func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *p
 	if dimsN.Shape().Size() > 0 {
 		dimsT, err := m.materializeConstantExpression(node.Input[0], convertedOutputs)
 		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'shape' for node %s", nodeToString(node)))
+			panic(errors.WithMessagef(err, "while converting 'shape' to a static value for node %s", nodeToString(node)))
 		}
 		dims = tensorToInts(dimsT)
 	}
@@ -564,7 +567,7 @@ func convertExpand(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 	if dimsN.Shape().Size() > 0 {
 		dimsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'shape' for node %s", nodeToString(node)))
+			panic(errors.WithMessagef(err, "while converting 'shape' to a static value for node %s", nodeToString(node)))
 		}
 		dims = tensorToInts(dimsT)
 	}
@@ -609,14 +612,11 @@ func convertTile(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	if !repeatsN.DType().IsInt() {
 		exceptions.Panicf("Tile(input, repeats): repeats (shape) must be integer, got %s for node %s", repeatsN.DType(), nodeToString(node))
 	}
-	var repeats []int // Default is a scalar.
-	if repeatsN.Shape().Size() > 0 {
-		dimsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
-		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'repeats' for node %s", nodeToString(node)))
-		}
-		repeats = tensorToInts(dimsT)
+	repeatsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+	if err != nil {
+		panic(errors.WithMessagef(err, "while converting 'repeats' to a static value for node %s", nodeToString(node)))
 	}
+	repeats := tensorToInts(repeatsT)
 	return tile(operand, repeats)
 }
 
@@ -651,4 +651,68 @@ func tile(operand *Node, repeats []int) *Node {
 	}
 	output = Reshape(output, newShape.Dimensions...)
 	return output
+}
+
+// convertTile converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Range.html
+func convertRange(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	startN, limitN, deltaN := inputs[0], inputs[1], inputs[2]
+	if startN.DType() != limitN.DType() || deltaN.DType() != limitN.DType() ||
+		!startN.IsScalar() || !limitN.IsScalar() || !deltaN.IsScalar() {
+		exceptions.Panicf("Range(scalar, limit, delta) all operands must have same scalar dtypes, got %s, %s, %s instead",
+			startN.Shape(), limitN.Shape(), deltaN.Shape())
+	}
+	startT, err := m.materializeConstantExpression(node.Input[0], convertedOutputs)
+	if err != nil {
+		panic(errors.WithMessagef(err, "while converting 'start' to a static value for node %s", nodeToString(node)))
+	}
+	limitT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+	if err != nil {
+		panic(errors.WithMessagef(err, "while converting 'limit' to a static value for node %s", nodeToString(node)))
+	}
+	deltaT, err := m.materializeConstantExpression(node.Input[2], convertedOutputs)
+	if err != nil {
+		panic(errors.WithMessagef(err, "while converting 'delta' to a static value for node %s", nodeToString(node)))
+	}
+
+	// Find the number of elements:
+	count := rangeCount(startN.Graph().Backend(), startT, limitT, deltaT)
+	g := startN.Graph()
+	dtype := startN.DType()
+
+	// Range is the iota, scaled by delta and shifted by start.
+	output := Iota(g, shapes.Make(dtype, count), 0)
+	output = Add(Mul(output, deltaN), startN)
+	return output
+}
+
+// isUnsigned returns whether the dtype is unsigned.
+// TODO: after gopjrt > v.0.4.5 is released, used DType.IsUnsigned instead.
+func isUnsigned(dtype dtypes.DType) bool {
+	return dtype == dtypes.Uint8 || dtype == dtypes.Uint16 || dtype == dtypes.Uint32 || dtype == dtypes.Uint64
+}
+
+func rangeCount(backend backends.Backend, start, limit, delta *tensors.Tensor) int {
+	count := ExecOnce(backend, func(start, limit, delta *Node) *Node {
+		amount := Sub(limit, start)
+		var count *Node
+		if start.DType().IsFloat() {
+			// Float rounding up.
+			count = Ceil(Div(amount, delta))
+		} else {
+			// Int rounding up.
+			var roundUp *Node
+			if isUnsigned(delta.DType()) {
+				roundUp = AddScalar(delta, -1)
+			} else {
+				roundUp = Add(delta, Neg(Sign(delta))) // -1 if delta is positive, +1 if delta is negative.
+			}
+			amount = Add(amount, roundUp)
+			count = Div(amount, delta)
+		}
+		return ConvertDType(count, dtypes.Int64)
+	}, start, limit, delta)
+	return int(tensors.ToScalar[int64](count))
 }
