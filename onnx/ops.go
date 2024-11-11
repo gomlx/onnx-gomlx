@@ -193,6 +193,64 @@ func onnxGather(data, indices *Node, gatherAxis int) *Node {
 	return TransposeAllDims(transposed, axesPermutation...)
 }
 
+// convertGatherElements converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__GatherElements.html
+func convertGatherElements(node *protos.NodeProto, inputs []*Node) *Node {
+	axis := getIntAttrOr(node, "axis", 0)
+	gatherAxis := AdjustAxisToOperandRank(inputs[0], axis)
+	if gatherAxis >= inputs[0].Rank() || gatherAxis < 0 {
+		exceptions.Panicf("Gather(data, indices, axis=%d), axis within d.Rank()=%d range", axis, inputs[0].Rank())
+	}
+	if inputs[0].Rank() != inputs[1].Rank() {
+		exceptions.Panicf("Gather(data=%s, indices=%s, axis=%d): data and indices must have the same rank", inputs[0].Shape(), inputs[1].Shape(), axis)
+	}
+	return onnxGather(inputs[0], inputs[1], gatherAxis)
+}
+
+func onnxGatherElements(data *Node, indices *Node, gatherAxis int) *Node {
+	outputShape := data.Shape().Clone()
+	var dataNeedsBroadcasting, indicesNeedBroadcasting bool
+	for axis, dim := range outputShape.Dimensions {
+		if dim == 1 && indices.Shape().Dim(axis) > 1 {
+			outputShape.Dimensions[axis] = indices.Shape().Dim(axis)
+			dataNeedsBroadcasting = true
+		} else if dim > 1 && indices.Shape().Dim(axis) == 1 {
+			indicesNeedBroadcasting = true
+		}
+	}
+	if dataNeedsBroadcasting {
+		data = BroadcastToDims(data, outputShape.Dimensions...)
+	}
+	if indicesNeedBroadcasting {
+		indices = BroadcastToDims(indices, outputShape.Dimensions...)
+	}
+	dataSize := data.Shape().Size()
+
+	// fullIndicesParts is a slice with one value per axis of the data to gather.
+	// Each part will be shaped [dataSize, 1], and it will eventually be concatenated
+	// to shape [size, <data.Rank()>].
+	fullIndicesParts := make([]*Node, 0, data.Rank())
+	iotaShape := indices.Shape().Clone()
+	iotaShape.Dimensions = append(iotaShape.Dimensions, 1)
+	g := data.Graph()
+	for axis := range data.Rank() {
+		var part *Node
+		if axis == gatherAxis {
+			// On the gatherAxis, the index is the one given by the caller.
+			part = Reshape(indices, dataSize, 1)
+		} else {
+			// On all axes that we are not gathering, the indices are the same in input and output.
+			part = Iota(g, iotaShape, axis)
+			part = Reshape(part, dataSize, 1)
+		}
+		fullIndicesParts = append(fullIndicesParts, part)
+	}
+	fullIndices := Concatenate(fullIndicesParts, -1)
+	return Reshape(Gather(data, fullIndices), outputShape.Dimensions...)
+}
+
 // convertShape converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
@@ -617,10 +675,10 @@ func convertTile(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 		panic(errors.WithMessagef(err, "while converting 'repeats' to a static value for node %s", nodeToString(node)))
 	}
 	repeats := tensorToInts(repeatsT)
-	return tile(operand, repeats)
+	return onnxTile(operand, repeats)
 }
 
-func tile(operand *Node, repeats []int) *Node {
+func onnxTile(operand *Node, repeats []int) *Node {
 	if len(repeats) != operand.Rank() {
 		exceptions.Panicf("Tile(input, repeats) must have len(repeats) == input.Rank(), but input.Rank()=%d, and len(repeats)=%d", operand.Rank(), len(repeats))
 	}

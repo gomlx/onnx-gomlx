@@ -4,7 +4,9 @@ import (
 	"fmt"
 	. "github.com/gomlx/gomlx/graph"
 	"github.com/gomlx/gomlx/graph/graphtest"
+	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/gomlx/types/tensors"
+	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )
@@ -52,7 +54,7 @@ func TestTile(t *testing.T) {
 	graphtest.RunTestGraphFn(t, "Tile 1D", func(g *Graph) (inputs, outputs []*Node) {
 		operand := Const(g, []float32{1, 2})
 		inputs = []*Node{operand}
-		outputs = []*Node{tile(operand, []int{2})}
+		outputs = []*Node{onnxTile(operand, []int{2})}
 		return
 	}, []any{
 		[]float32{1, 2, 1, 2},
@@ -61,7 +63,7 @@ func TestTile(t *testing.T) {
 	graphtest.RunTestGraphFn(t, "Tile 2D", func(g *Graph) (inputs, outputs []*Node) {
 		operand := Const(g, [][]float32{{1.0, 1.2}, {2.3, 3.4}, {4.5, 5.7}})
 		inputs = []*Node{operand}
-		outputs = []*Node{tile(operand, []int{1, 2})}
+		outputs = []*Node{onnxTile(operand, []int{1, 2})}
 		return
 	}, []any{
 		[][]float32{
@@ -90,4 +92,34 @@ func TestRangeCount(t *testing.T) {
 	testFn(int32(10), int32(4), int32(-2), 3)
 	testFn(int32(10), int32(5), int32(-2), 3)
 	testFn(float64(10), float64(3.9), float64(-2), 4)
+}
+
+func TestOnnxGatherElement(t *testing.T) {
+	graphtest.RunTestGraphFn(t, "GatherElements", func(g *Graph) (inputs, outputs []*Node) {
+		data := Const(g, [][]float32{{1, 2}, {3, 4}})
+		indices := Const(g, [][]int32{{0, 0}, {1, 0}})
+		inputs = []*Node{data, indices}
+		outputs = []*Node{
+			onnxGatherElements(data, indices, 0),
+			onnxGatherElements(data, indices, 1),
+		}
+		return
+	}, []any{
+		[][]float32{{1, 2}, {3, 2}},
+		[][]float32{{1, 1}, {4, 3}},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "GatherElements w/ indices broadcast", func(g *Graph) (inputs, outputs []*Node) {
+		data := OnePlus(IotaFull(g, shapes.Make(dtypes.Float64, 3, 2)))
+		indices := Const(g, [][]int8{{0}, {0}, {1}})
+		outputs = []*Node{
+			onnxGatherElements(data, indices, 0),
+			onnxGatherElements(data, indices, 1),
+		}
+		return
+	}, []any{
+		[][]float64{{1, 2}, {1, 2}, {3, 4}},
+		[][]float64{{1, 1}, {3, 3}, {6, 6}},
+	}, -1)
+
 }

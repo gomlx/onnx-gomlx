@@ -251,6 +251,8 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 		res = convertConstant(node, g)
 	case "Gather":
 		res = convertGather(node, inputs)
+	case "GatherElements":
+		res = convertGatherElements(node, inputs)
 	case "Shape":
 		res = convertShape(node, inputs)
 	case "Concat":
