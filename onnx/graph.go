@@ -227,6 +227,16 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 		res = Erf(inputs[0])
 	case "Relu":
 		res = activations.Relu(inputs[0])
+	case "Abs":
+		res = Abs(inputs[0])
+	case "Neg":
+		res = Neg(inputs[0])
+	case "Sign":
+		res = Sign(inputs[0])
+	case "Ceil":
+		res = Ceil(inputs[0])
+	case "Floor":
+		res = Floor(inputs[0])
 	case "Identity":
 		res = Identity(inputs[0])
 
