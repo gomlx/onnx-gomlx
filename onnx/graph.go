@@ -239,6 +239,10 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 		res = Floor(inputs[0])
 	case "Identity":
 		res = Identity(inputs[0])
+	case "Not":
+		res = LogicalNot(inputs[0])
+	case "Tanh":
+		res = Tanh(inputs[0])
 
 		// Ops with equivalents:
 	case "MatMul":
