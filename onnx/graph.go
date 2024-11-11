@@ -274,7 +274,7 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 	case "Gemm":
 		res = convertGemm(node, inputs)
 
-		// Ops that require contant-expression materialization:
+		// Ops that require constant sub-expression materialization:
 		// they take dynamic (graph) values in ONNX, but only take static values in XLA
 	case "Squeeze":
 		res = convertSqueeze(m, convertedOutputs, node, inputs)
