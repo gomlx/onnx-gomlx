@@ -11,6 +11,29 @@ import (
 	"testing"
 )
 
+func TestONNXWhere(t *testing.T) {
+	graphtest.RunTestGraphFn(t, "Where(): Dense", func(g *Graph) (inputs, outputs []*Node) {
+		cond := ConvertDType(Iota(g, shapes.Make(dtypes.Int32, 3, 2), -1), dtypes.Bool)
+		onTrue := OnePlus(IotaFull(g, shapes.Make(dtypes.Float32, 3, 2)))
+		onFalse := Neg(onTrue)
+		inputs = []*Node{cond, onTrue, onFalse}
+		outputs = []*Node{
+			onnxWhere([]*Node{cond, onTrue, onFalse}),
+			onnxWhere([]*Node{Const(g, true), onTrue, onFalse}),
+			onnxWhere([]*Node{Const(g, false), onTrue, onFalse}),
+			onnxWhere([]*Node{cond, Const(g, float32(100)), onFalse}),
+			onnxWhere([]*Node{cond, onTrue, Const(g, []float32{100, 1000})}),
+		}
+		return
+	}, []any{
+		[][]float32{{-1, 2}, {-3, 4}, {-5, 6}},
+		[][]float32{{1, 2}, {3, 4}, {5, 6}},
+		[][]float32{{-1, -2}, {-3, -4}, {-5, -6}},
+		[][]float32{{-1, 100}, {-3, 100}, {-5, 100}},
+		[][]float32{{100, 2}, {100, 4}, {100, 6}},
+	}, -1)
+}
+
 func TestONNXGather(t *testing.T) {
 	graphtest.RunTestGraphFn(t, "onnxGather(axis=0)", func(g *Graph) (inputs, outputs []*Node) {
 		data := Const(g, [][]float32{{1.0, 1.2}, {2.3, 3.4}, {4.5, 5.7}})
@@ -94,7 +117,7 @@ func TestRangeCount(t *testing.T) {
 	testFn(float64(10), float64(3.9), float64(-2), 4)
 }
 
-func TestOnnxGatherElement(t *testing.T) {
+func TestOnnxGatherElements(t *testing.T) {
 	graphtest.RunTestGraphFn(t, "GatherElements", func(g *Graph) (inputs, outputs []*Node) {
 		data := Const(g, [][]float32{{1, 2}, {3, 4}})
 		indices := Const(g, [][]int32{{0, 0}, {1, 0}})
@@ -109,17 +132,28 @@ func TestOnnxGatherElement(t *testing.T) {
 		[][]float32{{1, 1}, {4, 3}},
 	}, -1)
 
-	graphtest.RunTestGraphFn(t, "GatherElements w/ indices broadcast", func(g *Graph) (inputs, outputs []*Node) {
+	graphtest.RunTestGraphFn(t, "GatherElements w/ incomplete indices", func(g *Graph) (inputs, outputs []*Node) {
 		data := OnePlus(IotaFull(g, shapes.Make(dtypes.Float64, 3, 2)))
-		indices := Const(g, [][]int8{{0}, {0}, {1}})
+		indices0 := Const(g, [][]int8{{1, 2}})
+		indices1 := Const(g, [][]int8{{0}, {0}, {1}})
 		outputs = []*Node{
-			onnxGatherElements(data, indices, 0),
-			onnxGatherElements(data, indices, 1),
+			onnxGatherElements(data, indices0, 0),
+			onnxGatherElements(data, indices1, 1),
 		}
 		return
 	}, []any{
-		[][]float64{{1, 2}, {1, 2}, {3, 4}},
-		[][]float64{{1, 1}, {3, 3}, {6, 6}},
+		[][]float64{{3, 6}},
+		[][]float64{{1}, {3}, {6}},
 	}, -1)
 
+	graphtest.RunTestGraphFn(t, "GatherElements: shape test with larger shapes", func(g *Graph) (inputs, outputs []*Node) {
+		data := IotaFull(g, shapes.Make(dtypes.Float64, 3, 2, 512))
+		indices := Iota(g, shapes.Make(dtypes.Int64, 3, 2, 7), 0)
+		outputs = []*Node{
+			Const(g, onnxGatherElements(data, indices, 2).Shape().Dimensions),
+		}
+		return
+	}, []any{
+		[]int64{3, 2, 7},
+	}, -1)
 }

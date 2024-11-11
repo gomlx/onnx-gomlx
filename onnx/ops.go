@@ -12,6 +12,7 @@ import (
 	"github.com/gomlx/onnx-gomlx/internal/togomlx"
 	"github.com/pkg/errors"
 	"reflect"
+	"slices"
 )
 
 // This file implements the ONNX operators that don't have a direct corresponding GoMLX operator.
@@ -19,20 +20,88 @@ import (
 // gomlxBinaryOp is a GoMLX binary op. Used by convertBinaryOp.
 type gomlxBinaryOp func(lhs, rhs *Node) *Node
 
+// onnxImplicitExpansion expands operands to the largest rank, expanding to the left.
+// This is part of ONNX implicit broadcasting rule.
+// Scalars are left untouched, because generally, XLA will broadcast them.
+//
+// Returns the list of broadcast operands.
+func onnxImplicitBroadcast(operands []*Node) []*Node {
+	ranks := sliceMap(operands, func(n *Node) int { return n.Rank() })
+	maxRank := slices.Max(ranks)
+	return sliceMap(operands, func(n *Node) *Node {
+		if n.IsScalar() || n.Rank() == maxRank {
+			return n
+		}
+		return ExpandLeftToRank(n, maxRank)
+	})
+}
+
 // convertBinaryOp applies ONNX broadcasting rule before calling the fn.
 //
 // It differs from GoMLX and XLA in that it automatically prepend 1-dimensional axes to
 // any of the operands, if they differ in rank.
 func convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
-	if lhs.IsScalar() || rhs.IsScalar() {
-		return fn(lhs, rhs)
+	operands := onnxImplicitBroadcast([]*Node{lhs, rhs})
+	return fn(operands[0], operands[1])
+}
+
+// convertClip converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Clip.html
+//
+// Notice max/min values are optional, hence the special conversion code.
+func convertClip(node *protos.NodeProto, inputs []*Node) *Node {
+	if len(inputs) == 1 {
+		return inputs[0]
 	}
-	if lhs.Rank() < rhs.Rank() {
-		lhs = ExpandLeftToRank(lhs, rhs.Rank())
-	} else if rhs.Rank() < lhs.Rank() {
-		rhs = ExpandLeftToRank(rhs, lhs.Rank())
+	if len(inputs) == 2 {
+		return Max(inputs[0], inputs[1])
 	}
-	return fn(lhs, rhs)
+	return Min(inputs[2], Max(inputs[0], inputs[1]))
+}
+
+// convertWhere converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Where.html
+//
+// Notice broadcast rules for ONNX are difference, hence the special conversion code.
+func convertWhere(node *protos.NodeProto, inputs []*Node) *Node {
+	var output *Node
+	err := exceptions.TryCatch[error](func() { output = onnxWhere(inputs) })
+	if err != nil {
+		panic(errors.WithMessagef(err, "converting node %s", node))
+	}
+	return output
+}
+
+// onnxWhere implements ONNX implicit broadcasting rules.
+// inputs is a tuple with (cond, onTrue, onFalse) values.
+func onnxWhere(inputs []*Node) *Node {
+	// Broadcast according to ONNX rules.
+	inputs = onnxImplicitBroadcast(inputs)
+	ranks := sliceMap(inputs, func(n *Node) int { return n.Rank() })
+	maxRank := slices.Max(ranks)
+	maxDims := make([]int, maxRank)
+	for axis := range maxRank {
+		allDims := sliceMap(inputs, func(n *Node) int {
+			if n.IsScalar() {
+				return 1
+			}
+			return n.Shape().Dim(axis)
+		})
+		maxDims[axis] = slices.Max(allDims)
+	}
+	for ii, input := range inputs {
+		if !input.IsScalar() {
+			inputs[ii] = BroadcastToDims(input, maxDims...)
+		}
+	}
+
+	// Now we can use GoMLX Where:
+	cond, onTrue, onFalse := inputs[0], inputs[1], inputs[2]
+	return Where(cond, onTrue, onFalse)
 }
 
 ////////////////////////////////////////////////////////////////////
@@ -206,31 +275,26 @@ func convertGatherElements(node *protos.NodeProto, inputs []*Node) *Node {
 	if inputs[0].Rank() != inputs[1].Rank() {
 		exceptions.Panicf("Gather(data=%s, indices=%s, axis=%d): data and indices must have the same rank", inputs[0].Shape(), inputs[1].Shape(), axis)
 	}
-	return onnxGather(inputs[0], inputs[1], gatherAxis)
+	var output *Node
+	err := exceptions.TryCatch[error](func() { output = onnxGatherElements(inputs[0], inputs[1], gatherAxis) })
+	if err != nil {
+		panic(errors.WithMessagef(err, "converting node %s", node))
+	}
+	return output
 }
 
 func onnxGatherElements(data *Node, indices *Node, gatherAxis int) *Node {
-	outputShape := data.Shape().Clone()
-	var dataNeedsBroadcasting, indicesNeedBroadcasting bool
-	for axis, dim := range outputShape.Dimensions {
-		if dim == 1 && indices.Shape().Dim(axis) > 1 {
-			outputShape.Dimensions[axis] = indices.Shape().Dim(axis)
-			dataNeedsBroadcasting = true
-		} else if dim > 1 && indices.Shape().Dim(axis) == 1 {
-			indicesNeedBroadcasting = true
+	indicesDims := indices.Shape().Dimensions
+	indicesSize := indices.Shape().Size()
+	for axis, dim := range indicesDims {
+		if axis != gatherAxis && dim != data.Shape().Dim(axis) {
+			exceptions.Panicf("Gather(data=%s, indices=%s, gatherAxis=%d): data and indices must have the same shape except on the gather axis, but axis #%d are different", data.Shape(), indices.Shape(), gatherAxis, axis)
 		}
 	}
-	if dataNeedsBroadcasting {
-		data = BroadcastToDims(data, outputShape.Dimensions...)
-	}
-	if indicesNeedBroadcasting {
-		indices = BroadcastToDims(indices, outputShape.Dimensions...)
-	}
-	dataSize := data.Shape().Size()
 
 	// fullIndicesParts is a slice with one value per axis of the data to gather.
-	// Each part will be shaped [dataSize, 1], and it will eventually be concatenated
-	// to shape [size, <data.Rank()>].
+	// Each part will be shaped [indicesSize, 1], and it will eventually be concatenated
+	// to shape [indicesSize, <data.Rank()>].
 	fullIndicesParts := make([]*Node, 0, data.Rank())
 	iotaShape := indices.Shape().Clone()
 	iotaShape.Dimensions = append(iotaShape.Dimensions, 1)
@@ -239,16 +303,17 @@ func onnxGatherElements(data *Node, indices *Node, gatherAxis int) *Node {
 		var part *Node
 		if axis == gatherAxis {
 			// On the gatherAxis, the index is the one given by the caller.
-			part = Reshape(indices, dataSize, 1)
+			part = Reshape(indices, indicesSize, 1)
 		} else {
 			// On all axes that we are not gathering, the indices are the same in input and output.
 			part = Iota(g, iotaShape, axis)
-			part = Reshape(part, dataSize, 1)
+			part = Reshape(part, indicesSize, 1)
 		}
 		fullIndicesParts = append(fullIndicesParts, part)
 	}
 	fullIndices := Concatenate(fullIndicesParts, -1)
-	return Reshape(Gather(data, fullIndices), outputShape.Dimensions...)
+	output := Reshape(Gather(data, fullIndices), indicesDims...)
+	return output
 }
 
 // convertShape converts a ONNX node to a GoMLX node.
@@ -322,6 +387,9 @@ func convertTranspose(node *protos.NodeProto, inputs []*Node) *Node {
 		for axis := range permutations {
 			permutations[axis] = operand.Rank() - axis - 1
 		}
+	}
+	if len(permutations) != operand.Rank() {
+		exceptions.Panicf("Tranpose(data=%s, perm=%v) must have one permutation value per axis of the data: %s", operand.Shape(), permutations, nodeToString(node))
 	}
 	return TransposeAllDims(operand, permutations...)
 }

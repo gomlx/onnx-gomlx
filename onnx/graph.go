@@ -243,8 +243,12 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 		// Ops with equivalents:
 	case "MatMul":
 		res = MatMul(inputs[0], inputs[1])
+
+	// Ops with special behavior:
+	case "Clip":
+		res = convertClip(node, inputs)
 	case "Where":
-		res = Where(inputs[0], inputs[1], inputs[2])
+		res = convertWhere(node, inputs)
 
 		// Ops with attributes:
 	case "Constant":
