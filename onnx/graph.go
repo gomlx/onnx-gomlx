@@ -256,6 +256,8 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 		res = convertConstantOfShape(m, convertedOutputs, node, inputs)
 	case "Expand":
 		res = convertExpand(m, convertedOutputs, node, inputs)
+	case "Tile":
+		res = convertTile(m, convertedOutputs, node, inputs)
 
 	default:
 		exceptions.Panicf("unimplemented ONNX %s", nodeToString(node))

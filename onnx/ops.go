@@ -598,3 +598,57 @@ func convertExpand(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 	}
 	return BroadcastToDims(operand, dims...)
 }
+
+// convertTile converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Tile.html
+func convertTile(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	operand := inputs[0]
+	repeatsN := inputs[1]
+	if !repeatsN.DType().IsInt() {
+		exceptions.Panicf("Tile(input, repeats): repeats (shape) must be integer, got %s for node %s", repeatsN.DType(), nodeToString(node))
+	}
+	var repeats []int // Default is a scalar.
+	if repeatsN.Shape().Size() > 0 {
+		dimsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+		if err != nil {
+			panic(errors.WithMessagef(err, "while converting 'repeats' for node %s", nodeToString(node)))
+		}
+		repeats = tensorToInts(dimsT)
+	}
+	return tile(operand, repeats)
+}
+
+func tile(operand *Node, repeats []int) *Node {
+	if len(repeats) != operand.Rank() {
+		exceptions.Panicf("Tile(input, repeats) must have len(repeats) == input.Rank(), but input.Rank()=%d, and len(repeats)=%d", operand.Rank(), len(repeats))
+	}
+	for _, r := range repeats {
+		if r < 1 {
+			exceptions.Panicf("Tile(input, repeats) must have repeats >= 1, got %v instead", repeats)
+		}
+	}
+
+	// Insert new axes to be broadcast (repeated).
+	insertAxes := make([]int, len(repeats))
+	for ii := range insertAxes {
+		insertAxes[ii] = ii
+	}
+	output := InsertAxes(operand, insertAxes...)
+
+	// Broadcast with repeats in interleaved inserted dimensions.
+	newShape := output.Shape().Clone()
+	for ii := 0; ii < newShape.Rank(); ii += 2 {
+		newShape.Dimensions[ii] = repeats[ii/2]
+	}
+	output = BroadcastToDims(output, newShape.Dimensions...)
+
+	// Merge inserted dimensions to get he tiling.
+	newShape = operand.Shape().Clone()
+	for axis := range newShape.Dimensions {
+		newShape.Dimensions[axis] *= repeats[axis]
+	}
+	output = Reshape(output, newShape.Dimensions...)
+	return output
+}

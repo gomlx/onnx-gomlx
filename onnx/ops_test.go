@@ -43,5 +43,28 @@ func TestONNXGather(t *testing.T) {
 			{{4.5, 5.9}},
 		},
 	}, -1)
+}
 
+func TestTile(t *testing.T) {
+	graphtest.RunTestGraphFn(t, "Tile 1D", func(g *Graph) (inputs, outputs []*Node) {
+		operand := Const(g, []float32{1, 2})
+		inputs = []*Node{operand}
+		outputs = []*Node{tile(operand, []int{2})}
+		return
+	}, []any{
+		[]float32{1, 2, 1, 2},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "Tile 2D", func(g *Graph) (inputs, outputs []*Node) {
+		operand := Const(g, [][]float32{{1.0, 1.2}, {2.3, 3.4}, {4.5, 5.7}})
+		inputs = []*Node{operand}
+		outputs = []*Node{tile(operand, []int{1, 2})}
+		return
+	}, []any{
+		[][]float32{
+			{1.0, 1.2, 1.0, 1.2},
+			{2.3, 3.4, 2.3, 3.4},
+			{4.5, 5.7, 4.5, 5.7},
+		},
+	}, -1)
 }
