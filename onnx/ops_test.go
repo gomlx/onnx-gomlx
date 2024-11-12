@@ -157,3 +157,22 @@ func TestOnnxGatherElements(t *testing.T) {
 		[]int64{3, 2, 7},
 	}, -1)
 }
+
+func TestONNXCumSum(t *testing.T) {
+	graphtest.RunTestGraphFn(t, "CumSum", func(g *Graph) (inputs, outputs []*Node) {
+		operand := Const(g, []float32{1, 2, 3})
+		inputs = []*Node{operand}
+		outputs = []*Node{
+			onnxCumSum(operand, 0, false, false),
+			onnxCumSum(operand, 0, true, false),
+			onnxCumSum(operand, 0, false, true),
+			onnxCumSum(operand, 0, true, true),
+		}
+		return
+	}, []any{
+		[]float32{1, 3, 6},
+		[]float32{0, 1, 3},
+		[]float32{6, 5, 3},
+		[]float32{5, 3, 0},
+	}, -1)
+}

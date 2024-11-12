@@ -51,7 +51,7 @@ func convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
 // https://onnx.ai/onnx/operators/onnx__Clip.html
 //
 // Notice max/min values are optional, hence the special conversion code.
-func convertClip(node *protos.NodeProto, inputs []*Node) *Node {
+func convertClip(_ *protos.NodeProto, inputs []*Node) *Node {
 	if len(inputs) == 1 {
 		return inputs[0]
 	}
@@ -160,7 +160,7 @@ func getIntAttrOr(node *protos.NodeProto, attrName string, defaultValue int) int
 	return int(attr.I)
 }
 
-// getBoolAttrOr gets a boolean attribute (ONNX uses a int value of 0 or 1) for node if present or return the given defaultValue.
+// getBoolAttrOr gets a boolean attribute (ONNX uses an int value of 0 or 1) for node if present or return the given defaultValue.
 // It panics with an error message if the attribute is present but is of the wrong type.
 func getBoolAttrOr(node *protos.NodeProto, attrName string, defaultValue bool) bool {
 	defaultInt := 0
@@ -713,7 +713,7 @@ func convertExpand(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 	} else if len(dims) < operand.Rank() {
 		// Prepend 1-dimensional axes to match original operand rank.
 		newDims := make([]int, 0, operand.Rank())
-		for _ = range operand.Rank() - len(dims) {
+		for range operand.Rank() - len(dims) {
 			newDims = append(newDims, 1)
 		}
 		newDims = append(newDims, dims...)
@@ -841,4 +841,42 @@ func rangeCount(backend backends.Backend, start, limit, delta *tensors.Tensor) i
 		return ConvertDType(count, dtypes.Int64)
 	}, start, limit, delta)
 	return int(tensors.ToScalar[int64](count))
+}
+
+// convertCumSum converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__CumSum.html
+func convertCumSum(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	operand := inputs[0]
+	exclusiveAttr := getBoolAttrOr(node, "exclusive", false)
+	reverseAttr := getBoolAttrOr(node, "reverse", false)
+
+	axisN := inputs[1]
+	if !axisN.DType().IsInt() || !axisN.IsScalar() {
+		exceptions.Panicf("axis (shape) must be a scalar integer, got %s for node %s", axisN.Shape(), nodeToString(node))
+	}
+	axisT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+	if err != nil {
+		panic(errors.WithMessagef(err, "while converting 'axis' to a static value for node %s", nodeToString(node)))
+	}
+	axis := tensorToInts(axisT)[0]
+	return onnxCumSum(operand, axis, exclusiveAttr, reverseAttr)
+}
+
+// onnxCumSum adds "exclusive" and "reverse" options to the normal CumSum.
+// TODO: reimplement exclusive/reverse by changing original CumSum implementation: it will be much more efficient.
+func onnxCumSum(operand *Node, axis int, exclusive, reverse bool) *Node {
+	adjustedAxis := AdjustAxisToOperandRank(operand, axis)
+	if reverse {
+		operand = Reverse(operand, adjustedAxis)
+	}
+	output := CumSum(operand, axis)
+	if exclusive {
+		output = ShiftWithScalar(output, adjustedAxis, ShiftDirRight, 1, 0)
+	}
+	if reverse {
+		output = Reverse(output, adjustedAxis)
+	}
+	return output
 }

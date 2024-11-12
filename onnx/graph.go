@@ -294,6 +294,8 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 		res = convertTile(m, convertedOutputs, node, inputs)
 	case "Range":
 		res = convertRange(m, convertedOutputs, node, inputs)
+	case "CumSum":
+		res = convertCumSum(m, convertedOutputs, node, inputs)
 
 	default:
 		exceptions.Panicf("unimplemented ONNX %s", nodeToString(node))
