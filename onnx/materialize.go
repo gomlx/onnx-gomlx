@@ -1,11 +1,14 @@
 package onnx
 
 import (
+	"fmt"
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/graph"
 	"github.com/gomlx/gomlx/types"
 	"github.com/gomlx/gomlx/types/tensors"
+	"github.com/gomlx/onnx-gomlx/internal/togomlx"
 	"github.com/pkg/errors"
+	"strings"
 )
 
 // nonConstantDependencies returns the non-constant dependencies: inputs or variables.
@@ -20,6 +23,10 @@ func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes types
 	visitedNodes.Insert(name)
 	if _, found := m.variableNameToValue[name]; found {
 		// Record a variable dependency.
+		if m.isVariableConstant(name) {
+			// Constant variable, ok.
+			return nonConstInputs, variables
+		}
 		variables = append(variables, name)
 		return nonConstInputs, variables
 	}
@@ -51,6 +58,29 @@ func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes types
 	return nonConstInputs, variables
 }
 
+// isVariableConstant tries to guess if the variable can be used as a constant during the graph construction.
+// For instance as the dimension for a "Reshape" or axis for a "Slice" method.
+// Some ONNX models use variables instead of constants.
+//
+// varName must be an existing variable name.
+func (m *Model) isVariableConstant(varName string) bool {
+	sizeLimit := 100 // Max size to be accepted as constant.
+	lowerName := strings.ToLower(varName)
+	if strings.Index(lowerName, "constant") >= 0 {
+		// If there is "constant" in the name, we assume constant at a higher size.
+		sizeLimit = 10_000
+	} else if strings.Index(lowerName, "const") >= 0 {
+		// With less confidence...
+		sizeLimit = 1_000
+	}
+	tensorProto := m.variableNameToValue[varName]
+	shape, err := togomlx.Shape(tensorProto)
+	if err != nil {
+		panic(errors.WithMessagef(err, "ONNX variable %q has an invalid shape", varName))
+	}
+	return shape.DType.IsInt() && shape.Size() <= sizeLimit
+}
+
 // materializeConstantExpression materializes a node to its constant expression.
 //
 // This is required for ONNX ops that take dynamic values (like axes and shapes), but for which GoMLX only accept
@@ -70,15 +100,15 @@ func (m *Model) materializeConstantExpression(nodeOutputName string, convertedOu
 	// See if it is possible: if subgraph that generated the node is a constant expression.
 	nonConstInputs, nonConstVariables := m.nonConstantDependencies(nodeOutputName)
 	if len(nonConstInputs) > 0 || len(nonConstVariables) > 0 {
-		return nil, errors.Errorf("cannot materialize constant/static value for %q: it depends on non-constant: inputs=%q, variables=%q",
-			nodeOutputName, nonConstInputs, nonConstVariables)
-	}
-
-	// Now double check with GoMLX graph that indeed it is a constant expression generated that far:
-	// Notice that while this is (should be) equivalent to checking in the ONNX graph, it doesn't return the names
-	// of the inputs/variables, so it makes for a worse report.
-	if !node.IsConstantExpression() {
-		return nil, errors.Errorf("cannot materialize constant/static value for %q: it depends on non-constant inputs", nodeOutputName)
+		// Add shape info for variables.
+		varDesc := make([]string, 0, len(nonConstVariables))
+		for _, varName := range nonConstVariables {
+			// We discard the error, because we know this conversion works already, to have reached this point.
+			shape, _ := togomlx.Shape(m.variableNameToValue[varName])
+			varDesc = append(varDesc, fmt.Sprintf("%q (%s)", varName, shape))
+		}
+		return nil, errors.Errorf("cannot materialize constant/static value for %q: it depends on non-constant: inputs=%q, variables: %s",
+			nodeOutputName, nonConstInputs, strings.Join(varDesc, ", "))
 	}
 
 	// Evaluate constant sub-expression in a newly created sub-graph.
@@ -114,6 +144,21 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 			return
 		}
 	}
+
+	// Check for constant variables.
+	if tensorNode, found := m.variableNameToValue[nodeOutputName]; found {
+		if !m.isVariableConstant(nodeOutputName) {
+			exceptions.Panicf("attempting to materialize as constant variable %q, which we don't think is constant", nodeOutputName)
+		}
+		t, err := togomlx.Tensor(tensorNode)
+		if err != nil {
+			panic(errors.WithMessagef(err, "attempting to materialize variable %q as constant", nodeOutputName))
+		}
+		constConvertedOutputs[nodeOutputName] = Const(g, t)
+		return
+	}
+
+	// Find node generating this output.
 	onnxNode, found := m.nodeOutputToNode[nodeOutputName]
 	if !found {
 		exceptions.Panicf("ONNX node %q not found as the output of an Op, and not a constant either -- is this really a constant expression!?", nodeOutputName)
