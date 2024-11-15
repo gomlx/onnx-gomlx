@@ -1,4 +1,4 @@
-# v0.1.1
+# v0.1.1 - 2024/11/15
 
 * Assume some variables are constant during constant-expression evaluation.
 * Improved pretty-printing of attributes: include their values for small values.
