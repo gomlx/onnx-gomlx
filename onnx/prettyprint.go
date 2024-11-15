@@ -99,9 +99,9 @@ func (m *Model) String() string {
 
 func ppValueInfo(vi *protos.ValueInfoProto) string {
 	if vi.DocString != "" {
-		return fmt.Sprintf("%s: %s  # %s", vi.Name, ppType(vi.Type), vi.DocString)
+		return fmt.Sprintf("%q: %s  # %s", vi.Name, ppType(vi.Type), vi.DocString)
 	}
-	return fmt.Sprintf("%s: %s", vi.Name, ppType(vi.Type))
+	return fmt.Sprintf("%q: %s", vi.Name, ppType(vi.Type))
 }
 
 func ppType(t *protos.TypeProto) string {
@@ -150,7 +150,26 @@ func (m *Model) PrintGraph(writer io.Writer) error {
 				if ii > 0 {
 					w(", ")
 				}
-				w("%s (%s)", attr.Name, attr.Type)
+				w("%s (%s", attr.Name, attr.Type)
+				switch attr.Type {
+				case protos.AttributeProto_TENSOR:
+					shape, err := togomlx.Shape(attr.T)
+					if err != nil {
+						w(" - unparseable shape: %v", err)
+					} else {
+						w(": %s", shape)
+					}
+				case protos.AttributeProto_INT:
+					w(": %d", attr.I)
+				case protos.AttributeProto_INTS:
+					if len(attr.Ints) < 20 {
+						w(": %v", attr.Ints)
+					}
+				case protos.AttributeProto_FLOAT:
+					w(": %f", attr.F)
+				default:
+				}
+				w(")")
 			}
 			w("\n")
 		}

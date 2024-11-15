@@ -156,6 +156,10 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 
 	// Recursively converts the inputs of the onnxNode:
 	for _, inputName := range onnxNode.Input {
+		if inputName == "" {
+			// Probably an optional parameter, not used. LSTM nodes have this.
+			continue
+		}
 		m.recursiveCallGraph(ctx, g, inputName, convertedOutputs)
 	}
 
