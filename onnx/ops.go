@@ -5,6 +5,8 @@ import (
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/backends"
 	. "github.com/gomlx/gomlx/graph"
+	"github.com/gomlx/gomlx/ml/context"
+	"github.com/gomlx/gomlx/ml/layers/lstm"
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/gomlx/types/tensors"
 	"github.com/gomlx/gopjrt/dtypes"
@@ -171,7 +173,7 @@ func getBoolAttrOr(node *protos.NodeProto, attrName string, defaultValue bool) b
 	return intValue != 0
 }
 
-// getFloatAttrOr gets an integer attribute for node if present or return the given defaultValue.
+// getFloatAttrOr gets a float attribute for node if present or return the given defaultValue.
 // It panics with an error message if the attribute is present but is of the wrong type.
 func getFloatAttrOr(node *protos.NodeProto, attrName string, defaultValue float32) float32 {
 	attr := getNodeAttr(node, attrName, false)
@@ -180,6 +182,17 @@ func getFloatAttrOr(node *protos.NodeProto, attrName string, defaultValue float3
 	}
 	assertNodeAttrType(node, attr, protos.AttributeProto_FLOAT)
 	return attr.F
+}
+
+// getStringAttrOr gets a string attribute for node if present or return the given defaultValue.
+// It panics with an error message if the attribute is present but is of the wrong type.
+func getStringAttrOr(node *protos.NodeProto, attrName string, defaultValue string) string {
+	attr := getNodeAttr(node, attrName, false)
+	if attr == nil {
+		return defaultValue
+	}
+	assertNodeAttrType(node, attr, protos.AttributeProto_STRING)
+	return string(attr.S)
 }
 
 // getIntsAttrOr gets an integer list attribute for node if present or return the given defaultValues.
@@ -191,6 +204,28 @@ func getIntsAttrOr(node *protos.NodeProto, attrName string, defaultValues []int)
 	}
 	assertNodeAttrType(node, attr, protos.AttributeProto_INTS)
 	return sliceMap(attr.Ints, func(i int64) int { return int(i) })
+}
+
+// getFloatsAttrOr gets a float list attribute for node if present or return the given defaultValues.
+// It panics with an error message if the attribute is present but is of the wrong type.
+func getFloatsAttrOr(node *protos.NodeProto, attrName string, defaultValues []float32) []float32 {
+	attr := getNodeAttr(node, attrName, false)
+	if attr == nil {
+		return defaultValues
+	}
+	assertNodeAttrType(node, attr, protos.AttributeProto_FLOATS)
+	return attr.Floats
+}
+
+// getStringsAttrOr gets a string list attribute for node if present or return the given defaultValues.
+// It panics with an error message if the attribute is present but is of the wrong type.
+func getStringsAttrOr(node *protos.NodeProto, attrName string, defaultValues []string) []string {
+	attr := getNodeAttr(node, attrName, false)
+	if attr == nil {
+		return defaultValues
+	}
+	assertNodeAttrType(node, attr, protos.AttributeProto_STRINGS)
+	return sliceMap(attr.Strings, func(v []byte) string { return string(v) })
 }
 
 // convertConstant converts a ONNX node to a GoMLX node.
@@ -879,4 +914,117 @@ func onnxCumSum(operand *Node, axis int, exclusive, reverse bool) *Node {
 		output = Reverse(output, adjustedAxis)
 	}
 	return output
+}
+
+////////////////////////////////////////////////////////////////////
+//
+// Ops that take context
+//
+////////////////////////////////////////////////////////////////////
+
+// convertLSTM converts a ONNX node to a GoMLX node.
+//
+// The GoMLX version used ONNX version as inspiration, so they have the same feature support.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__LSTM.html
+func convertLSTM(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, ctx *context.Context, inputs []*Node) *Node {
+	if ctx == nil {
+		exceptions.Panicf("can't convert LSTM node without a context -- this is likely a bug")
+	}
+	// Inputs
+	{
+		newInputs := make([]*Node, 8)
+		copy(newInputs, inputs)
+		inputs = newInputs
+	}
+	operand := inputs[0]
+	inputsW := inputs[1]
+	recurrentW := inputs[2]
+	biasesW := inputs[3]
+	operandLengths := inputs[4]
+	initialHidden := inputs[5]
+	initialCell := inputs[6]
+	peepholeW := inputs[7]
+
+	// Reshape compacted weights.
+	numDirections := inputsW.Shape().Dim(0)
+	featuresDim := inputsW.Shape().Dim(-1)
+	inputsW = Reshape(inputsW, numDirections, 4, -1, featuresDim)
+	hiddenDim := inputsW.Shape().Dim(2)
+	recurrentW = Reshape(recurrentW, numDirections, 4, hiddenDim, hiddenDim)
+	biasesW = Reshape(biasesW, numDirections, 8, hiddenDim)
+
+	// Attributes:
+	activationAlpha := getFloatAttrOr(node, "activation_alpha", 0.01)
+	activationBeta := getFloatsAttrOr(node, "activation_alpha", nil)
+	activations := getStringsAttrOr(node, "activations", nil)
+	if activations != nil {
+		exceptions.Panicf("LSTM custom activaitons is not supported yet -- pls open an issue on github.com/gomlx/onnx-gomlx")
+	}
+	_, _ = activationAlpha, activationBeta
+	clip := getFloatAttrOr(node, "clip", 0)
+	if clip != 0 {
+		exceptions.Panicf("LSTM clip is not supported yet -- pls open an issue on github.com/gomlx/onnx-gomlx")
+	}
+	directionAttr := getStringAttrOr(node, "direction", "forward")
+	var direction lstm.DirectionType
+	switch directionAttr {
+	case "forward":
+		direction = lstm.DirForward
+	case "reverse":
+		direction = lstm.DirReverse
+	case "bidirectional":
+		direction = lstm.DirBiDirectional
+	default:
+		exceptions.Panicf("LSTM direction must be 'forward', 'reverse' or 'bidirectional', got %s", directionAttr)
+	}
+	hiddenSize := getIntAttrOr(node, "hidden_size", 0)
+	if hiddenSize != 0 && hiddenSize != inputsW.Shape().Dim(-2) {
+		exceptions.Panicf("LSTM hidden_size (%d) must match inputsW one befere last axis dimension (%s)", hiddenSize, inputsW.Shape())
+	}
+	inputForget := getBoolAttrOr(node, "input_forget", false)
+	if inputForget {
+		exceptions.Panicf("LSTM input_forget is not supported yet -- pls open an issue on github.com/gomlx/onnx-gomlx")
+	}
+	layout := getIntAttrOr(node, "layout", 0)
+
+	// Operand for ONNX has shape [sequenceLength, batchSize, inputSize], we need to transpose to [batchSize, sequenceLength, inputSize]
+	// (Except if layout == 1).
+	switch layout {
+	case 0:
+		operand = TransposeAllDims(operand, 1, 0, 2)
+	case 1:
+		// [batchSize, numDirections, hiddenDim] -> [numDirections, batchSize, hiddenDim]
+		if initialHidden != nil {
+			initialHidden = TransposeAllDims(initialHidden, 1, 0, 2)
+		}
+		if initialCell != nil {
+			initialCell = TransposeAllDims(initialCell, 1, 0, 2)
+		}
+	default:
+		exceptions.Panicf("unsupported layout %d for LSTM: only values 0 or 1 are supported", layout)
+	}
+
+	lstmLayer := lstm.NewWithWeights(ctx, operand, inputsW, recurrentW, biasesW, peepholeW).
+		Ragged(operandLengths).Direction(direction)
+	allHiddenStates, lastHiddenState, lastCellState := lstmLayer.Done()
+
+	// Transpose according to requested layout.
+	switch layout {
+	case 0:
+		lastHiddenState = TransposeAllDims(lastHiddenState, 1, 0, 2)
+		lastCellState = TransposeAllDims(lastCellState, 1, 0, 2)
+	case 1:
+		allHiddenStates = TransposeAllDims(allHiddenStates, 2, 0, 1, 3)
+	}
+
+	if len(node.Output) >= 2 && node.Output[1] != "" {
+		convertedOutputs[node.Output[1]] = lastHiddenState
+	}
+	if len(node.Output) >= 3 && node.Output[2] != "" {
+		convertedOutputs[node.Output[2]] = lastCellState
+	}
+
+	return allHiddenStates
 }

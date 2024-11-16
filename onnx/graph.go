@@ -164,7 +164,13 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 	}
 
 	// Convert the node itself.
-	m.convertNode(g, onnxNode, convertedOutputs)
+	m.convertNode(ctx, g, onnxNode, convertedOutputs)
+}
+
+// opRequiresContext checks if the given operation type requires a context.
+// Currently only LSTM.
+func opRequiresContext(opType string) bool {
+	return opType == "LSTM"
 }
 
 // convertNode converts a single ONNX node to a GoMLX node.
@@ -181,7 +187,7 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 // See the definitions in:
 // . https://openxla.org/xla/broadcasting
 // . https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
-func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs map[string]*Node) {
+func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodeProto, convertedOutputs map[string]*Node) {
 	if node.Overload != "" {
 		exceptions.Panicf("overload %q to in-model function in ONNX model not implemented in node %q", node.Overload, node.Name)
 	}
@@ -300,6 +306,10 @@ func (m *Model) convertNode(g *Graph, node *protos.NodeProto, convertedOutputs m
 		res = convertRange(m, convertedOutputs, node, inputs)
 	case "CumSum":
 		res = convertCumSum(m, convertedOutputs, node, inputs)
+
+	// Ops whose implementation require a context.
+	case "LSTM":
+		res = convertLSTM(m, convertedOutputs, node, ctx, inputs)
 
 	default:
 		exceptions.Panicf("unimplemented ONNX %s", nodeToString(node))
