@@ -307,9 +307,9 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 	case "CumSum":
 		res = convertCumSum(m, convertedOutputs, node, inputs)
 
-	// Ops whose implementation require a context.
+	// Full ML layers ops:
 	case "LSTM":
-		res = convertLSTM(m, convertedOutputs, node, ctx, inputs)
+		res = convertLSTM(m, convertedOutputs, node, inputs)
 
 	default:
 		exceptions.Panicf("unimplemented ONNX %s", nodeToString(node))

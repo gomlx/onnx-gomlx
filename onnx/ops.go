@@ -5,7 +5,6 @@ import (
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/backends"
 	. "github.com/gomlx/gomlx/graph"
-	"github.com/gomlx/gomlx/ml/context"
 	"github.com/gomlx/gomlx/ml/layers/lstm"
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/gomlx/types/tensors"
@@ -918,7 +917,7 @@ func onnxCumSum(operand *Node, axis int, exclusive, reverse bool) *Node {
 
 ////////////////////////////////////////////////////////////////////
 //
-// Ops that take context
+// Ops that are full ML layers.
 //
 ////////////////////////////////////////////////////////////////////
 
@@ -928,10 +927,7 @@ func onnxCumSum(operand *Node, axis int, exclusive, reverse bool) *Node {
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__LSTM.html
-func convertLSTM(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, ctx *context.Context, inputs []*Node) *Node {
-	if ctx == nil {
-		exceptions.Panicf("can't convert LSTM node without a context -- this is likely a bug")
-	}
+func convertLSTM(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	// Inputs
 	{
 		newInputs := make([]*Node, 8)
@@ -975,7 +971,7 @@ func convertLSTM(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	case "reverse":
 		direction = lstm.DirReverse
 	case "bidirectional":
-		direction = lstm.DirBiDirectional
+		direction = lstm.DirBidirectional
 	default:
 		exceptions.Panicf("LSTM direction must be 'forward', 'reverse' or 'bidirectional', got %s", directionAttr)
 	}
@@ -1006,7 +1002,7 @@ func convertLSTM(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 		exceptions.Panicf("unsupported layout %d for LSTM: only values 0 or 1 are supported", layout)
 	}
 
-	lstmLayer := lstm.NewWithWeights(ctx, operand, inputsW, recurrentW, biasesW, peepholeW).
+	lstmLayer := lstm.NewWithWeights(operand, inputsW, recurrentW, biasesW, peepholeW).
 		Ragged(operandLengths).Direction(direction)
 	allHiddenStates, lastHiddenState, lastCellState := lstmLayer.Done()
 
