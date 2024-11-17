@@ -4,11 +4,11 @@ go 1.23
 
 require (
 	github.com/gomlx/exceptions v0.0.3
-	github.com/gomlx/gomlx v0.15.0
-	github.com/gomlx/gopjrt v0.4.4
+	github.com/gomlx/gomlx v0.15.2
+	github.com/gomlx/gopjrt v0.4.7
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.9.0
-	google.golang.org/protobuf v1.35.1
+	google.golang.org/protobuf v1.35.2
 )
 
 require (
@@ -17,7 +17,7 @@ require (
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948 // indirect
+	golang.org/x/exp v0.0.0-20241108190413-2d47ceb2692f // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 )
