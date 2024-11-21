@@ -54,7 +54,7 @@ func (m *Model) ContextToONNX(ctx *context.Context) error {
 	if len(m.Proto.Graph.SparseInitializer) > 0 {
 		exceptions.Panicf("onnx.VariablesToContext does not support ONNX SparseTensors")
 	}
-	ctx = ctx.In(ModelScope).Checked(false)
+	ctx = ctx.In(ModelScope)
 	for _, tensorProto := range m.Proto.Graph.Initializer {
 		tensorName := SafeVarName(tensorProto.Name)
 		gomlxVar := ctx.GetVariable(tensorName)

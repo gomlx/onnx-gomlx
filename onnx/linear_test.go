@@ -43,7 +43,7 @@ func TestEndToEnd(t *testing.T) {
 	require.NotNil(t, vB)
 	require.Equal(t, 0, vB.Shape().Rank())
 	require.Equal(t, float32(7000), tensors.ToScalar[float32](vB.Value()))
-
+	
 	// Check conversion.
 	backend := graphtest.BuildTestBackend()
 	y := context.ExecOnce(backend, ctx, func(ctx *context.Context, x *graph.Node) *graph.Node {

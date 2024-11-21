@@ -149,7 +149,7 @@ func (m *Model) WithInputsAsConstants(inputsAsConstants map[string]any) *Model {
 //
 // See also Model.SaveToFile.
 func (m *Model) Write(w io.Writer) error {
-	content, err := proto.Marshal(m.Proto)
+	content, err := proto.Marshal(&m.Proto)
 	if err != nil {
 		return errors.Wrapf(err, "failed to serialize ONNX model proto")
 	}
