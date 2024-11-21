@@ -1,5 +1,5 @@
 // Package togomlx contains several conversion utilities from ONNX and GoMLX.
-package togomlx
+package onnx
 
 import (
 	"github.com/gomlx/gopjrt/dtypes"
@@ -7,8 +7,8 @@ import (
 	"github.com/pkg/errors"
 )
 
-// DType converts an ONNX data type to a gomlx data type.
-func DType(onnxDType protos.TensorProto_DataType) (dtypes.DType, error) {
+// dtypeForONNX converts an ONNX data type to a gomlx data type.
+func dtypeForONNX(onnxDType protos.TensorProto_DataType) (dtypes.DType, error) {
 	switch onnxDType {
 	case protos.TensorProto_FLOAT:
 		return dtypes.Float32, nil
