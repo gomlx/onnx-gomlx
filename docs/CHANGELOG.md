@@ -1,3 +1,8 @@
+# Next
+
+* Added ContextToONNX to save variables back to ONNX model (in memory).
+* Refactored internal/togomlx to inside onnx/ subdir.
+
 # v0.1.2 - 2024/11/17
 
 * Added LSTM op support, with small example. 

@@ -6,7 +6,6 @@ import (
 	"github.com/gomlx/gomlx/types"
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
-	"github.com/gomlx/onnx-gomlx/internal/togomlx"
 	"github.com/pkg/errors"
 	"io"
 	"maps"
@@ -153,7 +152,7 @@ func (m *Model) PrintGraph(writer io.Writer) error {
 				w("%s (%s", attr.Name, attr.Type)
 				switch attr.Type {
 				case protos.AttributeProto_TENSOR:
-					shape, err := togomlx.Shape(attr.T)
+					shape, err := Shape(attr.T)
 					if err != nil {
 						w(" - unparseable shape: %v", err)
 					} else {
@@ -216,7 +215,7 @@ func (m *Model) PrintVariables(writer io.Writer) error {
 	}
 	w("\n")
 	for _, t := range m.Proto.Graph.Initializer {
-		shape, _ := togomlx.Shape(t)
+		shape, _ := Shape(t)
 		w("\t%q: %s", t.Name, shape)
 		if t.DocString != "" {
 			w(" # %s", t.DocString)
@@ -229,7 +228,7 @@ func (m *Model) PrintVariables(writer io.Writer) error {
 	}
 	w("\n")
 	for _, st := range m.Proto.Graph.SparseInitializer {
-		shape, _ := togomlx.SparseShape(st)
+		shape, _ := SparseShape(st)
 		w("\t\t%q: dense shape=%d\n", st.Values.Name, shape)
 	}
 	return err
@@ -299,7 +298,7 @@ func (m *Model) recursiveGraphviz(writer io.Writer, visited types.Set[string], t
 	// target is a label.
 	if v, found := m.variableNameToValue[target]; found {
 		var vShape shapes.Shape
-		vShape, err = togomlx.Shape(v)
+		vShape, err = Shape(v)
 		w("\t%q [shape=box, style=filled, fillcolor=%q, tooltip=%q];\n", target, GraphvizVarColor, vShape)
 		return err
 	}

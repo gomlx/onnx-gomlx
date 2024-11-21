@@ -10,7 +10,6 @@ import (
 	"github.com/gomlx/gomlx/types/tensors"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
-	"github.com/gomlx/onnx-gomlx/internal/togomlx"
 	"github.com/pkg/errors"
 	"reflect"
 	"slices"
@@ -231,7 +230,7 @@ func getStringsAttrOr(node *protos.NodeProto, attrName string, defaultValues []s
 func convertConstant(node *protos.NodeProto, g *Graph) *Node {
 	valueAttr := getNodeAttr(node, "value", true)
 	assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
-	tensor, err := togomlx.Tensor(valueAttr.T)
+	tensor, err := tensorToGoMLX(valueAttr.T)
 	if err != nil {
 		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
 		panic(err)
@@ -398,7 +397,7 @@ func convertCast(node *protos.NodeProto, inputs []*Node) *Node {
 
 	saturate := getIntAttrOr(node, "saturate", 1) > 0
 	_ = saturate // Not implemented.
-	toDtype, err := togomlx.DType(
+	toDtype, err := dtypeForONNX(
 		protos.TensorProto_DataType(
 			mustGetIntAttr(node, "to")))
 	if err != nil {
@@ -689,7 +688,7 @@ func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *p
 
 	valueAttr := getNodeAttr(node, "value", true)
 	assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
-	tensor, err := togomlx.Tensor(valueAttr.T)
+	tensor, err := tensorToGoMLX(valueAttr.T)
 	if err != nil {
 		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
 		panic(err)

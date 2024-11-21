@@ -5,7 +5,6 @@ import (
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
-	"github.com/gomlx/onnx-gomlx/internal/togomlx"
 	"github.com/pkg/errors"
 	"strconv"
 	"strings"
@@ -27,7 +26,7 @@ const UnnamedDynamicDimension = "?"
 
 // makeDynamicShapeFromProto converts from a tensor proto type to a DynamicShape.
 func makeDynamicShapeFromProto(proto *protos.TypeProto_Tensor) (dshape DynamicShape, err error) {
-	dshape.DType, err = togomlx.DType(protos.TensorProto_DataType(proto.GetElemType()))
+	dshape.DType, err = dtypeForONNX(protos.TensorProto_DataType(proto.GetElemType()))
 	if err != nil {
 		return
 	}

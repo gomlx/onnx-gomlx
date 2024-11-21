@@ -7,7 +7,6 @@ import (
 	"github.com/gomlx/gomlx/types"
 	"github.com/gomlx/gomlx/types/tensors"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
-	"github.com/gomlx/onnx-gomlx/internal/togomlx"
 	"github.com/pkg/errors"
 	"strings"
 )
@@ -79,7 +78,7 @@ func (m *Model) isVariableConstant(varName string) bool {
 		sizeLimit = 1_000
 	}
 	tensorProto := m.variableNameToValue[varName]
-	shape, err := togomlx.Shape(tensorProto)
+	shape, err := Shape(tensorProto)
 	if err != nil {
 		panic(errors.WithMessagef(err, "ONNX variable %q has an invalid shape", varName))
 	}
@@ -109,7 +108,7 @@ func (m *Model) materializeConstantExpression(nodeOutputName string, convertedOu
 		varDesc := make([]string, 0, len(nonConstVariables))
 		for _, varName := range nonConstVariables {
 			// We discard the error, because we know this conversion works already, to have reached this point.
-			shape, _ := togomlx.Shape(m.variableNameToValue[varName])
+			shape, _ := Shape(m.variableNameToValue[varName])
 			varDesc = append(varDesc, fmt.Sprintf("%q (%s)", varName, shape))
 		}
 		opsDesc := make([]string, 0, len(contextNodes))
@@ -160,7 +159,7 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 		if !m.isVariableConstant(nodeOutputName) {
 			exceptions.Panicf("attempting to materialize as constant variable %q, which we don't think is constant", nodeOutputName)
 		}
-		t, err := togomlx.Tensor(tensorNode)
+		t, err := tensorToGoMLX(tensorNode)
 		if err != nil {
 			panic(errors.WithMessagef(err, "attempting to materialize variable %q as constant", nodeOutputName))
 		}
