@@ -24,7 +24,6 @@ The main use cases so far are:
       [github.com/oramasearch/onnx-go](https://github.com/oramasearch/onnx-go). They will be much slower (~100x (?)) than 
       the XLA inference (or `onnxruntime`) for large projects, but for many use cases it doesn't matter, and they
       are a much smaller pure Go dependency.
-      
 
 ## 🚧 **EXPERIMENTAL and UNDER-DEVELOPMENT**
 
