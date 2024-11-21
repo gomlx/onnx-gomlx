@@ -142,4 +142,4 @@ If you are interested, we have two notebooks we use to compare results. They are
 * [OpenXLA/XLA](https://github.com/openxla/xla) the open-source backend engine by Google that powers this implementation.
 * Sources of inspiration:
   * https://github.com/knights-analytics/onnx-gomlx
-  * https://github.com/gomlx/onnx-gomlx 
+  * https://github.com/oramasearch/onnx-go
