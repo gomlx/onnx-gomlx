@@ -8,15 +8,19 @@ ONNX-GoMLX converts [ONNX models](https://onnx.ai/) (`.onnx` suffix) to
 
 The main use cases so far are:
 
-1. **Inference**: use an ONNX file using Go and not having to include [ONNX Runtime](https://onnxruntime.ai/) (or Python)
+1. **Fine-tuning**: import an inference only ONNX model to GoMLX, and use its auto-differentiation and training loop to
+   fine-tune models. It allows saving the fine-tuned model as a GoMLX checkpoint or export the fine-tuned weights
+   back to the ONNX model. This can also be used to expand / combine models.
+2. **Inference**: use an ONNX file using Go and not having to include [ONNX Runtime](https://onnxruntime.ai/) (or Python)
    -- at the cost of including XLA/PJRT (the current only backend for GoMLX). It also allows one to extend the
-   model with extra ML pre/post-processing using GoMLX (image transformations, normalization, combining models, 
-   building ensembles, etc.)
-   * **TODO**: benchmark XLA/PJRT (Google) vs ONNX Runtime (Microsoft) -- both are sophisticated, well maintained
-     numerical computation engines. It should be interesting to evaluate the performance in various hardwares: amd64, arm64, GPU.
-2. **Fine-tuning**: import an inference only ONNX model to GoMLX, and use its auto-differentiation and training loop to
-   fine-tune models. It allows saving the fine-tuned model as a GoMLX checkpoint or (TODO) export the fine-tuned weights
-   back to the ONNX model.
+   model with extra ML pre/post-processing using GoMLX (image transformations, normalization, combining models,
+   building ensembles, etc.). This may be interesting for large/expensive models, or large throughput on large
+   batches.
+    * **TODO**: Benchmark XLA/PJRT (Google) vs ONNX Runtime (Microsoft) -- both are sophisticated, well maintained
+      numerical computation engines. It should be interesting to evaluate the performance in various hardwares: 
+      amd64, arm64, GPU.
+    * Notice if you want to simply get a pure Go inference of ONNX models, see github.com/gomlx/onnx-gomlx and
+      [github.com/AdvancedClimateSystems/gonnx](https://github.com/AdvancedClimateSystems/gonnx.)
 
 ## 🚧 **EXPERIMENTAL and UNDER-DEVELOPMENT**
 
@@ -109,6 +113,17 @@ Embeddings: [2][7][384]float32{
   {-0.0213, 0.0019, 0.0043, ..., 0.0561, 0.0170, 0.0256}}}
 ```
 
+## Fine-Tuning
+
+1. Extract the ONNX model's weight to GoMLX `Context`: see `Model.VariablesToContext()`.
+2. Use `Model.CallGraph()` in your GoMLX model function (see example just above).
+3. Train model as usual in GoMLX.
+4. Depending how you are going to use the model:
+   1. Save the model as a GoMLX checkpoint, as usual.
+   2. Save the model by updating the ONNX model: after training use `Model.ContextToONNX()` to copy the update variable  
+      values from GoMLX `Context` back to the ONNX model (in-memory), and then use `Model.Write()` or 
+      `Model.SaveToFile()` to save the updated ONNX model to disk.
+   
 ## 🤝 Collaborating
 
 Collaboration is very welcome: either in the form of code, or simply with ideas with real applicability. Don't

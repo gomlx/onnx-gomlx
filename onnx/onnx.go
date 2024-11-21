@@ -12,11 +12,13 @@ import (
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
 	"google.golang.org/protobuf/proto"
+	"io"
 	"os"
 )
 
 // Model represents a parsed ONNX file.
 type Model struct {
+	onnxFileName     string
 	Proto            protos.ModelProto
 	nodeOutputToNode map[string]*protos.NodeProto
 
@@ -100,7 +102,12 @@ func ReadFile(filePath string) (*Model, error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to read ONNX model file in %s", filePath)
 	}
-	return Parse(contents)
+	m, err := Parse(contents)
+	if err != nil {
+		return nil, err
+	}
+	m.onnxFileName = filePath
+	return m, nil
 }
 
 // Name of the model graph.
@@ -131,4 +138,47 @@ func (m *Model) NumInputs() int {
 func (m *Model) WithInputsAsConstants(inputsAsConstants map[string]any) *Model {
 	m.inputsAsConstants = inputsAsConstants
 	return m
+}
+
+// Write will write the ONNX model to the given writer (usually a file).
+//
+// This is useful, if the model variables were updated (e.g.: fine-tuning in GoMLX) and one wants to save the
+// model.
+// See ContextToONNX to copy over the variables in GoMLX's Context (presumably after some training/update) to the
+// ONNX's model proto.
+//
+// See also Model.SaveToFile.
+func (m *Model) Write(w io.Writer) error {
+	content, err := proto.Marshal(m.Proto)
+	if err != nil {
+		return errors.Wrapf(err, "failed to serialize ONNX model proto")
+	}
+	_, err = w.Write(content)
+	if err != nil {
+		return errors.Wrapf(err, "failed to write serialized ONNX model proto")
+	}
+	return nil
+}
+
+// SaveToFile serializes the ONNX model to the given file.
+//
+// This is useful, if the model variables were updated (e.g.: fine-tuning in GoMLX) and one wants to save the
+// model.
+// See ContextToONNX to copy over the variables in GoMLX's Context (presumably after some training/update) to the
+// ONNX's model proto.
+func (m *Model) SaveToFile(path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return errors.Wrapf(err, "failed to save ONNX model proto to %s", path)
+	}
+	err = m.Write(f)
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	err = f.Close()
+	if err != nil {
+		return errors.Wrapf(err, "failed to save ONNX model proto to %s", path)
+	}
+	return nil
 }
