@@ -370,6 +370,30 @@ func convertShape(node *protos.NodeProto, inputs []*Node) *Node {
 	return Const(g, dims)
 }
 
+// convertFlatten converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Flatten.html
+func convertFlatten(node *protos.NodeProto, inputs []*Node) *Node {
+	operand := inputs[0]
+	splitAxis := getIntAttrOr(node, "axis", 0)
+	splitAxis = AdjustAxisToOperandRank(operand, splitAxis)
+	return onnxFlatten(operand, splitAxis)
+}
+
+// onnxFlatten implements the corresponding ONNX operation.
+func onnxFlatten(operand *Node, splitAxis int) *Node {
+	outerDim, innerDim := 1, 1
+	for axis, dim := range operand.Shape().Dimensions {
+		if axis < splitAxis {
+			outerDim *= dim
+		} else {
+			innerDim *= dim
+		}
+	}
+	return Reshape(operand, outerDim, innerDim)
+}
+
 // convertConcat converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
