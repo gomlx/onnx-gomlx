@@ -176,3 +176,26 @@ func TestONNXCumSum(t *testing.T) {
 		[]float32{5, 3, 0},
 	}, -1)
 }
+
+func TestONNXFlatten(t *testing.T) {
+	backend := graphtest.BuildTestBackend()
+	testIdx := 0
+	flattenFn := func(shape shapes.Shape, splitAxis int) shapes.Shape {
+		g := NewGraph(backend, fmt.Sprintf("Flatten #%d", testIdx))
+		testIdx++
+		operand := IotaFull(g, shape)
+		newShape := onnxFlatten(operand, splitAxis).Shape()
+		g.Finalize()
+		return newShape
+	}
+
+	// Scalar becomes a 1x1 matrix.
+	flattenFn(shapes.Make(dtypes.Float32), 0).Assert(dtypes.Float32, 1, 1)
+
+	// Vector can be split in 2 different ways.
+	flattenFn(shapes.Make(dtypes.Int32, 7), 0).Assert(dtypes.Int32, 1, 7)
+	flattenFn(shapes.Make(dtypes.Int32, 7), 1).AssertDims(7, 1)
+
+	// Higher-dimensional tensor.
+	flattenFn(shapes.Make(dtypes.Float32, 7, 2, 3, 4), 2).AssertDims(14, 12)
+}

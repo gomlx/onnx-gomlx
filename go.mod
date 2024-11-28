@@ -4,10 +4,10 @@ go 1.23
 
 require (
 	github.com/gomlx/exceptions v0.0.3
-	github.com/gomlx/gomlx v0.15.2
-	github.com/gomlx/gopjrt v0.4.7
+	github.com/gomlx/gomlx v0.15.3
+	github.com/gomlx/gopjrt v0.4.9
 	github.com/pkg/errors v0.9.1
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.10.0
 	google.golang.org/protobuf v1.35.2
 )
 
