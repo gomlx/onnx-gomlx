@@ -29,8 +29,11 @@ The main use cases so far are:
 
 It's "fresh from the oven", so it may not be working as intended, and there are no guarantees of any type.
 
-Our base model for testing is the [Sentence Enconding all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
-which has been working perfectly -- see example below.
+There are 10 or so models that are working so far:
+
+* [Sentence Enconding all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
+has been working perfectly, see example below.
+* [ONNX-GoMLX demo/development notebook](https://github.com/gomlx/onnx-gomlx/blob/main/onnx-go.ipynb): both serves as a functional test and to demo what it can do.
 
 But not all operations ("ops") are converted yet. If you try it and find some that is not, please let us know (create an "issue")
 we will be happy to try to convert them -- generally, all the required scaffolding and tooling is already there, and
