@@ -1,7 +1,6 @@
 package benchmarks
 
 import (
-	"flag"
 	"fmt"
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/backends"
@@ -15,11 +14,34 @@ import (
 	ort "github.com/yalue/onnxruntime_go"
 	"os"
 	"testing"
+
+	_ "github.com/gomlx/gomlx/backends/xla"
 )
 
-import _ "github.com/gomlx/gomlx/backends/xla"
-
-var flagVerify = flag.Bool("verify", false, "verify generated values")
+// Benchmark results for this file using:
+//
+// - GoMLX: v0.15.4rc / GoPJRT: 0.4.10rc
+// - ONNX Runtime v1.20.1
+//
+// Results with CPU: go test . -test.bench=.
+//
+//	cpu: 12th Gen Intel(R) Core(TM) i9-12900K
+//	BenchmarkAdd1XLAExec/(Float32)[1_1]-24            352744              2848 ns/op
+//	BenchmarkAdd1XLAExec/(Float32)[10_10]-24          380127              2691 ns/op
+//	BenchmarkAdd1XLAExec/(Float32)[100_100]-24        281173              4254 ns/op
+//	BenchmarkAdd1XLAExec/(Float32)[1000_1000]-24       28095             42152 ns/op
+//	BenchmarkAdd1XLADirect/(Float32)[1_1]-24          403384              2771 ns/op
+//	BenchmarkAdd1XLADirect/(Float32)[10_10]-24        450536              2616 ns/op
+//	BenchmarkAdd1XLADirect/(Float32)[100_100]-24      292851              4083 ns/op
+//	BenchmarkAdd1XLADirect/(Float32)[1000_1000]-24     28430             42605 ns/op
+//	BenchmarkAdd1ONNXRT/(Float32)[1_1]-24            1537388               780.8 ns/op
+//	BenchmarkAdd1ONNXRT/(Float32)[10_10]-24          1485952               805.4 ns/op
+//	BenchmarkAdd1ONNXRT/(Float32)[100_100]-24         849921              1410 ns/op
+//	BenchmarkAdd1ONNXRT/(Float32)[1000_1000]-24        78459             14764 ns/op
+//	BenchmarkAdd1PureGo/(Float32)[1_1]-24           39167090                30.53 ns/op
+//	BenchmarkAdd1PureGo/(Float32)[10_10]-24         20961847                54.28 ns/op
+//	BenchmarkAdd1PureGo/(Float32)[100_100]-24         551452              2029 ns/op
+//	BenchmarkAdd1PureGo/(Float32)[1000_1000]-24         5839            197961 ns/op
 
 var Add1Shapes = []shapes.Shape{
 	shapes.Make(dtypes.Float32, 1, 1),
@@ -39,22 +61,6 @@ func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
 
 // BenchmarkAdd1XLAExec based on the `add1.onnx` minimalistic model: it adds 1 to a rank-2 tensor.
 // We try not to count the time for tensor transfers in and out.
-//
-// GoMLX: v0.15.3 / GoPJRT: 0.4.9
-// Results with CPU: go test . -test.bench=.
-//
-//	cpu: 12th Gen Intel(R) Core(TM) i9-12900K
-//	BenchmarkAdd1XLAExec/(Float32)[1_1]-24            316573              3573 ns/op
-//	BenchmarkAdd1XLAExec/(Float32)[10_10]-24          327974              3609 ns/op
-//	BenchmarkAdd1XLAExec/(Float32)[100_100]-24        203623              5349 ns/op
-//	BenchmarkAdd1XLAExec/(Float32)[1000_1000]-24       30680             41328 ns/op
-//
-// Results with GPU (NVidia 2080ti): XLA_BACKEND="xla:cuda" go test . -test.bench=.
-//
-//	BenchmarkAdd1XLAExec/(Float32)[1_1]-24             89323             11206 ns/op
-//	BenchmarkAdd1XLAExec/(Float32)[10_10]-24          108944             11217 ns/op
-//	BenchmarkAdd1XLAExec/(Float32)[100_100]-24         96049             11344 ns/op
-//	BenchmarkAdd1XLAExec/(Float32)[1000_1000]-24       72163             16646 ns/op
 func BenchmarkAdd1XLAExec(b *testing.B) {
 	model := must.M1(onnx.ReadFile("add1.onnx"))
 
@@ -133,23 +139,6 @@ func BenchmarkAdd1XLAExec(b *testing.B) {
 
 // BenchmarkAdd1XLADirect based on the `add1.onnx` minimalistic model: it adds 1 to a rank-2 tensor.
 // We try not to count the time for tensor transfers in and out.
-//
-// GoMLX: v0.15.3 / GoPJRT: 0.4.9
-// Results with CPU: go test . -test.bench=.
-//
-//	cpu: 12th Gen Intel(R) Core(TM) i9-12900K
-//	BenchmarkAdd1XLADirect/(Float32)[1_1]-24          346885              3485 ns/op
-//	BenchmarkAdd1XLADirect/(Float32)[10_10]-24        342831              3401 ns/op
-//	BenchmarkAdd1XLADirect/(Float32)[100_100]-24      210262              4963 ns/op
-//	BenchmarkAdd1XLADirect/(Float32)[1000_1000]-24     27415             42703 ns/op
-//
-// Results with GPU (NVidia 2080ti): XLA_BACKEND="xla:cuda" go test . -test.bench=.
-//
-//	cpu: 12th Gen Intel(R) Core(TM) i9-12900K
-//	BenchmarkAdd1XLADirect/(Float32)[1_1]-24          104755             11399 ns/op
-//	BenchmarkAdd1XLADirect/(Float32)[10_10]-24         97911             11133 ns/op
-//	BenchmarkAdd1XLADirect/(Float32)[100_100]-24      102991             11395 ns/op
-//	BenchmarkAdd1XLADirect/(Float32)[1000_1000]-24     71710             16662 ns/op
 func BenchmarkAdd1XLADirect(b *testing.B) {
 	model := must.M1(onnx.ReadFile("add1.onnx"))
 
@@ -232,16 +221,6 @@ func BenchmarkAdd1XLADirect(b *testing.B) {
 
 // BenchmarkAdd1ONNXRuntime
 // We try not to count the time for tensor transfers in and out.
-//
-// # ONNX Runtime v1.20.1
-//
-// Results with CPU:
-//
-//	cpu: 12th Gen Intel(R) Core(TM) i9-12900K
-//	BenchmarkAdd1ONNXRT/(Float32)[1_1]-24            1610689               742.3 ns/op
-//	BenchmarkAdd1ONNXRT/(Float32)[10_10]-24          1552520               768.1 ns/op
-//	BenchmarkAdd1ONNXRT/(Float32)[100_100]-24         862846              1355 ns/op
-//	BenchmarkAdd1ONNXRT/(Float32)[1000_1000]-24        85333             15685 ns/op
 func BenchmarkAdd1ONNXRT(b *testing.B) {
 	ortPath := os.Getenv("ORT_SO_PATH")
 	if ortPath == "" {
