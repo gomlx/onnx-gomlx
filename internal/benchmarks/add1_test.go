@@ -44,17 +44,17 @@ func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
 // Results with CPU: go test . -test.bench=.
 //
 //	cpu: 12th Gen Intel(R) Core(TM) i9-12900K
-//	BenchmarkAdd1XLAExec/(Float32)[1_1]-24             68131             15034 ns/op
-//	BenchmarkAdd1XLAExec/(Float32)[10_10]-24           73905             15140 ns/op
-//	BenchmarkAdd1XLAExec/(Float32)[100_100]-24         48411             24641 ns/op
-//	BenchmarkAdd1XLAExec/(Float32)[1000_1000]-24        1280            897389 ns/op
+//	BenchmarkAdd1XLAExec/(Float32)[1_1]-24            316573              3573 ns/op
+//	BenchmarkAdd1XLAExec/(Float32)[10_10]-24          327974              3609 ns/op
+//	BenchmarkAdd1XLAExec/(Float32)[100_100]-24        203623              5349 ns/op
+//	BenchmarkAdd1XLAExec/(Float32)[1000_1000]-24       30680             41328 ns/op
 //
 // Results with GPU (NVidia 2080ti): XLA_BACKEND="xla:cuda" go test . -test.bench=.
 //
-//	BenchmarkAdd1XLAExec/(Float32)[1_1]-24             80978             14561 ns/op
-//	BenchmarkAdd1XLAExec/(Float32)[10_10]-24           70262             15892 ns/op
-//	BenchmarkAdd1XLAExec/(Float32)[100_100]-24         48589             24244 ns/op
-//	BenchmarkAdd1XLAExec/(Float32)[1000_1000]-24        1215            903928 ns/op
+//	BenchmarkAdd1XLAExec/(Float32)[1_1]-24             89323             11206 ns/op
+//	BenchmarkAdd1XLAExec/(Float32)[10_10]-24          108944             11217 ns/op
+//	BenchmarkAdd1XLAExec/(Float32)[100_100]-24         96049             11344 ns/op
+//	BenchmarkAdd1XLAExec/(Float32)[1000_1000]-24       72163             16646 ns/op
 func BenchmarkAdd1XLAExec(b *testing.B) {
 	model := must.M1(onnx.ReadFile("add1.onnx"))
 
@@ -91,7 +91,7 @@ func BenchmarkAdd1XLAExec(b *testing.B) {
 			})
 		}
 
-		tmpOutput := exec.Call(graph.DonateTensorBuffer(x, backend))[0]
+		tmpOutput := exec.Call(x)[0]
 		if isWarmUp {
 			outputTensors[shapeIdx].CopyFrom(tmpOutput) // Re-use local storage for contents.
 		}
@@ -138,19 +138,18 @@ func BenchmarkAdd1XLAExec(b *testing.B) {
 // Results with CPU: go test . -test.bench=.
 //
 //	cpu: 12th Gen Intel(R) Core(TM) i9-12900K
-//	BenchmarkAdd1XLADirect/(Float32)[1_1]-24                   81979             14303 ns/op
-//	BenchmarkAdd1XLADirect/(Float32)[10_10]-24                 79243             15004 ns/op
-//	BenchmarkAdd1XLADirect/(Float32)[100_100]-24               48580             24136 ns/op
-//	BenchmarkAdd1XLADirect/(Float32)[1000_1000]-24              1294            911609 ns/op
+//	BenchmarkAdd1XLADirect/(Float32)[1_1]-24          346885              3485 ns/op
+//	BenchmarkAdd1XLADirect/(Float32)[10_10]-24        342831              3401 ns/op
+//	BenchmarkAdd1XLADirect/(Float32)[100_100]-24      210262              4963 ns/op
+//	BenchmarkAdd1XLADirect/(Float32)[1000_1000]-24     27415             42703 ns/op
 //
 // Results with GPU (NVidia 2080ti): XLA_BACKEND="xla:cuda" go test . -test.bench=.
 //
 //	cpu: 12th Gen Intel(R) Core(TM) i9-12900K
-//	cpu: 12th Gen Intel(R) Core(TM) i9-12900K
-//	BenchmarkAdd1XLADirect/(Float32)[1_1]-24                   85447             13832 ns/op
-//	BenchmarkAdd1XLADirect/(Float32)[10_10]-24                 72364             14863 ns/op
-//	BenchmarkAdd1XLADirect/(Float32)[100_100]-24               49515             22744 ns/op
-//	BenchmarkAdd1XLADirect/(Float32)[1000_1000]-24              1207            916167 ns/op
+//	BenchmarkAdd1XLADirect/(Float32)[1_1]-24          104755             11399 ns/op
+//	BenchmarkAdd1XLADirect/(Float32)[10_10]-24         97911             11133 ns/op
+//	BenchmarkAdd1XLADirect/(Float32)[100_100]-24      102991             11395 ns/op
+//	BenchmarkAdd1XLADirect/(Float32)[1000_1000]-24     71710             16662 ns/op
 func BenchmarkAdd1XLADirect(b *testing.B) {
 	model := must.M1(onnx.ReadFile("add1.onnx"))
 
@@ -239,18 +238,10 @@ func BenchmarkAdd1XLADirect(b *testing.B) {
 // Results with CPU:
 //
 //	cpu: 12th Gen Intel(R) Core(TM) i9-12900K
-//	BenchmarkAdd1ONNXRuntime/(Float32)[1_1]-24               1581852               748.7 ns/op
-//	BenchmarkAdd1ONNXRuntime/(Float32)[10_10]-24             1397054               856.4 ns/op
-//	BenchmarkAdd1ONNXRuntime/(Float32)[100_100]-24            163327              7051 ns/op
-//	BenchmarkAdd1ONNXRuntime/(Float32)[1000_1000]-24            1921            584694 ns/op
-//
-// Results with GPU (NVidia 2080ti):
-//
-//	cpu: 12th Gen Intel(R) Core(TM) i9-12900K
-//	BenchmarkAdd1ONNXRuntime/(Float32)[1_1]-24               1476309               810.2 ns/op
-//	BenchmarkAdd1ONNXRuntime/(Float32)[10_10]-24             1321719               905.3 ns/op
-//	BenchmarkAdd1ONNXRuntime/(Float32)[100_100]-24            168486              7001 ns/op
-//	BenchmarkAdd1ONNXRuntime/(Float32)[1000_1000]-24            1940            621650 ns/op
+//	BenchmarkAdd1ONNXRT/(Float32)[1_1]-24            1610689               742.3 ns/op
+//	BenchmarkAdd1ONNXRT/(Float32)[10_10]-24          1552520               768.1 ns/op
+//	BenchmarkAdd1ONNXRT/(Float32)[100_100]-24         862846              1355 ns/op
+//	BenchmarkAdd1ONNXRT/(Float32)[1000_1000]-24        85333             15685 ns/op
 func BenchmarkAdd1ONNXRT(b *testing.B) {
 	ortPath := os.Getenv("ORT_SO_PATH")
 	if ortPath == "" {
