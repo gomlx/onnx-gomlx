@@ -38,7 +38,7 @@ func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
 }
 
 // BenchmarkAdd1XLAExec based on the `add1.onnx` minimalistic model: it adds 1 to a rank-2 tensor.
-// We expect this time to be dominated by the tensor conversion inputs/outputs.
+// We try not to count the time for tensor transfers in and out.
 //
 // GoMLX: v0.15.3 / GoPJRT: 0.4.9
 // Results with CPU: go test . -test.bench=.
@@ -80,21 +80,25 @@ func BenchmarkAdd1XLAExec(b *testing.B) {
 	}
 
 	// Run test for a shape
-	benchShape := func(v float32, shapeIdx int) {
+	benchShape := func(v float32, shapeIdx int, isWarmUp bool) {
 		// Set input to value of v.
 		x := inputTensors[shapeIdx]
-		tensors.MutableFlatData[float32](x, func(flat []float32) {
-			for ii := range flat {
-				flat[ii] = v
-			}
-		})
+		if isWarmUp {
+			tensors.MutableFlatData[float32](x, func(flat []float32) {
+				for ii := range flat {
+					flat[ii] = v
+				}
+			})
+		}
 
 		tmpOutput := exec.Call(graph.DonateTensorBuffer(x, backend))[0]
-		outputTensors[shapeIdx].CopyFrom(tmpOutput) // Re-use local storage for contents.
+		if isWarmUp {
+			outputTensors[shapeIdx].CopyFrom(tmpOutput) // Re-use local storage for contents.
+		}
 		tmpOutput.FinalizeAll()
 
 		// Verify results
-		if *flagVerify {
+		if isWarmUp {
 			vWant := v + 1
 			tensors.ConstFlatData[float32](outputTensors[shapeIdx], func(flat []float32) {
 				for _, vOut := range flat {
@@ -109,7 +113,7 @@ func BenchmarkAdd1XLAExec(b *testing.B) {
 	// Warmup for each shape.
 	for shapeIdx := range Add1Shapes {
 		for i := range 10 {
-			benchShape(float32(i), shapeIdx)
+			benchShape(float32(i), shapeIdx, true)
 		}
 	}
 
@@ -121,14 +125,14 @@ func BenchmarkAdd1XLAExec(b *testing.B) {
 	for shapeIdx, s := range Add1Shapes {
 		b.Run(s.String(), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				benchShape(float32(i), shapeIdx)
+				benchShape(float32(i), shapeIdx, false)
 			}
 		})
 	}
 }
 
 // BenchmarkAdd1XLADirect based on the `add1.onnx` minimalistic model: it adds 1 to a rank-2 tensor.
-// We expect this time to be dominated by the tensor conversion inputs/outputs.
+// We try not to count the time for tensor transfers in and out.
 //
 // GoMLX: v0.15.3 / GoPJRT: 0.4.9
 // Results with CPU: go test . -test.bench=.
@@ -160,6 +164,9 @@ func BenchmarkAdd1XLADirect(b *testing.B) {
 		g := graph.NewGraph(backend, fmt.Sprintf("Graph #%d", shapeIdx))
 		x := graph.Parameter(g, "X", s)
 		y := model.CallGraph(nil, g, map[string]*graph.Node{"X": x})[0]
+		if shapeIdx == 3 {
+			fmt.Printf("Add1 graph:\n%s\n", g.String())
+		}
 		g.Compile(y)
 		graphPerShape[shapeIdx] = g
 		inputTensors[shapeIdx] = tensors.FromShape(s)
@@ -167,14 +174,16 @@ func BenchmarkAdd1XLADirect(b *testing.B) {
 	}
 
 	// Run test for a shape
-	benchShape := func(v float32, shapeIdx int) {
+	benchShape := func(v float32, shapeIdx int, isWarmUp bool) {
 		// Set input to value of v.
 		x := inputTensors[shapeIdx]
-		tensors.MutableFlatData[float32](x, func(flat []float32) {
-			for ii := range flat {
-				flat[ii] = v
-			}
-		})
+		if isWarmUp {
+			tensors.MutableFlatData[float32](x, func(flat []float32) {
+				for ii := range flat {
+					flat[ii] = v
+				}
+			})
+		}
 		xBuf := x.Buffer(backend)
 
 		// Run with given input.
@@ -184,11 +193,13 @@ func BenchmarkAdd1XLADirect(b *testing.B) {
 			[]bool{false})[0]
 		//[]backends.Buffer{x.DonateBuffer(backend)},
 		//[]bool{true})[0]
-		//outputTensors[shapeIdx].CopyFrom(tmpOutput)
+		if isWarmUp {
+			outputTensors[shapeIdx].CopyFrom(tmpOutput)
+		}
 		tmpOutput.FinalizeAll()
 
 		// Verify results
-		if *flagVerify {
+		if isWarmUp {
 			vWant := v + 1
 			tensors.ConstFlatData[float32](outputTensors[shapeIdx], func(flat []float32) {
 				for _, vOut := range flat {
@@ -203,7 +214,7 @@ func BenchmarkAdd1XLADirect(b *testing.B) {
 	// Warmup for each shape.
 	for shapeIdx := range Add1Shapes {
 		for i := range 10 {
-			benchShape(float32(i), shapeIdx)
+			benchShape(float32(i), shapeIdx, true)
 		}
 	}
 
@@ -214,13 +225,14 @@ func BenchmarkAdd1XLADirect(b *testing.B) {
 	for shapeIdx, s := range Add1Shapes {
 		b.Run(s.String(), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				benchShape(float32(i), shapeIdx)
+				benchShape(float32(i), shapeIdx, false)
 			}
 		})
 	}
 }
 
 // BenchmarkAdd1ONNXRuntime
+// We try not to count the time for tensor transfers in and out.
 //
 // # ONNX Runtime v1.20.1
 //
@@ -272,12 +284,14 @@ func BenchmarkAdd1ONNXRT(b *testing.B) {
 	}
 
 	// Run test for a shape
-	benchShape := func(v float32, shapeIdx int) {
+	benchShape := func(v float32, shapeIdx int, isWarmUp bool) {
 		// Set value.
 		input := inputsPerShape[shapeIdx]
-		data := input.GetData()
-		for ii := range data {
-			data[ii] = v
+		if isWarmUp {
+			data := input.GetData()
+			for ii := range data {
+				data[ii] = v
+			}
 		}
 
 		// Run session
@@ -285,10 +299,10 @@ func BenchmarkAdd1ONNXRT(b *testing.B) {
 		must.M(session.Run())
 
 		// Check output.
-		if *flagVerify {
+		if isWarmUp {
 			output := outputsPerShape[shapeIdx]
 			vWant := v + 1
-			data = output.GetData()
+			data := output.GetData()
 			for idx, vOut := range data {
 				if vOut != vWant {
 					exceptions.Panicf("Value #%d: Wanted %f, got %f instead!?", idx, vWant, vOut)
@@ -300,7 +314,7 @@ func BenchmarkAdd1ONNXRT(b *testing.B) {
 	// Warmup for each shape.
 	for idxShape := range Add1Shapes {
 		for i := range 10 {
-			benchShape(float32(i), idxShape)
+			benchShape(float32(i), idxShape, true)
 		}
 	}
 
@@ -311,7 +325,7 @@ func BenchmarkAdd1ONNXRT(b *testing.B) {
 	for idxShape, s := range Add1Shapes {
 		b.Run(s.String(), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				benchShape(float32(i), idxShape)
+				benchShape(float32(i), idxShape, false)
 			}
 		})
 	}
@@ -328,14 +342,16 @@ func BenchmarkAdd1PureGo(b *testing.B) {
 	}
 
 	// Run test for a shape
-	benchShape := func(v float32, shapeIdx int) {
+	benchShape := func(v float32, shapeIdx int, isWarmUp bool) {
 		x := inputTensors[shapeIdx]
 		y := outputTensors[shapeIdx]
-		tensors.MutableFlatData[float32](x, func(flat []float32) {
-			for ii := range flat {
-				flat[ii] = v
-			}
-		})
+		if isWarmUp {
+			tensors.MutableFlatData[float32](x, func(flat []float32) {
+				for ii := range flat {
+					flat[ii] = v
+				}
+			})
+		}
 		tensors.ConstFlatData[float32](x, func(xFlat []float32) {
 			tensors.MutableFlatData[float32](y, func(yFlat []float32) {
 				for ii, v := range xFlat {
@@ -348,7 +364,7 @@ func BenchmarkAdd1PureGo(b *testing.B) {
 	// Warmup for each shape.
 	for shapeIdx := range Add1Shapes {
 		for i := range 10 {
-			benchShape(float32(i), shapeIdx)
+			benchShape(float32(i), shapeIdx, true)
 		}
 	}
 
@@ -359,7 +375,7 @@ func BenchmarkAdd1PureGo(b *testing.B) {
 	for shapeIdx, s := range Add1Shapes {
 		b.Run(s.String(), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				benchShape(float32(i), shapeIdx)
+				benchShape(float32(i), shapeIdx, false)
 			}
 		})
 	}
