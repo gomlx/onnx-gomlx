@@ -175,7 +175,10 @@ func benchmarkKnightsSBertXLA(b *testing.B, name, onnxModelPath string, numSente
 		}
 
 		// Execute program.
-		_ = exec.Call(inputTensors[0], inputTensors[1], inputTensors[2])
+		outputs := exec.Call(inputTensors[0], inputTensors[1], inputTensors[2])
+		for _, output := range outputs {
+			output.FinalizeAll()
+		}
 
 		// Next batch.
 		current += numSentences
