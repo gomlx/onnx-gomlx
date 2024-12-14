@@ -16,6 +16,7 @@ import (
 	parquet "github.com/parquet-go/parquet-go"
 	ort "github.com/yalue/onnxruntime_go"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"unicode/utf8"
@@ -206,16 +207,22 @@ func benchmarkONNXModelWithXLA(b *testing.B, name, onnxModelPath string, numSent
 }
 
 // ortInitFn will execute only once.
-var ortInitFn = sync.OnceFunc(func() {
-	ortPath := os.Getenv("ORT_SO_PATH")
-	if ortPath == "" {
-		exceptions.Panicf("Please set environment ORT_SO_PATH with the path to your ONNX Runtime dynamic linked library")
-	}
-	ort.SetSharedLibraryPath(ortPath)
-	must.M(ort.InitializeEnvironment())
-	// Since we may run this function multiple times, we never destroy the environment.
-	//defer func() { _ = ort.DestroyEnvironment() }()
-})
+var (
+	ortInitFn = sync.OnceFunc(func() {
+		ortPath := os.Getenv("ORT_SO_PATH")
+		if ortPath == "" {
+			exceptions.Panicf("Please set environment ORT_SO_PATH with the path to your ONNX Runtime dynamic linked library")
+		}
+		if strings.Index(ortPath, "gpu") != -1 {
+			ortIsCUDA = true
+		}
+		ort.SetSharedLibraryPath(ortPath)
+		must.M(ort.InitializeEnvironment())
+		// Since we may run this function multiple times, we never destroy the environment.
+		//defer func() { _ = ort.DestroyEnvironment() }()
+	})
+	ortIsCUDA bool
+)
 
 func benchmarkONNXModelWithORT(b *testing.B, name, onnxModelPath string, numSentences, sentenceLength, batchSize int) {
 	ortInitFn()
@@ -236,13 +243,20 @@ func benchmarkONNXModelWithORT(b *testing.B, name, onnxModelPath string, numSent
 	outputTensor := must.M1(ort.NewEmptyTensor[float32](outputShape))
 
 	// Create session with ONNX program.
+	var options *ort.SessionOptions
+	if ortIsCUDA {
+		options = must.M1(ort.NewSessionOptions())
+		cudaOptions := must.M1(ort.NewCUDAProviderOptions())
+		// must.M(cudaOptions.Update(map[string]string{"device_id": "0"}))
+		must.M(options.AppendExecutionProviderCUDA(cudaOptions))
+	}
 	session := must.M1(ort.NewAdvancedSession(
 		onnxModelPath,
 		[]string{"input_ids", "attention_mask", "token_type_ids"},
 		[]string{"last_hidden_state"},
 		sliceMap(inputTensors[:], func(t *ort.Tensor[int64]) ort.Value { return t }),
-		[]ort.Value{outputTensor},
-		nil))
+		[]ort.Value{outputTensor}, options))
+	defer func() { must.M(session.Destroy()) }()
 
 	current := 0
 	testFn := func() {
@@ -285,9 +299,9 @@ func benchmarkONNXModelWithORT(b *testing.B, name, onnxModelPath string, numSent
 func BenchmarkKnightsSBert(b *testing.B) {
 	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repo.DownloadFile("model.onnx"))
-	//for _, batchSize := range BatchSizes {
-	//	benchmarkONNXModelWithXLA(b, "Full", onnxModelPath, 10000, 128, batchSize)
-	//}
+	for _, batchSize := range BatchSizes {
+		benchmarkONNXModelWithXLA(b, "Full", onnxModelPath, 10000, 128, batchSize)
+	}
 	for _, batchSize := range BatchSizes {
 		benchmarkONNXModelWithORT(b, "Full", onnxModelPath, 10000, 128, batchSize)
 	}
