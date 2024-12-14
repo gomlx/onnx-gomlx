@@ -117,17 +117,12 @@ func parallelizeGoVectorFunc(fn goVectorFunc) goVectorFunc {
 // BenchmarkXLAExec executes TestPrograms on XLA using the normal Exec method.
 // We try not to count the time for tensor transfers in and out.
 func BenchmarkXLAExec(b *testing.B) {
-	var isDuringBenchmark bool
-
 	// Check conversion.
 	backend := graphtest.BuildTestBackend()
 	execs := make([]*graph.Exec, numPrograms)
 	for progIdx, program := range TestPrograms {
 		model := must.M1(onnx.ReadFile(program[0]))
 		execs[progIdx] = graph.NewExec(backend, func(x *graph.Node) *graph.Node {
-			if isDuringBenchmark {
-				exceptions.Panicf("Graph building function called during benchmark: this shouldn't happen, as all graphs should have been built in startup")
-			}
 			g := x.Graph()
 			outputs := model.CallGraph(nil, g, map[string]*graph.Node{"X": x})
 			return outputs[0]
