@@ -14,7 +14,9 @@ import (
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/janpfeifer/must"
 	parquet "github.com/parquet-go/parquet-go"
+	ort "github.com/yalue/onnxruntime_go"
 	"os"
+	"sync"
 	"testing"
 	"unicode/utf8"
 )
@@ -130,7 +132,7 @@ func sampleFineWeb(modelID string, n, sequenceLen int) []tokenizedSentence {
 	return results
 }
 
-func benchmarkKnightsSBertXLA(b *testing.B, name, onnxModelPath string, numSentences, sentenceLength, batchSize int) {
+func benchmarkONNXModelWithXLA(b *testing.B, name, onnxModelPath string, numSentences, sentenceLength, batchSize int) {
 	if numSentences < batchSize {
 		exceptions.Panicf("batchSize(%d) must be >= to the number of sentences sampled (%d)", batchSize, numSentences)
 	}
@@ -195,7 +197,7 @@ func benchmarkKnightsSBertXLA(b *testing.B, name, onnxModelPath string, numSente
 	// Benchmark:
 	b.ResetTimer()
 
-	b.Run(fmt.Sprintf("%s/BatchSize=%d:", name, batchSize),
+	b.Run(fmt.Sprintf("XLA/%s/BatchSize=%d:", name, batchSize),
 		func(b *testing.B) {
 			for _ = range b.N {
 				testFn()
@@ -203,11 +205,91 @@ func benchmarkKnightsSBertXLA(b *testing.B, name, onnxModelPath string, numSente
 		})
 }
 
-func BenchmarkKnightsSBertXLA(b *testing.B) {
+// ortInitFn will execute only once.
+var ortInitFn = sync.OnceFunc(func() {
+	ortPath := os.Getenv("ORT_SO_PATH")
+	if ortPath == "" {
+		exceptions.Panicf("Please set environment ORT_SO_PATH with the path to your ONNX Runtime dynamic linked library")
+	}
+	ort.SetSharedLibraryPath(ortPath)
+	must.M(ort.InitializeEnvironment())
+	// Since we may run this function multiple times, we never destroy the environment.
+	//defer func() { _ = ort.DestroyEnvironment() }()
+})
+
+func benchmarkONNXModelWithORT(b *testing.B, name, onnxModelPath string, numSentences, sentenceLength, batchSize int) {
+	ortInitFn()
+
+	// Tokenize examples from FineWeb.
+	if numSentences < batchSize {
+		exceptions.Panicf("batchSize(%d) must be >= to the number of sentences sampled (%d)", batchSize, numSentences)
+	}
+	tokenizedExamples := sampleFineWeb(KnightsAnalyticsSBertID, numSentences, sentenceLength)
+
+	// Create input and output tensors.
+	var inputTensors [3]*ort.Tensor[int64]
+	inputShape := ort.NewShape(int64(batchSize), int64(sentenceLength))
+	for ii := range inputTensors {
+		inputTensors[ii] = must.M1(ort.NewEmptyTensor[int64](inputShape))
+	}
+	outputShape := ort.NewShape(int64(batchSize), int64(sentenceLength), 384)
+	outputTensor := must.M1(ort.NewEmptyTensor[float32](outputShape))
+
+	// Create session with ONNX program.
+	session := must.M1(ort.NewAdvancedSession(
+		onnxModelPath,
+		[]string{"input_ids", "attention_mask", "token_type_ids"},
+		[]string{"last_hidden_state"},
+		sliceMap(inputTensors[:], func(t *ort.Tensor[int64]) ort.Value { return t }),
+		[]ort.Value{outputTensor},
+		nil))
+
+	current := 0
+	testFn := func() {
+		// Create batch for each input tensor.
+		for inputIdx, t := range inputTensors {
+			flat := t.GetData()
+			for exampleIdx := range batchSize {
+				sample := tokenizedExamples[current+exampleIdx]
+				copy(flat[exampleIdx*sentenceLength:], sample.Encoding[inputIdx])
+			}
+		}
+
+		// Execute program.
+		must.M(session.Run())
+
+		// Next batch.
+		current += numSentences
+		if current+batchSize > numSentences {
+			current = 0
+		}
+	}
+
+	// WarmUp:
+	for _ = range 10 {
+		testFn()
+	}
+
+	// Benchmark:
+	b.ResetTimer()
+
+	b.Run(fmt.Sprintf("ORT/%s/BatchSize=%d:", name, batchSize),
+		func(b *testing.B) {
+			for _ = range b.N {
+				testFn()
+			}
+		})
+
+}
+
+func BenchmarkKnightsSBert(b *testing.B) {
 	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repo.DownloadFile("model.onnx"))
+	//for _, batchSize := range BatchSizes {
+	//	benchmarkONNXModelWithXLA(b, "Full", onnxModelPath, 10000, 128, batchSize)
+	//}
 	for _, batchSize := range BatchSizes {
-		benchmarkKnightsSBertXLA(b, "Full", onnxModelPath, 10000, 128, batchSize)
+		benchmarkONNXModelWithORT(b, "Full", onnxModelPath, 10000, 128, batchSize)
 	}
 }
 
