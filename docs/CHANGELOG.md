@@ -1,3 +1,11 @@
+# Next
+
+* Added `internal/bechmarks` package:
+  * Benchmark ONNX models with XLA, ONNX Runtime (ORT), CPU and GPU
+  * Very simple models
+  * KnightsAnalytics/all-MiniLM-L6-v2
+  * Slices (parts of) KnightsAnalytics/all-MiniLM-L6-v2
+
 # v0.1.4 - 2024/11/28
 
 * Added Flatten op support.
