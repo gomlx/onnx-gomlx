@@ -9,6 +9,7 @@ require (
 	github.com/gomlx/go-huggingface v0.1.1
 	github.com/gomlx/gomlx v0.15.3
 	github.com/gomlx/gopjrt v0.4.9
+	github.com/janpfeifer/go-benchmarks v0.1.0
 	github.com/janpfeifer/must v0.2.0
 	github.com/parquet-go/parquet-go v0.24.0
 	github.com/pkg/errors v0.9.1
@@ -31,6 +32,7 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/streadway/quantile v0.0.0-20220407130108-4246515d968d // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/exp v0.0.0-20241108190413-2d47ceb2692f // indirect
 	golang.org/x/sys v0.27.0 // indirect
