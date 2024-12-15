@@ -38,21 +38,22 @@ func init() {
 
 var (
 	TestShapes = []shapes.Shape{
-		shapes.Make(dtypes.Float32, 1, 1),
-		shapes.Make(dtypes.Float32, 10, 10),
-		shapes.Make(dtypes.Float32, 100, 100),
+		//shapes.Make(dtypes.Float32, 1, 1),
+		//shapes.Make(dtypes.Float32, 10, 10),
+		//shapes.Make(dtypes.Float32, 100, 100),
 		shapes.Make(dtypes.Float32, 1000, 1000),
 	}
 	numShapes = len(TestShapes)
 
-	TestPrograms = [][2]string{
+	SmallTestPrograms = [][2]string{
 		{"add1.onnx", "f(x)=x+1"},
 		{"add1div2.onnx", "f(x)=(x+1)/2"},
 		{"sqrt_add1div2.onnx", "f(x)=Sqrt((x+1)/2)"},
+		{"mean_norm_sqrt_add1div2.onnx", "f(x)=Sqrt((x+1)/2) - ReduceMean(Sqrt((x+1)/2))"},
 	}
-	numPrograms = len(TestPrograms)
+	numPrograms = len(SmallTestPrograms)
 
-	// testGoPrograms is a Go version of the TestPrograms, as a per-element function.
+	// testGoPrograms is a Go version of the SmallTestPrograms, as a per-element function.
 	testGoPrograms = []goVectorFunc{
 		parallelizeGoVectorFunc(func(inputs, outputs []float32) {
 			for ii, v := range inputs {
@@ -114,13 +115,13 @@ func parallelizeGoVectorFunc(fn goVectorFunc) goVectorFunc {
 	}
 }
 
-// BenchmarkXLAExec executes TestPrograms on XLA using the normal Exec method.
+// BenchmarkSmallXLAExec executes SmallTestPrograms on XLA using the normal Exec method.
 // We try not to count the time for tensor transfers in and out.
-func BenchmarkXLAExec(b *testing.B) {
+func BenchmarkSmallXLAExec(b *testing.B) {
 	// Check conversion.
 	backend := graphtest.BuildTestBackend()
 	execs := make([]*graph.Exec, numPrograms)
-	for progIdx, program := range TestPrograms {
+	for progIdx, program := range SmallTestPrograms {
 		model := must.M1(onnx.ReadFile(program[0]))
 		execs[progIdx] = graph.NewExec(backend, func(x *graph.Node) *graph.Node {
 			g := x.Graph()
@@ -140,7 +141,7 @@ func BenchmarkXLAExec(b *testing.B) {
 
 	// Run tests for each shape/program combination.
 	for shapeIdx, s := range TestShapes {
-		for progIdx, program := range TestPrograms {
+		for progIdx, program := range SmallTestPrograms {
 			exec := execs[progIdx]
 			b.Run(fmt.Sprintf("shape=%s/%s%s", s, program[1], benchmarkNameSuffix),
 				func(b *testing.B) {
@@ -168,9 +169,9 @@ func BenchmarkXLAExec(b *testing.B) {
 	}
 }
 
-// BenchmarkXLADirect benchmarks TestPrograms using direct GoMLX execution.
+// BenchmarkSmallXLADirect benchmarks SmallTestPrograms using direct GoMLX execution.
 // We try not to count the time for tensor transfers in and out.
-func BenchmarkXLADirect(b *testing.B) {
+func BenchmarkSmallXLADirect(b *testing.B) {
 	// Create executables.
 	backend := graphtest.BuildTestBackend()
 	numShapes := len(TestShapes)
@@ -179,7 +180,7 @@ func BenchmarkXLADirect(b *testing.B) {
 	outputTensors := make([]*tensors.Tensor, numShapes)
 	for shapeIdx, s := range TestShapes {
 		graphPerShapePerProgram[shapeIdx] = make([]*graph.Graph, numPrograms)
-		for progIdx, program := range TestPrograms {
+		for progIdx, program := range SmallTestPrograms {
 			model := must.M1(onnx.ReadFile(program[0]))
 			g := graph.NewGraph(backend, fmt.Sprintf("Graph #%d", shapeIdx))
 			x := graph.Parameter(g, "X", s)
@@ -193,7 +194,7 @@ func BenchmarkXLADirect(b *testing.B) {
 
 	// Run tests for each shape/program combination.
 	for shapeIdx, s := range TestShapes {
-		for progIdx, program := range TestPrograms {
+		for progIdx, program := range SmallTestPrograms {
 			b.Run(fmt.Sprintf("shape=%s/%s%s", s, program[1], benchmarkNameSuffix),
 				func(b *testing.B) {
 					// Set input to value of v.
@@ -226,9 +227,9 @@ func BenchmarkXLADirect(b *testing.B) {
 	}
 }
 
-// BenchmarkAdd1ONNXRuntime
+// BenchmarkSmallORT benchmarks the SmallTestPrograms using ONNX Runtime.
 // We try not to count the time for tensor transfers in and out.
-func BenchmarkONNXRT(b *testing.B) {
+func BenchmarkSmallORT(b *testing.B) {
 	ortPath := os.Getenv("ORT_SO_PATH")
 	if ortPath == "" {
 		exceptions.Panicf("Please set environment ORT_SO_PATH with the path to your ONNX Runtime dynamic linked library")
@@ -252,7 +253,7 @@ func BenchmarkONNXRT(b *testing.B) {
 		outputsPerShape = append(outputsPerShape, outputTensor)
 
 		sessions[shapeIdx] = make([]*ort.AdvancedSession, numPrograms)
-		for progIdx, program := range TestPrograms {
+		for progIdx, program := range SmallTestPrograms {
 			sessions[shapeIdx][progIdx] = must.M1(ort.NewAdvancedSession(
 				program[0],
 				[]string{"X"},
@@ -265,7 +266,7 @@ func BenchmarkONNXRT(b *testing.B) {
 
 	// Run tests for each shape/program combination.
 	for shapeIdx, s := range TestShapes {
-		for progIdx, program := range TestPrograms {
+		for progIdx, program := range SmallTestPrograms {
 			b.Run(fmt.Sprintf("shape=%s/%s%s", s, program[1], benchmarkNameSuffix),
 				func(b *testing.B) {
 					// Set input to value of v.
@@ -304,7 +305,7 @@ func BenchmarkPureGo(b *testing.B) {
 	for shapeIdx, s := range TestShapes {
 		x := inputTensors[shapeIdx]
 		y := outputTensors[shapeIdx]
-		for progIdx, program := range TestPrograms {
+		for progIdx, program := range SmallTestPrograms {
 			b.Run(fmt.Sprintf("shape=%s/%s%s", s, program[1], benchmarkNameSuffix),
 				func(b *testing.B) {
 					// Set value:
