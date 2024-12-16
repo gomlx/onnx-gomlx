@@ -9,7 +9,7 @@ require (
 	github.com/gomlx/go-huggingface v0.1.1
 	github.com/gomlx/gomlx v0.15.3
 	github.com/gomlx/gopjrt v0.4.9
-	github.com/janpfeifer/go-benchmarks v0.1.0
+	github.com/janpfeifer/go-benchmarks v0.1.1
 	github.com/janpfeifer/must v0.2.0
 	github.com/parquet-go/parquet-go v0.24.0
 	github.com/pkg/errors v0.9.1

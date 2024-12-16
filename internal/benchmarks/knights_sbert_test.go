@@ -44,6 +44,7 @@ var (
 
 	flagBenchDuration = flag.Duration("bench_duration", 1*time.Second, "Benchmark duration")
 	flagPrintXLAGraph = flag.Bool("xla_graph", false, "Prints XLA graph")
+	flagExcludePadded = flag.Bool("exclude_padded", false, "Exclude sentences with less than 128 tokens")
 )
 
 // tokenizedSentence stores the tokenized input for models of a sentence.
@@ -106,7 +107,7 @@ func sampleFineWeb(modelID string, n, sequenceLen int) []tokenizedSentence {
 	reader := parquet.NewGenericReader[fineWebEntry](fParquet, schema)
 	defer func() { _ = reader.Close() }()
 
-	// Create tokenizer.
+	// Create tokenizer: it is configured by the "tokenizer.json" to a max_length of 128, with padding.
 	repoTokenizer := hub.New(modelID).WithAuth(hfAuthToken)
 	localFile := must.M1(repoTokenizer.DownloadFile("tokenizer.json"))
 	tokenizer := must.M1(dtok.FromFile(localFile))
@@ -125,7 +126,21 @@ func sampleFineWeb(modelID string, n, sequenceLen int) []tokenizedSentence {
 		for _, row := range rows {
 			encoding := tokenizer.EncodeWithOptions(row.Text, false,
 				dtok.WithReturnTypeIDs(),
-				dtok.WithReturnAttentionMask())
+				dtok.WithReturnAttentionMask(),
+			)
+
+			if *flagExcludePadded {
+				var countMasked int
+				for _, id := range encoding.AttentionMask {
+					if id == 0 {
+						countMasked++
+					}
+				}
+				if countMasked > 0 {
+					continue
+				}
+			}
+
 			results[current].Encoding[0] = padOrTrim(sequenceLen,
 				sliceMap(encoding.IDs, func(id uint32) int64 { return int64(id) }),
 				0)
@@ -314,13 +329,18 @@ func benchmarkONNXModelWithORT(withHeader bool,
 		Done()
 }
 
-func TestBenchKnightsSBertFull(t *testing.T) {
+func TestBenchKnightsSBertFullORT(t *testing.T) {
 	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repo.DownloadFile("model.onnx"))
 	for ii, batchSize := range BatchSizes {
 		benchmarkONNXModelWithORT(ii == 0, "Full", onnxModelPath, 10000, SequenceLength, batchSize,
 			"last_hidden_state", shapes.Make(dtypes.Float32, batchSize, SequenceLength, 384))
 	}
+}
+
+func TestBenchKnightsSBertFullXLA(t *testing.T) {
+	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
+	onnxModelPath := must.M1(repo.DownloadFile("model.onnx"))
 	for _, batchSize := range BatchSizes {
 		benchmarkONNXModelWithXLA(false, "Full", onnxModelPath, 10000, SequenceLength, batchSize)
 	}
@@ -416,12 +436,12 @@ var ModelSlicesOutputs = [][2]string{
 func TestBenchKnightsSBertSliceXLA(t *testing.T) {
 	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repo.DownloadFile("model.onnx"))
-
 	for _, modelSlice := range ModelSlicesOutputs {
 		name := modelSlice[1]
 		outputNodeName := modelSlice[0]
 		for ii, batchSize := range BatchSizes {
-			benchmarkONNXModelWithXLA(ii == 0, name, onnxModelPath, 10000, SequenceLength, batchSize,
+			displayHeader := ii == 0
+			benchmarkONNXModelWithXLA(displayHeader, name, onnxModelPath, 10000, SequenceLength, batchSize,
 				outputNodeName)
 		}
 	}
@@ -438,7 +458,8 @@ func TestBenchKnightsSBertSliceORT(t *testing.T) {
 		shapesPerBatchSize := saveONNXModelWithOutput(onnxModelPath, editedModelPath, outputNodeName)
 		_ = shapesPerBatchSize
 		for ii, batchSize := range BatchSizes {
-			benchmarkONNXModelWithORT(ii == 0, name, editedModelPath, 10000, SequenceLength, batchSize,
+			displayHeader := ii == 0
+			benchmarkONNXModelWithORT(displayHeader, name, editedModelPath, 10000, SequenceLength, batchSize,
 				outputNodeName, shapesPerBatchSize[batchSize])
 		}
 	}
