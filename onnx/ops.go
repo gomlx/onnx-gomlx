@@ -11,6 +11,7 @@ import (
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
+	"k8s.io/klog/v2"
 	"reflect"
 	"slices"
 )
@@ -496,6 +497,7 @@ func convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
 //
 ////////////////////////////////////////////////////////////////////
 
+// tensorToInts converts elements of the tensor to a slice of ints.
 func tensorToInts(t *tensors.Tensor) []int {
 	res := make([]int, t.Size())
 	intType := reflect.TypeOf(int(0))
@@ -580,6 +582,7 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 
 	endsT, err := m.materializeConstantExpression(node.Input[2], convertedOutputs)
 	if err != nil {
+		klog.Infof("Error: %+v", err)
 		panic(errors.WithMessagef(err, "while converting 'ends' for node %s", nodeToString(node)))
 	}
 	ends := tensorToInts(endsT)
@@ -897,7 +900,10 @@ func rangeCount(backend backends.Backend, start, limit, delta *tensors.Tensor) i
 		}
 		return ConvertDType(count, dtypes.Int64)
 	}, start, limit, delta)
-	return int(tensors.ToScalar[int64](count))
+
+	result := int(tensors.ToScalar[int64](count))
+	count.FinalizeAll()
+	return result
 }
 
 // convertCumSum converts a ONNX node to a GoMLX node.
