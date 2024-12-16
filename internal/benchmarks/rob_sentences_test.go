@@ -10,7 +10,9 @@ import (
 	"github.com/gomlx/gomlx/graph"
 	"github.com/gomlx/gomlx/graph/graphtest"
 	"github.com/gomlx/gomlx/ml/context"
+	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/gomlx/types/tensors"
+	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/janpfeifer/go-benchmarks"
 	"github.com/janpfeifer/must"
@@ -77,6 +79,7 @@ func initializeRobSentences() []tokenizedSentence {
 		for sequenceLen > 0 && encoding.AttentionMask[sequenceLen-1] == 0 {
 			sequenceLen--
 		}
+		sequenceLen = 13
 
 		results[idxSentence].Encoding[0] = padOrTrim(sequenceLen,
 			sliceMap(encoding.IDs, func(id uint32) int64 { return int64(id) }),
@@ -92,8 +95,8 @@ func initializeRobSentences() []tokenizedSentence {
 }
 
 func TestBenchRobSentencesORT(t *testing.T) {
-	name := "ORT/RobSentences/BatchSize=1"
-	batchSize := 1
+	batchSize := 32
+	name := fmt.Sprintf("ORT/RobSentences/BatchSize=%d", batchSize)
 	outputNodeName := "last_hidden_state"
 	embeddingSize := 384
 
@@ -140,9 +143,9 @@ func TestBenchRobSentencesORT(t *testing.T) {
 			// Create batch for each input tensor.
 			for inputIdx, t := range inputTensors {
 				flat := t.GetData()
-				for exampleIdx := range batchSize {
-					example := examples[sentenceIdx+exampleIdx]
-					copy(flat[exampleIdx*sentenceLen:], example.Encoding[inputIdx])
+				for inBatchIdx := range batchSize {
+					example := examples[sentenceIdx+inBatchIdx]
+					copy(flat[inBatchIdx*sentenceLen:], example.Encoding[inputIdx])
 				}
 			}
 
@@ -168,8 +171,8 @@ func TestBenchRobSentencesORT(t *testing.T) {
 }
 
 func TestBenchRobSentencesXLA(t *testing.T) {
-	name := "ORT/RobSentences/BatchSize=1"
 	batchSize := 1
+	name := fmt.Sprintf("ORT/RobSentences/BatchSize=%d", batchSize)
 
 	// Tokenize Rob's sentences.
 	examples := initializeRobSentences()
@@ -201,18 +204,28 @@ func TestBenchRobSentencesXLA(t *testing.T) {
 	})
 	defer exec.Finalize()
 
-	sentenceIdx := 0
+	sentenceLen := 13
+	var inputTensors [3]*tensors.Tensor
+	for ii := range inputTensors {
+		inputTensors[ii] = tensors.FromShape(shapes.Make(dtypes.Int64, batchSize, sentenceLen))
+	}
+
+	nextSentenceIdx := 0
 	runIdx := 0
 	testFn := benchmarks.NamedFunction{
 		Name: name,
 		Func: func() {
-			sentenceLen := len(examples[sentenceIdx].Encoding[0])
+			sentenceLen := len(examples[nextSentenceIdx].Encoding[0])
 
 			// Create input and output tensors.
-			var inputTensors [3]*tensors.Tensor
-			example := examples[sentenceIdx]
-			for ii := range inputTensors {
-				inputTensors[ii] = tensors.FromFlatDataAndDimensions[int64](example.Encoding[ii], 1, sentenceLen)
+			for inputIdx, t := range inputTensors {
+				tensors.MutableFlatData[int64](t, func(flat []int64) {
+					for inBatchIdx := range batchSize {
+						example := examples[nextSentenceIdx+inBatchIdx]
+						copy(flat[inBatchIdx*sentenceLen:], example.Encoding[inputIdx])
+					}
+				})
+				t.MaterializeOnDevices(backend)
 			}
 
 			// Execute program.
@@ -221,9 +234,9 @@ func TestBenchRobSentencesXLA(t *testing.T) {
 			output.FinalizeAll()
 
 			// Next batch.
-			sentenceIdx += batchSize
-			if sentenceIdx+batchSize >= len(examples) {
-				sentenceIdx = 0
+			nextSentenceIdx += batchSize
+			if nextSentenceIdx+batchSize >= len(examples) {
+				nextSentenceIdx = 0
 			}
 			runIdx++
 		},
