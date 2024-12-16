@@ -40,7 +40,8 @@ var (
 
 	// Benchmark hyperparameters.
 	BatchSizes     = []int{1, 16, 64} // {1, 16, 64}
-	SequenceLength = 128
+	SequenceLength = 128              // Shouldn't be changed, since the tokenizer is hard-coded to pad to 128.
+	NumSentences   = 10_000
 
 	flagBenchDuration = flag.Duration("bench_duration", 1*time.Second, "Benchmark duration")
 	flagPrintXLAGraph = flag.Bool("xla_graph", false, "Prints XLA graph")
@@ -164,15 +165,17 @@ var (
 	tokenizedExamplesOnce sync.Once
 )
 
-func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, numSentences, sentenceLength, batchSize int,
+func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batchSize int,
 	targetNodeNames ...string) {
-	if numSentences < batchSize {
-		exceptions.Panicf("batchSize(%d) must be >= to the number of sentences sampled (%d)", batchSize, numSentences)
+	if NumSentences < batchSize {
+		exceptions.Panicf("batchSize(%d) must be >= to the number of sentences sampled (%d)", batchSize, NumSentences)
 	}
 
 	// We assume all tests are going to use the same number of sentences and sentence length.
 	tokenizedExamplesOnce.Do(func() {
-		tokenizedExamples = sampleFineWeb(KnightsAnalyticsSBertID, numSentences, sentenceLength)
+		fmt.Printf("Tokenizing %d sentences of length %d...\n", NumSentences, SequenceLength)
+		tokenizedExamples = sampleFineWeb(KnightsAnalyticsSBertID, NumSentences, SequenceLength)
+		fmt.Printf("\tfinished tokenizing.\n")
 	})
 
 	// Build model:
@@ -181,7 +184,6 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, numS
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()
-
 	exec := context.NewExec(backend, ctx, func(ctx *context.Context, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
@@ -201,10 +203,12 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, numS
 	// Create input tensors:
 	var inputTensors [3]*tensors.Tensor // tokenIDs, attentionMask, tokenTypeIDs
 	for ii := range inputTensors {
-		inputTensors[ii] = tensors.FromShape(shapes.Make(dtypes.Int64, batchSize, sentenceLength))
+		inputTensors[ii] = tensors.FromShape(shapes.Make(dtypes.Int64, batchSize, SequenceLength))
 	}
+	var outputTensor *tensors.Tensor
 
-	current := 0
+	runIdx := 0
+	sentenceIdx := 0
 	testFn := benchmarks.NamedFunction{
 		Name: fmt.Sprintf("XLA/%s/BatchSize=%2d:", name, batchSize),
 		Func: func() {
@@ -212,28 +216,37 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, numS
 			for inputIdx, t := range inputTensors {
 				tensors.MutableFlatData[int64](t, func(flat []int64) {
 					for exampleIdx := range batchSize {
-						sample := tokenizedExamples[current+exampleIdx]
-						copy(flat[exampleIdx*sentenceLength:], sample.Encoding[inputIdx])
+						sample := tokenizedExamples[sentenceIdx+exampleIdx]
+						copy(flat[exampleIdx*SequenceLength:], sample.Encoding[inputIdx])
 					}
 				})
 			}
 
 			// Execute program.
-			outputs := exec.Call(inputTensors[0], inputTensors[1], inputTensors[2])
-			for _, output := range outputs {
-				output.FinalizeAll()
+			//start := time.Now()
+			output := exec.Call(inputTensors[0], inputTensors[1], inputTensors[2])[0]
+			if outputTensor == nil {
+				outputTensor = tensors.FromShape(output.Shape())
 			}
+			outputTensor.CopyFrom(output)
+			output.FinalizeAll()
+
+			//elapsed := time.Since(start)
+			//if elapsed > 200*time.Microsecond {
+			//	fmt.Printf("runIdx=%d, sentenceIdx=%d: elapsed=%s\n", runIdx, sentenceIdx, elapsed)
+			//}
 
 			// Next batch.
-			current += numSentences
-			if current+batchSize > numSentences {
-				current = 0
+			runIdx++
+			sentenceIdx += batchSize
+			if sentenceIdx+batchSize >= NumSentences {
+				sentenceIdx = 0
 			}
 		},
 	}
 
 	benchmarks.New(testFn).
-		WithWarmUps(10).
+		WithWarmUps(64).
 		WithDuration(*flagBenchDuration).
 		WithHeader(withHeader).
 		Done()
@@ -258,24 +271,24 @@ var (
 )
 
 func benchmarkONNXModelWithORT(withHeader bool,
-	name, onnxModelPath string, numSentences, sentenceLength, batchSize int,
+	name, onnxModelPath string, batchSize int,
 	outputNodeName string, outputNodeShape shapes.Shape) {
 	ortInitFn()
 
 	// Tokenize examples from FineWeb.
-	if numSentences < batchSize {
-		exceptions.Panicf("batchSize(%d) must be >= to the number of sentences sampled (%d)", batchSize, numSentences)
+	if NumSentences < batchSize {
+		exceptions.Panicf("batchSize(%d) must be >= to the number of sentences sampled (%d)", batchSize, NumSentences)
 	}
 	// We assume all tests are going to use the same number of sentences and sentence length.
 	tokenizedExamplesOnce.Do(func() {
-		fmt.Printf("Tokenzing %d sentences of length %d...\n", numSentences, sentenceLength)
-		tokenizedExamples = sampleFineWeb(KnightsAnalyticsSBertID, numSentences, sentenceLength)
+		fmt.Printf("Tokenizing %d sentences of length %d...\n", NumSentences, SequenceLength)
+		tokenizedExamples = sampleFineWeb(KnightsAnalyticsSBertID, NumSentences, SequenceLength)
 		fmt.Printf("\tfinished tokenizing.\n")
 	})
 
 	// Create input and output tensors.
 	var inputTensors [3]*ort.Tensor[int64]
-	inputShape := ort.NewShape(int64(batchSize), int64(sentenceLength))
+	inputShape := ort.NewShape(int64(batchSize), int64(SequenceLength))
 	for ii := range inputTensors {
 		inputTensors[ii] = must.M1(ort.NewEmptyTensor[int64](inputShape))
 	}
@@ -307,7 +320,7 @@ func benchmarkONNXModelWithORT(withHeader bool,
 				flat := t.GetData()
 				for exampleIdx := range batchSize {
 					sample := tokenizedExamples[current+exampleIdx]
-					copy(flat[exampleIdx*sentenceLength:], sample.Encoding[inputIdx])
+					copy(flat[exampleIdx*SequenceLength:], sample.Encoding[inputIdx])
 				}
 			}
 
@@ -315,8 +328,8 @@ func benchmarkONNXModelWithORT(withHeader bool,
 			must.M(session.Run())
 
 			// Next batch.
-			current += numSentences
-			if current+batchSize > numSentences {
+			current += batchSize
+			if current+batchSize > NumSentences {
 				current = 0
 			}
 		},
@@ -333,7 +346,7 @@ func TestBenchKnightsSBertFullORT(t *testing.T) {
 	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repo.DownloadFile("model.onnx"))
 	for ii, batchSize := range BatchSizes {
-		benchmarkONNXModelWithORT(ii == 0, "Full", onnxModelPath, 10000, SequenceLength, batchSize,
+		benchmarkONNXModelWithORT(ii == 0, "Full", onnxModelPath, batchSize,
 			"last_hidden_state", shapes.Make(dtypes.Float32, batchSize, SequenceLength, 384))
 	}
 }
@@ -342,7 +355,7 @@ func TestBenchKnightsSBertFullXLA(t *testing.T) {
 	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repo.DownloadFile("model.onnx"))
 	for _, batchSize := range BatchSizes {
-		benchmarkONNXModelWithXLA(false, "Full", onnxModelPath, 10000, SequenceLength, batchSize)
+		benchmarkONNXModelWithXLA(false, "Full", onnxModelPath, batchSize)
 	}
 }
 
@@ -429,8 +442,8 @@ var ModelSlicesOutputs = [][2]string{
 	//{"/embeddings/LayerNorm/ReduceMean_output_0", "ReduceMean0"},
 	//{"/embeddings/LayerNorm/Sub_output_0", "Sub_output_0"},
 	//{"/embeddings/LayerNorm/ReduceMean_1_output_0", "ReduceMean1"},
-	{"/embeddings/LayerNorm/Sqrt_output_0", "beforeBroadcast"},
-	//{"/embeddings/LayerNorm/Div_output_0", "layerNorm0Scale"},
+	//{"/embeddings/LayerNorm/Sqrt_output_0", "beforeBroadcast"},
+	{"/embeddings/LayerNorm/Div_output_0", "layerNorm0Scale"},
 }
 
 func TestBenchKnightsSBertSliceXLA(t *testing.T) {
@@ -441,8 +454,7 @@ func TestBenchKnightsSBertSliceXLA(t *testing.T) {
 		outputNodeName := modelSlice[0]
 		for ii, batchSize := range BatchSizes {
 			displayHeader := ii == 0
-			benchmarkONNXModelWithXLA(displayHeader, name, onnxModelPath, 10000, SequenceLength, batchSize,
-				outputNodeName)
+			benchmarkONNXModelWithXLA(displayHeader, name, onnxModelPath, batchSize, outputNodeName)
 		}
 	}
 }
@@ -459,7 +471,7 @@ func TestBenchKnightsSBertSliceORT(t *testing.T) {
 		_ = shapesPerBatchSize
 		for ii, batchSize := range BatchSizes {
 			displayHeader := ii == 0
-			benchmarkONNXModelWithORT(displayHeader, name, editedModelPath, 10000, SequenceLength, batchSize,
+			benchmarkONNXModelWithORT(displayHeader, name, editedModelPath, batchSize,
 				outputNodeName, shapesPerBatchSize[batchSize])
 		}
 	}
