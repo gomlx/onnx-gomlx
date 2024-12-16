@@ -165,20 +165,22 @@ var (
 	tokenizedExamplesOnce sync.Once
 )
 
-func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batchSize int,
-	targetNodeNames ...string) {
-	if NumSentences < batchSize {
-		exceptions.Panicf("batchSize(%d) must be >= to the number of sentences sampled (%d)", batchSize, NumSentences)
-	}
-
-	// We assume all tests are going to use the same number of sentences and sentence length.
+func initTokenizedExamples() {
 	tokenizedExamplesOnce.Do(func() {
 		fmt.Printf("Tokenizing %d sentences of length %d...\n", NumSentences, SequenceLength)
 		tokenizedExamples = sampleFineWeb(KnightsAnalyticsSBertID, NumSentences, SequenceLength)
 		fmt.Printf("\tfinished tokenizing.\n")
 	})
+}
 
-	// Build model:
+func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batchSize int,
+	targetNodeNames ...string) {
+	initTokenizedExamples()
+	if NumSentences < batchSize {
+		exceptions.Panicf("batchSize(%d) must be <= to the number of sentences sampled (%d)", batchSize, NumSentences)
+	}
+
+	// Build model
 	backend := graphtest.BuildTestBackend()
 	model := must.M1(onnx.ReadFile(onnxModelPath))
 	ctx := context.New()
@@ -275,16 +277,11 @@ func benchmarkONNXModelWithORT(withHeader bool,
 	outputNodeName string, outputNodeShape shapes.Shape) {
 	ortInitFn()
 
-	// Tokenize examples from FineWeb.
+	// Tokenize examples from FineWeb (or from testSentences)
+	initTokenizedExamples()
 	if NumSentences < batchSize {
 		exceptions.Panicf("batchSize(%d) must be >= to the number of sentences sampled (%d)", batchSize, NumSentences)
 	}
-	// We assume all tests are going to use the same number of sentences and sentence length.
-	tokenizedExamplesOnce.Do(func() {
-		fmt.Printf("Tokenizing %d sentences of length %d...\n", NumSentences, SequenceLength)
-		tokenizedExamples = sampleFineWeb(KnightsAnalyticsSBertID, NumSentences, SequenceLength)
-		fmt.Printf("\tfinished tokenizing.\n")
-	})
 
 	// Create input and output tensors.
 	var inputTensors [3]*ort.Tensor[int64]
@@ -311,16 +308,16 @@ func benchmarkONNXModelWithORT(withHeader bool,
 		[]ort.Value{outputTensor}, options))
 	defer func() { must.M(session.Destroy()) }()
 
-	current := 0
+	sentenceIdx := 0
 	testFn := benchmarks.NamedFunction{
 		Name: fmt.Sprintf("ORT/%s/BatchSize=%2d:", name, batchSize),
 		Func: func() {
 			// Create batch for each input tensor.
 			for inputIdx, t := range inputTensors {
 				flat := t.GetData()
-				for exampleIdx := range batchSize {
-					sample := tokenizedExamples[current+exampleIdx]
-					copy(flat[exampleIdx*SequenceLength:], sample.Encoding[inputIdx])
+				for batchIdx := range batchSize {
+					sample := tokenizedExamples[sentenceIdx+batchIdx]
+					copy(flat[batchIdx*SequenceLength:], sample.Encoding[inputIdx])
 				}
 			}
 
@@ -328,9 +325,9 @@ func benchmarkONNXModelWithORT(withHeader bool,
 			must.M(session.Run())
 
 			// Next batch.
-			current += batchSize
-			if current+batchSize > NumSentences {
-				current = 0
+			sentenceIdx += batchSize
+			if sentenceIdx+batchSize >= NumSentences {
+				sentenceIdx = 0
 			}
 		},
 	}
