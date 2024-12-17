@@ -41,7 +41,7 @@ var (
 	// Benchmark hyperparameters.
 	BatchSizes     = []int{1, 16, 64} // {1, 16, 64}
 	SequenceLength = 128              // Shouldn't be changed, since the tokenizer is hard-coded to pad to 128.
-	NumSentences   = 10_000
+	NumSentences   = 128              // 10_000
 
 	flagBenchDuration = flag.Duration("bench_duration", 1*time.Second, "Benchmark duration")
 	flagPrintXLAGraph = flag.Bool("xla_graph", false, "Prints XLA graph")
@@ -248,7 +248,7 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 	}
 
 	benchmarks.New(testFn).
-		WithWarmUps(64).
+		WithWarmUps(128).
 		WithDuration(*flagBenchDuration).
 		WithHeader(withHeader).
 		Done()
@@ -440,7 +440,10 @@ var ModelSlicesOutputs = [][2]string{
 	//{"/embeddings/LayerNorm/Sub_output_0", "Sub_output_0"},
 	//{"/embeddings/LayerNorm/ReduceMean_1_output_0", "ReduceMean1"},
 	//{"/embeddings/LayerNorm/Sqrt_output_0", "beforeBroadcast"},
-	{"/embeddings/LayerNorm/Div_output_0", "layerNorm0Scale"},
+	//{"/embeddings/LayerNorm/Div_output_0", "layerNorm0Scale"},
+	//{"/embeddings/Add_1_output_0", "positionEmbeddingsAdded"},
+	//{"/embeddings/LayerNorm/Add_1_output_0", "normalizedEmbeddings"},
+	{"/encoder/layer.0/attention/output/Add_output_0", "attentionLayer0"},
 }
 
 func TestBenchKnightsSBertSliceXLA(t *testing.T) {
