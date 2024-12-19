@@ -26,7 +26,7 @@ type gomlxBinaryOp func(lhs, rhs *Node) *Node
 // Scalars are left untouched, because generally, XLA will broadcast them.
 //
 // Returns the list of broadcast operands.
-func onnxImplicitBroadcast(operands []*Node) []*Node {
+func onnxImplicitExpansion(operands []*Node) []*Node {
 	ranks := sliceMap(operands, func(n *Node) int { return n.Rank() })
 	maxRank := slices.Max(ranks)
 	return sliceMap(operands, func(n *Node) *Node {
@@ -42,7 +42,7 @@ func onnxImplicitBroadcast(operands []*Node) []*Node {
 // It differs from GoMLX and XLA in that it automatically prepend 1-dimensional axes to
 // any of the operands, if they differ in rank.
 func convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
-	operands := onnxImplicitBroadcast([]*Node{lhs, rhs})
+	operands := onnxImplicitExpansion([]*Node{lhs, rhs})
 	return fn(operands[0], operands[1])
 }
 
@@ -81,7 +81,7 @@ func convertWhere(node *protos.NodeProto, inputs []*Node) *Node {
 // inputs is a tuple with (cond, onTrue, onFalse) values.
 func onnxWhere(inputs []*Node) *Node {
 	// Broadcast according to ONNX rules.
-	inputs = onnxImplicitBroadcast(inputs)
+	inputs = onnxImplicitExpansion(inputs)
 	ranks := sliceMap(inputs, func(n *Node) int { return n.Rank() })
 	maxRank := slices.Max(ranks)
 	maxDims := make([]int, maxRank)
@@ -515,7 +515,7 @@ func tensorToInts(t *tensors.Tensor) []int {
 func convertPow(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	// defaultPow returns the generic Pow function:
 	defaultPow := func() *Node {
-		operands := onnxImplicitBroadcast([]*Node{inputs[0], inputs[1]})
+		operands := onnxImplicitExpansion([]*Node{inputs[0], inputs[1]})
 		return Pow(operands[0], operands[1])
 	}
 	exponentNode := node.Input[1]
@@ -749,7 +749,7 @@ func convertReduceMean(m *Model, convertedOutputs map[string]*Node, node *protos
 // convertConstantOfShape converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
-// https://onnx.ai/onnx/operators/onnx__ReduceMean.html
+// https://onnx.ai/onnx/operators/onnx__ConstantOfShape.html
 func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	g := inputs[0].Graph()
 
