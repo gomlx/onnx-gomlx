@@ -350,6 +350,9 @@ func benchmarkONNXModelWithORT(withHeader bool,
 }
 
 func TestBenchKnightsSBertFullORT(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
 	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repo.DownloadFile("model.onnx"))
 	for ii, batchSize := range BatchSizes {
@@ -359,6 +362,9 @@ func TestBenchKnightsSBertFullORT(t *testing.T) {
 }
 
 func TestBenchKnightsSBertFullXLA(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
 	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repo.DownloadFile("model.onnx"))
 	for _, batchSize := range BatchSizes {
@@ -465,6 +471,9 @@ var ModelSlicesOutputs = [][2]string{
 }
 
 func TestBenchKnightsSBertSliceXLA(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
 	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repo.DownloadFile("model.onnx"))
 	for _, modelSlice := range ModelSlicesOutputs {
@@ -478,6 +487,9 @@ func TestBenchKnightsSBertSliceXLA(t *testing.T) {
 }
 
 func TestBenchKnightsSBertSliceORT(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
 	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repo.DownloadFile("model.onnx"))
 

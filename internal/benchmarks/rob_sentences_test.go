@@ -95,6 +95,9 @@ func initializeRobSentences() []tokenizedSentence {
 }
 
 func TestBenchRobSentencesORT(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
 	batchSize := 32
 	name := fmt.Sprintf("ORT/RobSentences/BatchSize=%d", batchSize)
 	outputNodeName := "last_hidden_state"
@@ -171,6 +174,9 @@ func TestBenchRobSentencesORT(t *testing.T) {
 }
 
 func TestBenchRobSentencesXLA(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
 	batchSize := 1
 	name := fmt.Sprintf("ORT/RobSentences/BatchSize=%d", batchSize)
 
