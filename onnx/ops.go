@@ -536,10 +536,16 @@ func convertPow(m *Model, convertedOutputs map[string]*Node, node *protos.NodePr
 	switch exponent {
 	case 2:
 		return Square(inputs[0])
+	case 1:
+		return inputs[0]
+	case 0.5:
+		return Sqrt(inputs[0])
+	case -0.5:
+		return Inverse(Sqrt(inputs[0]))
 	case -1:
 		return Inverse(inputs[0])
 	case -2:
-		return Sqrt(inputs[0])
+		return Inverse(Square(inputs[0]))
 	default:
 		return defaultPow()
 	}
