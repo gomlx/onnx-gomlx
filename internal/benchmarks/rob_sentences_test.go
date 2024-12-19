@@ -225,12 +225,13 @@ func TestBenchRobSentencesXLA(t *testing.T) {
 						copy(flat[inBatchIdx*sentenceLen:], example.Encoding[inputIdx])
 					}
 				})
-				t.MaterializeOnDevices(backend)
 			}
 
 			// Execute program.
 			output := exec.Call(inputTensors[0], inputTensors[1], inputTensors[2])[0]
-			output.MaterializeLocal() // Transfer locally.
+			tensors.ConstFlatData(output, func(flat []float32) {
+				_ = flat
+			})
 			output.FinalizeAll()
 
 			// Next batch.

@@ -207,7 +207,6 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 	for ii := range inputTensors {
 		inputTensors[ii] = tensors.FromShape(shapes.Make(dtypes.Int64, batchSize, SequenceLength))
 	}
-	var outputTensor *tensors.Tensor
 
 	runIdx := 0
 	sentenceIdx := 0
@@ -227,10 +226,11 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 			// Execute program.
 			//start := time.Now()
 			output := exec.Call(inputTensors[0], inputTensors[1], inputTensors[2])[0]
-			if outputTensor == nil {
-				outputTensor = tensors.FromShape(output.Shape())
-			}
-			outputTensor.CopyFrom(output)
+			tensors.ConstFlatData(output, func(flat []float32) {
+				if runIdx == 0 {
+					fmt.Printf("\t> Last value of result: %v\n", flat[len(flat)-1])
+				}
+			})
 			output.FinalizeAll()
 
 			//elapsed := time.Since(start)
@@ -309,6 +309,7 @@ func benchmarkONNXModelWithORT(withHeader bool,
 	defer func() { must.M(session.Destroy()) }()
 
 	sentenceIdx := 0
+	runIdx := 0
 	testFn := benchmarks.NamedFunction{
 		Name: fmt.Sprintf("ORT/%s/BatchSize=%2d:", name, batchSize),
 		Func: func() {
@@ -324,11 +325,17 @@ func benchmarkONNXModelWithORT(withHeader bool,
 			// Execute program.
 			must.M(session.Run())
 
+			flat := outputTensor.GetData()
+			if runIdx == 0 {
+				fmt.Printf("\t> Last value of result: %v\n", flat[len(flat)-1])
+			}
+
 			// Next batch.
 			sentenceIdx += batchSize
 			if sentenceIdx+batchSize >= NumSentences {
 				sentenceIdx = 0
 			}
+			runIdx++
 		},
 	}
 
@@ -432,7 +439,7 @@ func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBa
 // ModelSlicesOutputs points to intermediary outputs in the KnightsAnalytics/all-MiniLM-L6-v2 model.
 var ModelSlicesOutputs = [][2]string{
 	// Format: <output node name>, <short name>
-	//{"/embeddings/Add_output_0", "embeddingGather"},
+	{"/embeddings/Add_output_0", "embeddingGather"},
 	//{"/embeddings/LayerNorm/Add_1_output_0", "embeddingsLayerNorm"},
 
 	//{"/embeddings/Add_1_output_0", "embeddings0"},
@@ -443,7 +450,7 @@ var ModelSlicesOutputs = [][2]string{
 	//{"/embeddings/LayerNorm/Div_output_0", "layerNorm0Scale"},
 	//{"/embeddings/Add_1_output_0", "positionEmbeddingsAdded"},
 	//{"/embeddings/LayerNorm/Add_1_output_0", "normalizedEmbeddings"},
-	{"/encoder/layer.0/attention/output/Add_output_0", "attentionLayer0"},
+	//{"/encoder/layer.0/attention/output/Add_output_0", "attentionLayer0"},
 }
 
 func TestBenchKnightsSBertSliceXLA(t *testing.T) {
