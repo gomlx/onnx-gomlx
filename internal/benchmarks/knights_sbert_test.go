@@ -21,6 +21,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -39,9 +40,9 @@ var (
 	FineWebSampleFile       = "sample/10BT/000_00000.parquet"
 
 	// Benchmark hyperparameters.
-	BatchSizes     = []int{1, 16, 64} // {1, 16, 64}
-	SequenceLength = 128              // Shouldn't be changed, since the tokenizer is hard-coded to pad to 128.
-	NumSentences   = 128              // 10_000
+	BatchSizes     = []int{1, 16, 32, 64} // {1, 16, 64}
+	SequenceLength = 128                  // Shouldn't be changed, since the tokenizer is hard-coded to pad to 128.
+	NumSentences   = 128                  // 10_000
 
 	flagBenchDuration = flag.Duration("bench_duration", 1*time.Second, "Benchmark duration")
 	flagPrintXLAGraph = flag.Bool("xla_graph", false, "Prints XLA graph")
@@ -247,6 +248,8 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 		},
 	}
 
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	benchmarks.New(testFn).
 		WithWarmUps(128).
 		WithDuration(*flagBenchDuration).
@@ -439,18 +442,26 @@ func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBa
 // ModelSlicesOutputs points to intermediary outputs in the KnightsAnalytics/all-MiniLM-L6-v2 model.
 var ModelSlicesOutputs = [][2]string{
 	// Format: <output node name>, <short name>
-	{"/embeddings/Add_output_0", "embeddingGather"},
+	//{"/embeddings/Add_output_0", "embeddingGather"},
 	//{"/embeddings/LayerNorm/Add_1_output_0", "embeddingsLayerNorm"},
 
-	//{"/embeddings/Add_1_output_0", "embeddings0"},
 	//{"/embeddings/LayerNorm/ReduceMean_output_0", "ReduceMean0"},
-	//{"/embeddings/LayerNorm/Sub_output_0", "Sub_output_0"},
-	//{"/embeddings/LayerNorm/ReduceMean_1_output_0", "ReduceMean1"},
-	//{"/embeddings/LayerNorm/Sqrt_output_0", "beforeBroadcast"},
-	//{"/embeddings/LayerNorm/Div_output_0", "layerNorm0Scale"},
-	//{"/embeddings/Add_1_output_0", "positionEmbeddingsAdded"},
-	//{"/embeddings/LayerNorm/Add_1_output_0", "normalizedEmbeddings"},
+	//{"/embeddings/LayerNorm/Sub_output_0", "LayerNorm0Shifted"},
+
+	//{"/embeddings/LayerNorm/Pow_output_0", "LayerNorm0Squares"},
+	//{"/embeddings/LayerNorm/ReduceMean_1_output_0", "LayerNorm0SquaresMean"},
+	//{"/embeddings/LayerNorm/Add_output_0", "LayerNorm0SquaresMeanEpsilon"},
+	//{"/embeddings/LayerNorm/Sqrt_output_0", "layerNorm0Scale"},
+	//{"/embeddings/LayerNorm/Div_output_0", "layerNorm0ScaleNormalized"},
+	//{"/embeddings/LayerNorm/Mul_output_0", "layerNorm0Scaled"},
+
+	//{"/embeddings/LayerNorm/Add_1_output_0", "attentionLayer0.PreValueMul"},
+	{"/encoder/layer.0/attention/self/value/MatMul_output_0", "attentionLayer0.ValueMul"},
+
+	//{"/encoder/layer.0/attention/self/Reshape_3_output_0", "attentionLayer0"},
 	//{"/encoder/layer.0/attention/output/Add_output_0", "attentionLayer0"},
+
+	//{"/encoder/layer.1/attention/self/Reshape_3_output_0", "attentionLayer1"},
 }
 
 func TestBenchKnightsSBertSliceXLA(t *testing.T) {
