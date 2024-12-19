@@ -214,7 +214,8 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 	case "Div":
 		res = convertBinaryOp(Div, inputs[0], inputs[1])
 	case "Pow":
-		res = convertBinaryOp(Pow, inputs[0], inputs[1])
+		//res = convertBinaryOp(Pow, inputs[0], inputs[1])
+		res = convertPow(m, convertedOutputs, node, inputs)
 	case "And":
 		res = convertBinaryOp(And, inputs[0], inputs[1])
 	case "Or":

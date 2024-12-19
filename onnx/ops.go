@@ -511,6 +511,40 @@ func tensorToInts(t *tensors.Tensor) []int {
 	return res
 }
 
+// convertPow, with special casing if the exponential is a known constant.
+func convertPow(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// defaultPow returns the generic Pow function:
+	defaultPow := func() *Node {
+		operands := onnxImplicitBroadcast([]*Node{inputs[0], inputs[1]})
+		return Pow(operands[0], operands[1])
+	}
+	exponentNode := node.Input[1]
+	exponentT, err := m.materializeConstantExpression(exponentNode, convertedOutputs)
+	if err != nil || !exponentT.IsScalar() {
+		// Assume exponent is not a constant expression, hence we use proper Pow operand.
+		return defaultPow()
+	}
+
+	exponentV := reflect.ValueOf(exponentT.Value())
+	var exponent float64
+	float64T := reflect.TypeOf(exponent)
+	if !exponentV.CanConvert(float64T) {
+		// Complex number exponent ?
+		return defaultPow()
+	}
+	exponent = exponentV.Convert(float64T).Float()
+	switch exponent {
+	case 2:
+		return Square(inputs[0])
+	case -1:
+		return Inverse(inputs[0])
+	case -2:
+		return Sqrt(inputs[0])
+	default:
+		return defaultPow()
+	}
+}
+
 // convertSqueeze converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
