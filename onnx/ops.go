@@ -11,6 +11,7 @@ import (
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
+	"k8s.io/klog/v2"
 	"reflect"
 	"slices"
 )
@@ -25,7 +26,7 @@ type gomlxBinaryOp func(lhs, rhs *Node) *Node
 // Scalars are left untouched, because generally, XLA will broadcast them.
 //
 // Returns the list of broadcast operands.
-func onnxImplicitBroadcast(operands []*Node) []*Node {
+func onnxImplicitExpansion(operands []*Node) []*Node {
 	ranks := sliceMap(operands, func(n *Node) int { return n.Rank() })
 	maxRank := slices.Max(ranks)
 	return sliceMap(operands, func(n *Node) *Node {
@@ -41,7 +42,7 @@ func onnxImplicitBroadcast(operands []*Node) []*Node {
 // It differs from GoMLX and XLA in that it automatically prepend 1-dimensional axes to
 // any of the operands, if they differ in rank.
 func convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
-	operands := onnxImplicitBroadcast([]*Node{lhs, rhs})
+	operands := onnxImplicitExpansion([]*Node{lhs, rhs})
 	return fn(operands[0], operands[1])
 }
 
@@ -80,7 +81,7 @@ func convertWhere(node *protos.NodeProto, inputs []*Node) *Node {
 // inputs is a tuple with (cond, onTrue, onFalse) values.
 func onnxWhere(inputs []*Node) *Node {
 	// Broadcast according to ONNX rules.
-	inputs = onnxImplicitBroadcast(inputs)
+	inputs = onnxImplicitExpansion(inputs)
 	ranks := sliceMap(inputs, func(n *Node) int { return n.Rank() })
 	maxRank := slices.Max(ranks)
 	maxDims := make([]int, maxRank)
@@ -496,6 +497,7 @@ func convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
 //
 ////////////////////////////////////////////////////////////////////
 
+// tensorToInts converts elements of the tensor to a slice of ints.
 func tensorToInts(t *tensors.Tensor) []int {
 	res := make([]int, t.Size())
 	intType := reflect.TypeOf(int(0))
@@ -507,6 +509,46 @@ func tensorToInts(t *tensors.Tensor) []int {
 		}
 	})
 	return res
+}
+
+// convertPow, with special casing if the exponential is a known constant.
+func convertPow(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// defaultPow returns the generic Pow function:
+	defaultPow := func() *Node {
+		operands := onnxImplicitExpansion([]*Node{inputs[0], inputs[1]})
+		return Pow(operands[0], operands[1])
+	}
+	exponentNode := node.Input[1]
+	exponentT, err := m.materializeConstantExpression(exponentNode, convertedOutputs)
+	if err != nil || !exponentT.IsScalar() {
+		// Assume exponent is not a constant expression, hence we use proper Pow operand.
+		return defaultPow()
+	}
+
+	exponentV := reflect.ValueOf(exponentT.Value())
+	var exponent float64
+	float64T := reflect.TypeOf(exponent)
+	if !exponentV.CanConvert(float64T) {
+		// Complex number exponent ?
+		return defaultPow()
+	}
+	exponent = exponentV.Convert(float64T).Float()
+	switch exponent {
+	case 2:
+		return Square(inputs[0])
+	case 1:
+		return inputs[0]
+	case 0.5:
+		return Sqrt(inputs[0])
+	case -0.5:
+		return Inverse(Sqrt(inputs[0]))
+	case -1:
+		return Inverse(inputs[0])
+	case -2:
+		return Inverse(Square(inputs[0]))
+	default:
+		return defaultPow()
+	}
 }
 
 // convertSqueeze converts a ONNX node to a GoMLX node.
@@ -580,6 +622,7 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 
 	endsT, err := m.materializeConstantExpression(node.Input[2], convertedOutputs)
 	if err != nil {
+		klog.Infof("Error: %+v", err)
 		panic(errors.WithMessagef(err, "while converting 'ends' for node %s", nodeToString(node)))
 	}
 	ends := tensorToInts(endsT)
@@ -706,7 +749,7 @@ func convertReduceMean(m *Model, convertedOutputs map[string]*Node, node *protos
 // convertConstantOfShape converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
-// https://onnx.ai/onnx/operators/onnx__ReduceMean.html
+// https://onnx.ai/onnx/operators/onnx__ConstantOfShape.html
 func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	g := inputs[0].Graph()
 
@@ -897,7 +940,10 @@ func rangeCount(backend backends.Backend, start, limit, delta *tensors.Tensor) i
 		}
 		return ConvertDType(count, dtypes.Int64)
 	}, start, limit, delta)
-	return int(tensors.ToScalar[int64](count))
+
+	result := int(tensors.ToScalar[int64](count))
+	count.FinalizeAll()
+	return result
 }
 
 // convertCumSum converts a ONNX node to a GoMLX node.

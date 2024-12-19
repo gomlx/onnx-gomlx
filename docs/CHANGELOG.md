@@ -1,3 +1,12 @@
+# v0.1.5 🎄 2024/12/19 🎄
+
+* Added `internal/bechmarks` package: See progress in https://docs.google.com/spreadsheets/d/1ikpJH6rVVHq8ES-IA8U4lkKH4XsTSpRyZewXwGTgits/edit?gid=1753191050#gid=1753191050
+  * Benchmark ONNX models with XLA, ONNX Runtime (ORT), CPU and GPU
+  * Very simple models
+  * KnightsAnalytics/all-MiniLM-L6-v2
+  * Slices (parts of) KnightsAnalytics/all-MiniLM-L6-v2
+* Updated dependencies to GoMLX 0.16.1 with lots of accelerations.
+
 # v0.1.4 - 2024/11/28
 
 * Added Flatten op support.

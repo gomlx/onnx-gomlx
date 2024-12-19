@@ -9,6 +9,7 @@ import (
 	"github.com/gomlx/gomlx/types"
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"runtime"
 )
 
 // sliceMap executes the given function sequentially for every element on in, and returns a mapped slice.
@@ -125,6 +126,11 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 			exceptions.Panicf("output node %q not found", nodeName)
 		}
 	}
+
+	// Makes sure all temporarily allocated tensor on device are freed.
+	for _ = range 3 {
+		runtime.GC()
+	}
 	return outputs
 }
 
@@ -208,7 +214,8 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 	case "Div":
 		res = convertBinaryOp(Div, inputs[0], inputs[1])
 	case "Pow":
-		res = convertBinaryOp(Pow, inputs[0], inputs[1])
+		//res = convertBinaryOp(Pow, inputs[0], inputs[1])
+		res = convertPow(m, convertedOutputs, node, inputs)
 	case "And":
 		res = convertBinaryOp(And, inputs[0], inputs[1])
 	case "Or":
