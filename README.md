@@ -21,9 +21,9 @@ The main use cases so far are:
       amd64, arm64, GPU.
     * Notice if you want to simply get a pure Go inference of ONNX models, see 
       [github.com/AdvancedClimateSystems/gonnx](https://github.com/AdvancedClimateSystems/gonnx) or
-      [github.com/oramasearch/onnx-go](https://github.com/oramasearch/onnx-go). They will be much slower (~100x (?)) than 
+      [github.com/oramasearch/onnx-go](https://github.com/oramasearch/onnx-go). They will be slower (~8x based on a SentenceEncoder model, BERT based using `gonnx` vs `ONNXRuntime`) than 
       the XLA inference (or `onnxruntime`) for large projects, but for many use cases it doesn't matter, and they
-      are a much smaller pure Go dependency.
+      are a much smaller pure Go dependency. Only for CPU (no GPU support).
 
 ## 🚧 **EXPERIMENTAL and UNDER-DEVELOPMENT**
 
