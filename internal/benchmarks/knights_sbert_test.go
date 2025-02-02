@@ -25,7 +25,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 	"unicode/utf8"
 )
 
@@ -44,7 +43,7 @@ var (
 	SequenceLength = 128                  // Shouldn't be changed, since the tokenizer is hard-coded to pad to 128.
 	NumSentences   = 128                  // 10_000
 
-	flagBenchDuration = flag.Duration("bench_duration", 1*time.Second, "Benchmark duration")
+	flagBenchDuration = flag.Duration("bench_duration", 0, "Benchmark duration, typically use 10 seconds. If left as 0, benchmark tests are disabled")
 	flagPrintXLAGraph = flag.Bool("xla_graph", false, "Prints XLA graph")
 	flagExcludePadded = flag.Bool("exclude_padded", false, "Exclude sentences with less than 128 tokens")
 )
@@ -350,7 +349,7 @@ func benchmarkONNXModelWithORT(withHeader bool,
 }
 
 func TestBenchKnightsSBertFullORT(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || *flagBenchDuration == 0 {
 		t.SkipNow()
 	}
 	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
@@ -362,7 +361,7 @@ func TestBenchKnightsSBertFullORT(t *testing.T) {
 }
 
 func TestBenchKnightsSBertFullXLA(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || *flagBenchDuration == 0 {
 		t.SkipNow()
 	}
 	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
@@ -471,7 +470,7 @@ var ModelSlicesOutputs = [][2]string{
 }
 
 func TestBenchKnightsSBertSliceXLA(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || *flagBenchDuration == 0 {
 		t.SkipNow()
 	}
 	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
@@ -487,7 +486,7 @@ func TestBenchKnightsSBertSliceXLA(t *testing.T) {
 }
 
 func TestBenchKnightsSBertSliceORT(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || *flagBenchDuration == 0 {
 		t.SkipNow()
 	}
 	repo := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
