@@ -38,6 +38,9 @@ The benchmark code is in `internal/benchmarks`, and the examples below assume yo
 
 Notice the ORT `.so` files are installed in `~/.local/lib` for these examples.
 
+You have to set the flag `--bench_duration=10s` (or some other amount of time). If you leave it at the default 0, 
+it won't run any benchmark test. These are not Go's benchmarks, but rather built as tests.
+
 Example of commands to run benchmarks in an Intel 12K900:
 
 * Running KnightsAnalystics SBert with GoMLX/XLA + ORT CPU:

@@ -340,7 +340,7 @@ func implBenchRobSentencesXLA(parallelization, batchSize int, header bool) {
 }
 
 func TestBenchRobSentencesORT(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || *flagBenchDuration == 0 {
 		t.SkipNow()
 	}
 	count := 0
@@ -353,7 +353,7 @@ func TestBenchRobSentencesORT(t *testing.T) {
 }
 
 func TestBenchRobSentencesXLA(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || *flagBenchDuration == 0 {
 		t.SkipNow()
 	}
 	count := 0
