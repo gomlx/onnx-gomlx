@@ -77,7 +77,7 @@ func initializeRobSentences() []tokenizedSentence {
 			dtok.WithReturnAttentionMask(),
 		)
 
-		// Find seuqenceLen for sentence.
+		// Find sequenceLen for sentence.
 		sequenceLen := len(encoding.AttentionMask)
 		for sequenceLen > 0 && encoding.AttentionMask[sequenceLen-1] == 0 {
 			sequenceLen--
