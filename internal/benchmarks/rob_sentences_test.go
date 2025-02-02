@@ -12,11 +12,14 @@ import (
 	"github.com/gomlx/gomlx/ml/context"
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/gomlx/types/tensors"
+	"github.com/gomlx/gomlx/types/xsync"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/janpfeifer/go-benchmarks"
 	"github.com/janpfeifer/must"
 	ort "github.com/yalue/onnxruntime_go"
+	"runtime"
+	"sync"
 	"testing"
 )
 
@@ -74,7 +77,7 @@ func initializeRobSentences() []tokenizedSentence {
 			dtok.WithReturnAttentionMask(),
 		)
 
-		// Find seuqenceLen for sentence.
+		// Find sequenceLen for sentence.
 		sequenceLen := len(encoding.AttentionMask)
 		for sequenceLen > 0 && encoding.AttentionMask[sequenceLen-1] == 0 {
 			sequenceLen--
@@ -94,12 +97,86 @@ func initializeRobSentences() []tokenizedSentence {
 	return results
 }
 
-func TestBenchRobSentencesORT(t *testing.T) {
-	if testing.Short() {
-		t.SkipNow()
+func implParallelBenchmark[E any](
+	name string,
+	numWorkers, batchSize int, header bool,
+	warmUpRuns int,
+	inputFn func() E,
+	workerFn func(workerIdx int, e E)) {
+	// Parallelization:
+	var wg sync.WaitGroup
+	done := xsync.NewLatch()
+
+	// Start producer of inputs:
+	//   - We add some buffer, because we don't want the preparation of the inputs (producer)
+	//     to be a bottleneck or even accounted for.
+	examplesChan := make(chan E, numWorkers)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Create input and output tensors.
+		for {
+			e := inputFn()
+			// Write example or interrupt.
+			select {
+			case <-done.WaitChan():
+				// Finished executing, simply exit.
+				return
+			case examplesChan <- e:
+				// Move forward to produce next input example.
+			}
+		}
+	}()
+
+	// Start consumers:
+	finishedCounter := make(chan struct{})
+	for workerIdx := range numWorkers {
+		wg.Add(1)
+		go func(workerIdx int) {
+			defer wg.Done()
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+
+			for {
+				var e E
+				select {
+				case <-done.WaitChan():
+					return
+				case e = <-examplesChan:
+					// Received next input.
+				}
+				workerFn(workerIdx, e)
+				select {
+				case <-done.WaitChan():
+					return
+				case finishedCounter <- struct{}{}:
+					// Accounted for, loop to next.
+				}
+			}
+		}(workerIdx)
 	}
-	batchSize := 32
-	name := fmt.Sprintf("ORT/RobSentences/BatchSize=%d", batchSize)
+
+	// Benchmark function is simply reading out finished
+	testFn := benchmarks.NamedFunction{
+		Name: name,
+		Func: func() {
+			<-finishedCounter
+		},
+	}
+	benchmarks.New(testFn).
+		WithWarmUps(warmUpRuns).
+		WithDuration(*flagBenchDuration).
+		WithHeader(header).
+		WithInnerRepeats(batchSize). // Report will be "per example".
+		Done()
+
+	// done.Trigger will signal all goroutines to end.
+	done.Trigger()
+	wg.Wait()
+}
+
+func implBenchRobSentencesORT(parallelization, batchSize int, header bool) {
+	name := fmt.Sprintf("ORT/RobSentences/Parallel=%02d/BatchSize=%02d", parallelization, batchSize)
 	outputNodeName := "last_hidden_state"
 	embeddingSize := 384
 
@@ -121,64 +198,70 @@ func TestBenchRobSentencesORT(t *testing.T) {
 		must.M(options.AppendExecutionProviderCUDA(cudaOptions))
 	}
 
-	session := must.M1(ort.NewDynamicAdvancedSession(
-		onnxModelPath,
-		[]string{"input_ids", "attention_mask", "token_type_ids"}, []string{outputNodeName},
-		options))
-	defer func() { must.M(session.Destroy()) }()
+	// Create sessions, one per parallel run.
+	sessions := make([]*ort.DynamicAdvancedSession, parallelization)
+	for pIdx := range parallelization {
+		sessions[pIdx] = must.M1(ort.NewDynamicAdvancedSession(
+			onnxModelPath,
+			[]string{"input_ids", "attention_mask", "token_type_ids"}, []string{outputNodeName},
+			options))
+	}
+	defer func() {
+		for _, session := range sessions {
+			must.M(session.Destroy())
+		}
+	}()
 
+	// Generating examples for sessions.
+	type ExampleInput [3]*ort.Tensor[int64]
 	sentenceIdx := 0
-	runIdx := 0
-	testFn := benchmarks.NamedFunction{
-		Name: name,
-		Func: func() {
-			sentenceLen := len(examples[sentenceIdx].Encoding[0])
-
-			// Create input and output tensors.
-			var inputTensors [3]*ort.Tensor[int64]
-			inputShape := ort.NewShape(int64(batchSize), int64(sentenceLen))
-			for ii := range inputTensors {
-				inputTensors[ii] = must.M1(ort.NewEmptyTensor[int64](inputShape))
+	inputFn := func() (inputTensors ExampleInput) {
+		sentenceLen := len(examples[sentenceIdx].Encoding[0])
+		inputShape := ort.NewShape(int64(batchSize), int64(sentenceLen))
+		for ii := range inputTensors {
+			inputTensors[ii] = must.M1(ort.NewEmptyTensor[int64](inputShape))
+		}
+		// Create batch for each input tensor.
+		for inputIdx, t := range inputTensors {
+			flat := t.GetData()
+			for inBatchIdx := range batchSize {
+				example := examples[(sentenceIdx+inBatchIdx)%len(examples)]
+				copy(flat[inBatchIdx*sentenceLen:], example.Encoding[inputIdx])
 			}
-			outputShape := ort.NewShape(int64(batchSize), int64(sentenceLen), int64(embeddingSize))
-			outputTensor := must.M1(ort.NewEmptyTensor[float32](outputShape))
-
-			// Create batch for each input tensor.
-			for inputIdx, t := range inputTensors {
-				flat := t.GetData()
-				for inBatchIdx := range batchSize {
-					example := examples[sentenceIdx+inBatchIdx]
-					copy(flat[inBatchIdx*sentenceLen:], example.Encoding[inputIdx])
-				}
-			}
-
-			// Execute program.
-			must.M(session.Run(
-				[]ort.Value{inputTensors[0], inputTensors[1], inputTensors[2]},
-				[]ort.Value{outputTensor},
-			))
-
-			// Next batch.
-			sentenceIdx += batchSize
-			if sentenceIdx+batchSize >= len(examples) {
-				sentenceIdx = 0
-			}
-			runIdx++
-		},
+		}
+		// Next batch.
+		sentenceIdx += batchSize
+		if sentenceIdx+batchSize >= len(examples) {
+			sentenceIdx = 0
+		}
+		return inputTensors
 	}
 
-	benchmarks.New(testFn).
-		WithWarmUps(10).
-		WithDuration(*flagBenchDuration).
-		Done()
+	// workerFn is executed in each goroutine -- one per parallelization
+	workerFn := func(workerIdx int, inputTensors ExampleInput) {
+		session := sessions[workerIdx]
+		sentenceLen := inputTensors[0].GetShape()[1]
+		outputShape := ort.NewShape(int64(batchSize), int64(sentenceLen), int64(embeddingSize))
+		outputTensor := must.M1(ort.NewEmptyTensor[float32](outputShape))
+		// Execute program.
+		must.M(session.Run(
+			[]ort.Value{inputTensors[0], inputTensors[1], inputTensors[2]},
+			[]ort.Value{outputTensor},
+		))
+	}
+
+	// Benchmark function is simply reading out finished
+	implParallelBenchmark(
+		name, parallelization, batchSize, header, 10,
+		inputFn, workerFn)
 }
 
-func TestBenchRobSentencesXLA(t *testing.T) {
-	if testing.Short() {
-		t.SkipNow()
+func implBenchRobSentencesXLA(parallelization, batchSize int, header bool) {
+	name := fmt.Sprintf("XLA/RobSentences/Parallel=%02d/BatchSize=%02d", parallelization, batchSize)
+	// Make sure to release all resources no longer in use.
+	for _ = range 10 {
+		runtime.GC()
 	}
-	batchSize := 1
-	name := fmt.Sprintf("ORT/RobSentences/BatchSize=%d", batchSize)
 
 	// Tokenize Rob's sentences.
 	examples := initializeRobSentences()
@@ -210,48 +293,74 @@ func TestBenchRobSentencesXLA(t *testing.T) {
 	})
 	defer exec.Finalize()
 
+	// Generating examples for sessions.
+	type ExampleInput [3]*tensors.Tensor
 	sentenceLen := 13
-	var inputTensors [3]*tensors.Tensor
-	for ii := range inputTensors {
-		inputTensors[ii] = tensors.FromShape(shapes.Make(dtypes.Int64, batchSize, sentenceLen))
-	}
-
-	nextSentenceIdx := 0
-	runIdx := 0
-	testFn := benchmarks.NamedFunction{
-		Name: name,
-		Func: func() {
-			sentenceLen := len(examples[nextSentenceIdx].Encoding[0])
-
-			// Create input and output tensors.
-			for inputIdx, t := range inputTensors {
-				tensors.MutableFlatData[int64](t, func(flat []int64) {
-					for inBatchIdx := range batchSize {
-						example := examples[nextSentenceIdx+inBatchIdx]
-						copy(flat[inBatchIdx*sentenceLen:], example.Encoding[inputIdx])
-					}
-				})
+	inputsPool := sync.Pool{
+		New: func() any {
+			var inputTensors ExampleInput
+			for ii := range inputTensors {
+				inputTensors[ii] = tensors.FromShape(shapes.Make(dtypes.Int64, batchSize, sentenceLen))
 			}
-
-			// Execute program.
-			output := exec.Call(inputTensors[0], inputTensors[1], inputTensors[2])[0]
-			tensors.ConstFlatData(output, func(flat []float32) {
-				_ = flat
-			})
-			output.FinalizeAll()
-
-			// Next batch.
-			nextSentenceIdx += batchSize
-			if nextSentenceIdx+batchSize >= len(examples) {
-				nextSentenceIdx = 0
-			}
-			runIdx++
+			return inputTensors
 		},
 	}
+	nextSentenceIdx := 0
+	inputFn := func() (inputTensors ExampleInput) {
+		inputTensors = inputsPool.Get().(ExampleInput)
+		for inputIdx, t := range inputTensors {
+			tensors.MutableFlatData[int64](t, func(flat []int64) {
+				for inBatchIdx := range batchSize {
+					example := examples[(nextSentenceIdx+inBatchIdx)%len(examples)]
+					copy(flat[inBatchIdx*sentenceLen:], example.Encoding[inputIdx])
+				}
+			})
+		}
+		// Next batch.
+		nextSentenceIdx += batchSize
+		if nextSentenceIdx+batchSize >= len(examples) {
+			nextSentenceIdx = 0
+		}
+		return
+	}
+	workerFn := func(workerIdx int, inputTensors ExampleInput) {
+		defer inputsPool.Put(inputTensors)
+		output := exec.Call(inputTensors[0], inputTensors[1], inputTensors[2])[0]
+		tensors.ConstFlatData(output, func(flat []float32) {
+			_ = flat
+		})
+		output.FinalizeAll()
+	}
 
-	benchmarks.New(testFn).
-		WithWarmUps(10).
-		WithDuration(*flagBenchDuration).
-		WithWarmUps(3 * len(examples)).
-		Done()
+	// Benchmark function is simply reading out finished
+	warmUpRuns := 2 * len(examples)
+	implParallelBenchmark(
+		name, parallelization, batchSize, header, warmUpRuns,
+		inputFn, workerFn)
+}
+
+func TestBenchRobSentencesORT(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
+	count := 0
+	for _, parallelism := range []int{2, 3, 4, 6, 8} {
+		for _, batchSize := range []int{1, 2, 4, 8, 16, 32} {
+			implBenchRobSentencesORT(parallelism, batchSize, count == 0)
+			count++
+		}
+	}
+}
+
+func TestBenchRobSentencesXLA(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
+	count := 0
+	for _, parallelism := range []int{4, 6, 8} {
+		for _, batchSize := range []int{1, 2, 4, 8, 16, 32} {
+			implBenchRobSentencesXLA(parallelism, batchSize, count == 0)
+			count++
+		}
+	}
 }

@@ -16,30 +16,24 @@ The main use cases so far are:
    model with extra ML pre/post-processing using GoMLX (image transformations, normalization, combining models,
    building ensembles, etc.). This may be interesting for large/expensive models, or large throughput on large
    batches.
-    * **TODO**: Benchmark XLA/PJRT (Google) vs ONNX Runtime (Microsoft) -- both are sophisticated, well maintained
-      numerical computation engines. It should be interesting to evaluate the performance in various hardwares: 
-      amd64, arm64, GPU.
     * Notice if you want to simply get a pure Go inference of ONNX models, see 
       [github.com/AdvancedClimateSystems/gonnx](https://github.com/AdvancedClimateSystems/gonnx) or
       [github.com/oramasearch/onnx-go](https://github.com/oramasearch/onnx-go). They will be slower (~8x based on a SentenceEncoder model, BERT based using `gonnx` vs `ONNXRuntime`) than 
       the XLA inference (or `onnxruntime`) for large projects, but for many use cases it doesn't matter, and they
       are a much smaller pure Go dependency. Only for CPU (no GPU support).
 
-## 🚧 **EXPERIMENTAL and UNDER-DEVELOPMENT**
+## Coverage of ONNX Ops Set
 
-It's "fresh from the oven", so it may not be working as intended, and there are no guarantees of any type.
-
-There are 10 or so models that are working so far:
+There are at least 10 or so models that are working so far:
 
 * [Sentence Enconding all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
 has been working perfectly, see example below.
 * [ONNX-GoMLX demo/development notebook](https://github.com/gomlx/onnx-gomlx/blob/main/onnx-go.ipynb): both serves as a functional test and to demo what it can do.
 
-But not all operations ("ops") are converted yet. If you try it and find some that is not, please let us know (create an "issue")
-we will be happy to try to convert them -- generally, all the required scaffolding and tooling is already there, and
+But **not all operations ("ops") are converted yet**. If you try it and find some that is not,
+please let us know (create an "issue") we will be happy to try to convert them -- generally, 
+all the required scaffolding and tooling is already there, and
 converting ops has been very easy.
-
-We'll leave this "experimental" note here for now. If we don't bump into any issues we'll remove the note.
 
 ## 🎓 Example
 
@@ -129,6 +123,14 @@ Embeddings: [2][7][384]float32{
    2. Save the model by updating the ONNX model: after training use `Model.ContextToONNX()` to copy the update variable  
       values from GoMLX `Context` back to the ONNX model (in-memory), and then use `Model.Write()` or 
       `Model.SaveToFile()` to save the updated ONNX model to disk.
+
+## Benchmarks
+
+We have some GoMLX/XLA and ONNX Runtime (Microsoft) benchmarks in [this spreadsheet](https://docs.google.com/spreadsheets/d/1ikpJH6rVVHq8ES-IA8U4lkKH4XsTSpRyZewXwGTgits/edit?usp=sharing), 
+tested on the sentence encoder model we were interested in. This was used during development, and reflects
+how it improves performance -- the numbers on the bottom of the sheets are the currently accurate.
+
+See [docs/benchmarks.md](docs/benchmarks.md) for more information.
    
 ## 🤝 Collaborating
 

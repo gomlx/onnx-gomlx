@@ -1,3 +1,10 @@
+# v0.2.0 2025/02/01
+
+* Updated to GoMLX v0.17.0
+* Added bitwise operators.
+* Added parallel benchmarks.
+* Added benchmarks documentation.
+
 # v0.1.5 🎄 2024/12/19 🎄
 
 * Added `internal/bechmarks` package: See progress in https://docs.google.com/spreadsheets/d/1ikpJH6rVVHq8ES-IA8U4lkKH4XsTSpRyZewXwGTgits/edit?gid=1753191050#gid=1753191050

@@ -95,7 +95,7 @@ func onnxWhere(inputs []*Node) *Node {
 		maxDims[axis] = slices.Max(allDims)
 	}
 	for ii, input := range inputs {
-		if !input.IsScalar() {
+		if !input.IsScalar() && !slices.Equal(input.Shape().Dimensions, maxDims) {
 			inputs[ii] = BroadcastToDims(input, maxDims...)
 		}
 	}

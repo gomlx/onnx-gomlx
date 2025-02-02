@@ -217,11 +217,17 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 		//res = convertBinaryOp(Pow, inputs[0], inputs[1])
 		res = convertPow(m, convertedOutputs, node, inputs)
 	case "And":
-		res = convertBinaryOp(And, inputs[0], inputs[1])
+		res = convertBinaryOp(LogicalAnd, inputs[0], inputs[1])
 	case "Or":
-		res = convertBinaryOp(Or, inputs[0], inputs[1])
+		res = convertBinaryOp(LogicalOr, inputs[0], inputs[1])
 	case "Xor":
-		res = convertBinaryOp(Xor, inputs[0], inputs[1])
+		res = convertBinaryOp(LogicalXor, inputs[0], inputs[1])
+	case "BitwiseAnd":
+		res = convertBinaryOp(BitwiseAnd, inputs[0], inputs[1])
+	case "BitwiseOr":
+		res = convertBinaryOp(BitwiseOr, inputs[0], inputs[1])
+	case "BitwiseXor":
+		res = convertBinaryOp(BitwiseXor, inputs[0], inputs[1])
 	case "Equal":
 		res = convertBinaryOp(Equal, inputs[0], inputs[1])
 	case "Less":
@@ -258,6 +264,8 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 		res = Identity(inputs[0])
 	case "Not":
 		res = LogicalNot(inputs[0])
+	case "BitwiseNot":
+		res = BitwiseNot(inputs[0])
 	case "Tanh":
 		res = Tanh(inputs[0])
 
