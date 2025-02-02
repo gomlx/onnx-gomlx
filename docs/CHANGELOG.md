@@ -1,4 +1,4 @@
-# v0.2.0 2025/02/01
+# v0.2.0 2025/02/02
 
 * Updated to GoMLX v0.17.0
 * Added bitwise operators.
