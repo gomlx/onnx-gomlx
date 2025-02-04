@@ -196,6 +196,14 @@ func implBenchRobSentencesORT(parallelization, batchSize int, header bool) {
 		cudaOptions := must.M1(ort.NewCUDAProviderOptions())
 		// must.M(cudaOptions.Update(map[string]string{"device_id": "0"}))
 		must.M(options.AppendExecutionProviderCUDA(cudaOptions))
+	} else {
+		if parallelization > 1 {
+			options = must.M1(ort.NewSessionOptions())
+			must.M(options.SetIntraOpNumThreads(1))
+			must.M(options.SetInterOpNumThreads(1))
+			must.M(options.SetCpuMemArena(false))
+			must.M(options.SetMemPattern(false))
+		}
 	}
 
 	// Create sessions, one per parallel run.
