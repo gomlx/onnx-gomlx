@@ -1,3 +1,8 @@
+# v0.2.1 2025/05/01
+
+* Updated to GoMLX v0.19.1
+* Included default GoMLX backends by default.
+
 # v0.2.0 2025/02/02
 
 * Updated to GoMLX v0.17.0

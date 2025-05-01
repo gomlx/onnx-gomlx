@@ -358,8 +358,8 @@ func TestBenchRobSentencesORT(t *testing.T) {
 		t.SkipNow()
 	}
 	count := 0
-	for _, parallelism := range []int{8} { // {2, 3, 4, 6, 8} {
-		for _, batchSize := range []int{256} { // 1, 2, 4, 8, 16, 32} {
+	for _, parallelism := range []int{8, 16} { // {2, 3, 4, 6, 8} {
+		for _, batchSize := range []int{32, 256} { // 1, 2, 4, 8, 16, 32} {
 			implBenchRobSentencesORT(parallelism, batchSize, count == 0)
 			count++
 		}
@@ -371,8 +371,8 @@ func TestBenchRobSentencesXLA(t *testing.T) {
 		t.SkipNow()
 	}
 	count := 0
-	for _, parallelism := range []int{8} { // {4, 6, 8} {
-		for _, batchSize := range []int{256} { // 1, 2, 4, 8, 16, 32} {
+	for _, parallelism := range []int{16} { // {4, 6, 8} {
+		for _, batchSize := range []int{32} { // 1, 2, 4, 8, 16, 32} {
 			implBenchRobSentencesXLA(parallelism, batchSize, count == 0)
 			count++
 		}

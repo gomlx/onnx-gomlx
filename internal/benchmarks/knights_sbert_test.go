@@ -3,6 +3,14 @@ package benchmarks
 import (
 	"flag"
 	"fmt"
+	"os"
+	"path"
+	"runtime"
+	"strings"
+	"sync"
+	"testing"
+	"unicode/utf8"
+
 	dtok "github.com/daulet/tokenizers"
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/go-huggingface/hub"
@@ -19,13 +27,6 @@ import (
 	parquet "github.com/parquet-go/parquet-go"
 	ort "github.com/yalue/onnxruntime_go"
 	"google.golang.org/protobuf/proto"
-	"os"
-	"path"
-	"runtime"
-	"strings"
-	"sync"
-	"testing"
-	"unicode/utf8"
 )
 
 var (
