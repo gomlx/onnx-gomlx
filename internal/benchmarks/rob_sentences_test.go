@@ -62,8 +62,9 @@ var (
 
 // initializeRobSentences tokenizes the fixed robSentences (as opposed to using FineWeb, the default),
 // and trim any padding.
-func initializeRobSentences() []tokenizedSentence {
-	results := make([]tokenizedSentence, len(robSentences))
+func initializeRobSentences(minNumExamples int) []tokenizedSentence {
+	numSentences := len(robSentences)
+	results := make([]tokenizedSentence, max(numSentences, minNumExamples))
 
 	// Create tokenizer: it is configured by the "tokenizer.json" to a max_length of 128, with padding.
 	repoTokenizer := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
@@ -93,6 +94,11 @@ func initializeRobSentences() []tokenizedSentence {
 		results[idxSentence].Encoding[2] = padOrTrim(sequenceLen,
 			sliceMap(encoding.TypeIDs, func(id uint32) int64 { return int64(id) }),
 			0)
+	}
+
+	// Replicate extra examples at the end.
+	for ii := numSentences; ii < len(results); ii++ {
+		results[ii] = results[ii-numSentences] // Keep repeating.
 	}
 	return results
 }
@@ -181,7 +187,7 @@ func implBenchRobSentencesORT(parallelization, batchSize int, header bool) {
 	embeddingSize := 384
 
 	// Tokenize Rob's sentences.
-	examples := initializeRobSentences()
+	examples := initializeRobSentences(batchSize)
 	if len(examples) < batchSize {
 		exceptions.Panicf("batchSize(%d) must be <= to the number of examples (%d)", batchSize, len(examples))
 	}
@@ -272,7 +278,7 @@ func implBenchRobSentencesXLA(parallelization, batchSize int, header bool) {
 	}
 
 	// Tokenize Rob's sentences.
-	examples := initializeRobSentences()
+	examples := initializeRobSentences(batchSize)
 	if len(examples) < batchSize {
 		exceptions.Panicf("batchSize(%d) must be <= to the number of examples (%d)", batchSize, len(examples))
 	}
@@ -352,8 +358,8 @@ func TestBenchRobSentencesORT(t *testing.T) {
 		t.SkipNow()
 	}
 	count := 0
-	for _, parallelism := range []int{2, 3, 4, 6, 8} {
-		for _, batchSize := range []int{1, 2, 4, 8, 16, 32} {
+	for _, parallelism := range []int{8} { // {2, 3, 4, 6, 8} {
+		for _, batchSize := range []int{256} { // 1, 2, 4, 8, 16, 32} {
 			implBenchRobSentencesORT(parallelism, batchSize, count == 0)
 			count++
 		}
@@ -365,8 +371,8 @@ func TestBenchRobSentencesXLA(t *testing.T) {
 		t.SkipNow()
 	}
 	count := 0
-	for _, parallelism := range []int{4, 6, 8} {
-		for _, batchSize := range []int{1, 2, 4, 8, 16, 32} {
+	for _, parallelism := range []int{8} { // {4, 6, 8} {
+		for _, batchSize := range []int{256} { // 1, 2, 4, 8, 16, 32} {
 			implBenchRobSentencesXLA(parallelism, batchSize, count == 0)
 			count++
 		}
