@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-import _ "github.com/gomlx/gomlx/backends/xla"
+import _ "github.com/gomlx/gomlx/backends/default"
 
 // TestEndToEnd based on the `linear_test.onnx` minimalistic model.
 // Only a couple of ops tested, but from end-to-end, including if changes can be saved
@@ -43,7 +43,7 @@ func TestEndToEnd(t *testing.T) {
 	require.NotNil(t, vB)
 	require.Equal(t, 0, vB.Shape().Rank())
 	require.Equal(t, float32(7000), tensors.ToScalar[float32](vB.Value()))
-	
+
 	// Check conversion.
 	backend := graphtest.BuildTestBackend()
 	y := context.ExecOnce(backend, ctx, func(ctx *context.Context, x *graph.Node) *graph.Node {
