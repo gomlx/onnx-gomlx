@@ -28,8 +28,6 @@ import (
 	"runtime"
 	"sync"
 	"testing"
-
-	_ "github.com/gomlx/gomlx/backends/xla"
 )
 
 func init() {

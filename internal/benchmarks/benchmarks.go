@@ -2,4 +2,6 @@
 // in XLA and in ONNXRuntime.
 package benchmarks
 
+import _ "github.com/gomlx/gomlx/backends/default"
+
 var ()
