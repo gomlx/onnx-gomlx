@@ -1,3 +1,8 @@
+# v0.2.2 2025/05/22
+
+* Added Min and Max operators.
+* Updated dependency to GoMLX v0.19.3.
+
 # v0.2.1 2025/05/01
 
 * Updated to GoMLX v0.19.1
@@ -31,7 +36,7 @@
 
 # v0.1.2 - 2024/11/17
 
-* Added LSTM op support, with small example. 
+* Added LSTM op support, with a small example. 
 
 # v0.1.1 - 2024/11/15
 

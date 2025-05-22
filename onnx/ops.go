@@ -2,6 +2,9 @@ package onnx
 
 import (
 	"fmt"
+	"reflect"
+	"slices"
+
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/backends"
 	. "github.com/gomlx/gomlx/graph"
@@ -12,8 +15,6 @@ import (
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
-	"reflect"
-	"slices"
 )
 
 // This file implements the ONNX operators that don't have a direct corresponding GoMLX operator.
@@ -980,6 +981,30 @@ func onnxCumSum(operand *Node, axis int, exclusive, reverse bool) *Node {
 	}
 	if reverse {
 		output = Reverse(output, adjustedAxis)
+	}
+	return output
+}
+
+// convertMin operator. It's different from the GoMLX Min operator in that it can take a list of inputs.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Min.html
+func convertMin(operands []*Node) *Node {
+	output := operands[0]
+	for _, operand := range operands[1:] {
+		output = convertBinaryOp(Min, output, operand)
+	}
+	return output
+}
+
+// convertMax operator. It's different from the GoMLX Max operator in that it can take a list of inputs.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Max.html
+func convertMax(operands []*Node) *Node {
+	output := operands[0]
+	for _, operand := range operands[1:] {
+		output = convertBinaryOp(Max, output, operand)
 	}
 	return output
 }

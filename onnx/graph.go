@@ -2,6 +2,8 @@ package onnx
 
 import (
 	"fmt"
+	"runtime"
+
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/graph"
 	"github.com/gomlx/gomlx/ml/context"
@@ -9,7 +11,6 @@ import (
 	"github.com/gomlx/gomlx/types"
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
-	"runtime"
 )
 
 // sliceMap executes the given function sequentially for every element on in, and returns a mapped slice.
@@ -278,6 +279,10 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 		res = convertClip(node, inputs)
 	case "Where":
 		res = convertWhere(node, inputs)
+	case "Min":
+		res = convertMin(inputs)
+	case "Max":
+		res = convertMax(inputs)
 
 		// Ops with attributes:
 	case "Constant":
