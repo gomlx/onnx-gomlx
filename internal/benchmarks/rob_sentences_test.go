@@ -26,6 +26,9 @@ import (
 
 var (
 	robSentences = []string{
+		"robert smith junior",
+		"francis ford coppola",
+		"robert smith",
 		"Tech Innovators Inc. Launches Revolutionary AI Platform",
 		"Green Energy Solutions Unveils Next-Gen Solar Panels",
 		"Global Ventures Co. Secures $2 Billion in Funding",
@@ -55,9 +58,9 @@ var (
 		"Creative Film Productions Wins Prestigious Global Awards",
 		"Global Trade Services Expands Globalized Shipping Network",
 		"NextLevel Sports Management Signs High-Profile Athletes",
-		"Sustainable Agriculture Group Promotes Organic Farming",
-		"Cloud Based Solutions Unveils New Secure Data Services",
-		"Tech Innovators Inc. to Host Annual Tech Summit This Fall",
+		//"Sustainable Agriculture Group Promotes Organic Farming",
+		//"Tech Innovators Inc. to Host Annual Tech Summit This Fall",
+		//"Cloud Based Solutions Unveils New Secure Data Services",
 	}
 )
 
@@ -266,10 +269,11 @@ func implBenchRobSentencesORT(parallelization, batchSize int, header bool) {
 	}
 
 	// Benchmark function is simply reading out finished
-	implParallelBenchmark(
-		name, parallelization, batchSize, header, 10,
-		inputFn, workerFn)
+	warmUpRuns := 10
+	implParallelBenchmark(name, parallelization, batchSize, header, warmUpRuns, inputFn, workerFn)
 }
+
+const robSentencesEmbeddingsFileName = "rob_sentences_embeddings.bin"
 
 func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, header bool) {
 	name := fmt.Sprintf("XLA/RobSentences/Parallel=%02d/BatchSize=%02d", parallelization, batchSize)
@@ -283,9 +287,9 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	if len(examples) < batchSize {
 		exceptions.Panicf("batchSize(%d) must be <= to the number of examples (%d)", batchSize, len(examples))
 	}
-	if (*flagSaveEmbeddings || *flagCheckEmbeddings) && batchSize != 1 {
-		exceptions.Panicf("batchSize(%d) must be 1 when saving embeddings (--save_embeddings) or "+
-			"checking embeddings (--check_embeddings)", batchSize)
+	if (*flagSaveEmbeddings || *flagCheckEmbeddings) && batchSize != len(robSentences) {
+		exceptions.Panicf("batchSize(%d) must be %d (all robSentences) when saving embeddings (--save_embeddings) or "+
+			"checking embeddings (--check_embeddings)", batchSize, len(robSentences))
 	}
 
 	// Build model
@@ -313,24 +317,22 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	defer exec.Finalize()
 
 	// Load expected results.
-	referenceEmbeddings := make([]*tensors.Tensor, len(examples))
+	var referenceEmbeddings *tensors.Tensor
 	if *flagCheckEmbeddings {
 		var err error
-		for ii := range referenceEmbeddings {
-			referenceEmbeddings[ii], err = tensors.Load(fmt.Sprintf("rob_sentences/embeddings-%03d.bin", ii))
-			if err != nil {
-				panic(err)
-			}
+		referenceEmbeddings, err = tensors.Load(robSentencesEmbeddingsFileName)
+		if err != nil {
+			panic(err)
 		}
 	}
 
 	// Generating examples for sessions.
-	type ExampleInput [4]*tensors.Tensor
+	type ExampleInput [3]*tensors.Tensor
 	sentenceLen := 13
 	inputsPool := sync.Pool{
 		New: func() any {
 			var inputTensors ExampleInput
-			for ii := range 3 {
+			for ii := range inputTensors {
 				inputTensors[ii] = tensors.FromShape(shapes.Make(dtypes.Int64, batchSize, sentenceLen))
 			}
 			return inputTensors
@@ -339,7 +341,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	nextSentenceIdx := 0
 	inputFn := func() (inputTensors ExampleInput) {
 		inputTensors = inputsPool.Get().(ExampleInput)
-		for inputIdx := range 3 {
+		for inputIdx := range inputTensors {
 			t := inputTensors[inputIdx]
 			tensors.MutableFlatData[int64](t, func(flat []int64) {
 				for inBatchIdx := range batchSize {
@@ -347,9 +349,6 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 					copy(flat[inBatchIdx*sentenceLen:], example.Encoding[inputIdx])
 				}
 			})
-		}
-		if *flagCheckEmbeddings {
-			inputTensors[3] = referenceEmbeddings[nextSentenceIdx]
 		}
 		// Next batch.
 		nextSentenceIdx = (nextSentenceIdx + batchSize) % len(examples)
@@ -359,38 +358,46 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	if *flagSaveEmbeddings {
 		// Run inline and save the resulting embeddings:
 		fmt.Println("Generating embeddings to save:")
-		for ii := range len(examples) {
-			inputTensors := inputFn()
-			output := exec.Call(inputTensors[0], inputTensors[1], inputTensors[2])[0]
-			err := output.Save(fmt.Sprintf("embeddings-%03d.bin", ii))
-			if err != nil {
-				panic(err)
-			}
-			output.FinalizeAll()
+		inputTensors := inputFn()
+		output := exec.Call(inputTensors[0], inputTensors[1], inputTensors[2])[0]
+		fmt.Printf("\tSaving reference embeddings to %q - shape=%s, embedding[0, 0, 0]=%.3f, token[0, 0]=%d\n",
+			robSentencesEmbeddingsFileName,
+			output.Shape(),
+			tensors.CopyFlatData[float32](output)[0],
+			tensors.CopyFlatData[int64](inputTensors[0])[0])
+		err := output.Save(robSentencesEmbeddingsFileName)
+		if err != nil {
+			panic(err)
 		}
-		fmt.Println("\tDone.")
+		output.FinalizeAll()
+		return
 	}
 
+	var workerCount int
 	workerFn := func(workerIdx int, inputTensors ExampleInput) {
 		defer inputsPool.Put(inputTensors)
 		output := exec.Call(inputTensors[0], inputTensors[1], inputTensors[2])[0]
 		tensors.ConstFlatData(output, func(flat []float32) {
+			// Force local copy: this should be part of the cost.
 			_ = flat
 		})
-		if inputTensors[3] != nil {
-			requireSameTensorsFloat32(t, inputTensors[3], output, 1e-3)
+		if referenceEmbeddings != nil {
+			requireSameTensorsFloat32(t, referenceEmbeddings, output, checkingEmbeddingsDelta)
 		}
+		workerCount++
 		output.FinalizeAll()
 	}
 
 	// Benchmark function is simply reading out finished
 	warmUpRuns := 2 * len(examples)
+	if *flagCheckEmbeddings {
+		warmUpRuns = 1
+	}
 	implParallelBenchmark(
-		name, parallelization, batchSize, header, warmUpRuns,
-		inputFn, workerFn)
+		name, parallelization, batchSize, header, warmUpRuns, inputFn, workerFn)
 }
 
-func TestBenchRobSentencesORT(t *testing.T) {
+func TestRobSentences_BenchORT(t *testing.T) {
 	if testing.Short() || *flagBenchDuration == 0 {
 		t.SkipNow()
 	}
@@ -403,7 +410,7 @@ func TestBenchRobSentencesORT(t *testing.T) {
 	}
 }
 
-func TestBenchRobSentencesXLA(t *testing.T) {
+func TestRobSentences_BenchXLA(t *testing.T) {
 	if testing.Short() || *flagBenchDuration == 0 {
 		t.SkipNow()
 	}
@@ -411,8 +418,8 @@ func TestBenchRobSentencesXLA(t *testing.T) {
 	// Change parallelism/batchSize according to backend, see best values in the bottom
 	// of the "Rob Sentences" sheet in:
 	// https://docs.google.com/spreadsheets/d/1ikpJH6rVVHq8ES-IA8U4lkKH4XsTSpRyZewXwGTgits/edit?gid=397722581#gid=397722581
-	for _, parallelism := range []int{16} { // {4, 6, 8} {
-		for _, batchSize := range []int{64} { // 1, 2, 4, 8, 16, 32} {
+	for _, parallelism := range []int{32} { // {4, 6, 8} {
+		for _, batchSize := range []int{len(robSentences)} { // 1, 2, 4, 8, 16, 32} {
 			implBenchRobSentencesXLA(t, parallelism, batchSize, count == 0)
 			count++
 		}
@@ -425,8 +432,10 @@ func TestRobSentences_SaveEmbeddings(t *testing.T) {
 		t.SkipNow()
 		return
 	}
-	implBenchRobSentencesXLA(t, 1, 1, false)
+	implBenchRobSentencesXLA(t, 1, len(robSentences), false)
 }
+
+const checkingEmbeddingsDelta = 1e-3
 
 func TestRobSentences_CheckEmbeddings(t *testing.T) {
 	if !*flagCheckEmbeddings {
@@ -434,5 +443,5 @@ func TestRobSentences_CheckEmbeddings(t *testing.T) {
 		t.SkipNow()
 		return
 	}
-	implBenchRobSentencesXLA(t, 1, 1, false)
+	implBenchRobSentencesXLA(t, 1, len(robSentences), false)
 }

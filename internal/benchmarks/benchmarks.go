@@ -9,6 +9,7 @@ import (
 
 	_ "github.com/gomlx/gomlx/backends/default"
 	"github.com/gomlx/gomlx/types/tensors"
+	"github.com/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
 
@@ -34,6 +35,7 @@ func requireSameTensorsFloat32(t *testing.T, want, got *tensors.Tensor, delta fl
 		flatIdx++
 	}
 	if mismatches > 0 {
-		t.Fatalf("Found %d mismatches in tensors", mismatches)
+		fmt.Printf("Found %d mismatches in tensors\n", mismatches)
+		panic(errors.Errorf("found %d mismatches in tensors", mismatches))
 	}
 }
