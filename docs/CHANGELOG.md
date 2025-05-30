@@ -1,3 +1,8 @@
+# Next
+
+* Added Save/Check values of outputs for internal/benchmarks: allows it to be
+  used as a functional test during the development of GoMLX SimpleGo backend.
+
 # v0.2.2 2025/05/22
 
 * Added Min and Max operators.
