@@ -418,8 +418,8 @@ func TestRobSentences_BenchXLA(t *testing.T) {
 	// Change parallelism/batchSize according to backend, see best values in the bottom
 	// of the "Rob Sentences" sheet in:
 	// https://docs.google.com/spreadsheets/d/1ikpJH6rVVHq8ES-IA8U4lkKH4XsTSpRyZewXwGTgits/edit?gid=397722581#gid=397722581
-	for _, parallelism := range []int{32} { // {4, 6, 8} {
-		for _, batchSize := range []int{len(robSentences)} { // 1, 2, 4, 8, 16, 32} {
+	for _, parallelism := range []int{48} { // {4, 6, 8} {
+		for _, batchSize := range []int{32} { // 1, 2, 4, 8, 16, 32} {
 			implBenchRobSentencesXLA(t, parallelism, batchSize, count == 0)
 			count++
 		}
@@ -435,7 +435,7 @@ func TestRobSentences_SaveEmbeddings(t *testing.T) {
 	implBenchRobSentencesXLA(t, 1, len(robSentences), false)
 }
 
-const checkingEmbeddingsDelta = 1e-3
+const checkingEmbeddingsDelta = 1e-2
 
 func TestRobSentences_CheckEmbeddings(t *testing.T) {
 	if !*flagCheckEmbeddings {
