@@ -5,8 +5,10 @@ package benchmarks
 import (
 	"fmt"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	dtok "github.com/daulet/tokenizers"
 	"github.com/gomlx/exceptions"
@@ -107,6 +109,25 @@ func initializeRobSentences(minNumExamples int) []tokenizedSentence {
 	return results
 }
 
+// formatDuration formats the duration with 2 decimal places but keeping the unit suffix.
+func formatDuration(d time.Duration) string {
+	s := d.String()
+	i := 0
+	for ; i < len(s); i++ {
+		if (s[i] < '0' || s[i] > '9') && s[i] != '.' {
+			break
+		}
+	}
+	// Found the time unit (the suffix)
+	num := s[:i]
+	unit := s[i:]
+	f, err := strconv.ParseFloat(num, 64)
+	if err != nil {
+		return s
+	}
+	return fmt.Sprintf("%.2f%s", f, unit)
+}
+
 func implParallelBenchmark[E any](
 	name string,
 	numWorkers, batchSize int, header bool,
@@ -178,6 +199,7 @@ func implParallelBenchmark[E any](
 		WithDuration(*flagBenchDuration).
 		WithHeader(header).
 		WithInnerRepeats(batchSize). // Report will be "per example".
+		WithPrettyPrintFn(formatDuration).
 		Done()
 
 	// done.Trigger will signal all goroutines to end.
