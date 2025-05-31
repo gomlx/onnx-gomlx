@@ -47,6 +47,10 @@ var (
 	flagBenchDuration = flag.Duration("bench_duration", 0, "Benchmark duration, typically use 10 seconds. If left as 0, benchmark tests are disabled")
 	flagPrintXLAGraph = flag.Bool("xla_graph", false, "Prints XLA graph")
 	flagExcludePadded = flag.Bool("exclude_padded", false, "Exclude sentences with less than 128 tokens")
+
+	// Save embeddings to file, one per example, named /tmp/embeddings_%03d.bin
+	flagSaveEmbeddings  = flag.Bool("save_embeddings", false, "Save embeddings to file, one per example, named embeddings-%03d.bin")
+	flagCheckEmbeddings = flag.Bool("check_embeddings", false, "Check embeddings generated match the ones loaded from files")
 )
 
 // tokenizedSentence stores the tokenized input for models of a sentence.
