@@ -1,7 +1,8 @@
-# Next
+# v0.2.3 2025/05/31
 
 * Added Save/Check values of outputs for internal/benchmarks: allows it to be
   used as a functional test during the development of GoMLX SimpleGo backend.
+* Updated dependencies to latest GoMLX v0.19.5
 
 # v0.2.2 2025/05/22
 
