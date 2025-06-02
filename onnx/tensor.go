@@ -1,6 +1,10 @@
 package onnx
 
 import (
+	"github.com/gomlx/exceptions"
+	"github.com/gomlx/gomlx/backends/simplego"
+	_ "github.com/gomlx/gomlx/backends/simplego"
+	"github.com/gomlx/gomlx/graph"
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/gomlx/types/tensors"
 	"github.com/gomlx/gopjrt/dtypes"
@@ -47,21 +51,36 @@ func SparseShape(proto *protos.SparseTensorProto) (shape shapes.Shape, err error
 }
 
 // checkAndCreateTensor implements the generic check and copy of the ONNX proto data to a tensor for the supported data type.
+// TODO: It assumes it was saved in the same endian-ness and row-major order. Check/adjust if not.
 func checkAndCreateTensor[T interface {
-	float32 | float64 | int32 | int64 | uint64
+	float32 | float64 | int8 | int16 | int32 | int64 | uint8 | uint16 | uint32 | uint64
 }](proto *protos.TensorProto, onnxData []T, shape shapes.Shape) (*tensors.Tensor, error) {
 	if onnxData == nil {
 		// Not this type of data.
 		return nil, nil
 	}
-	if shape.DType != dtypes.FromGenericsType[T]() {
-		return nil, errors.Errorf("tensor %q shaped %s provided data as %T!?", proto.Name, shape, onnxData)
-	}
 	if len(onnxData) != shape.Size() {
 		return nil, errors.Errorf("tensor %q shaped %s has size %d , but ONNX model provided a slice with %d values!?",
 			proto.Name, shape, shape.Size(), len(onnxData))
 	}
-	return tensors.FromFlatDataAndDimensions[T](onnxData, shape.Dimensions...), nil
+
+	onnxDataTensor := tensors.FromFlatDataAndDimensions[T](onnxData, shape.Dimensions...)
+	if shape.DType == dtypes.FromGenericsType[T]() {
+		// The provided ONNX tensor is exactly what we want:
+		return onnxDataTensor, nil
+	}
+
+	// Convert from the ONNX proto data type to the target datatype.
+	// It uses GoMLX SimpleGo backend.
+	var converted *tensors.Tensor
+	err := exceptions.TryCatch[error](func() {
+		backend := simplego.New("")
+		defer backend.Finalize()
+		converted = graph.ExecOnce(backend, func(x *graph.Node) *graph.Node {
+			return graph.ConvertDType(x, shape.DType)
+		}, onnxDataTensor)
+	})
+	return converted, err
 }
 
 // tensorToGoMLX converts a protos.TensorProto object to a tensors.Tensor object, handling errors and different data types.
