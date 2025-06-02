@@ -112,25 +112,26 @@ func tensorToGoMLX(proto *protos.TensorProto) (t *tensors.Tensor, err error) {
 	}
 
 	// Tries to convert to each data type.
-	t, err = checkAndCreateTensor(proto, proto.FloatData, shape)
-	if t != nil || err != nil {
-		return
+	if proto.DoubleData != nil {
+		return checkAndCreateTensor(proto, proto.DoubleData, shape)
 	}
-	t, err = checkAndCreateTensor(proto, proto.DoubleData, shape)
-	if t != nil || err != nil {
-		return
+	if proto.FloatData != nil {
+		return checkAndCreateTensor(proto, proto.FloatData, shape)
 	}
-	t, err = checkAndCreateTensor(proto, proto.Int32Data, shape)
-	if t != nil || err != nil {
-		return
+	if proto.Int64Data != nil {
+		return checkAndCreateTensor(proto, proto.Int64Data, shape)
 	}
-	t, err = checkAndCreateTensor(proto, proto.Int64Data, shape)
-	if t != nil || err != nil {
-		return
+	if proto.Uint64Data != nil {
+		return checkAndCreateTensor(proto, proto.Uint64Data, shape)
 	}
-	t, err = checkAndCreateTensor(proto, proto.Uint64Data, shape)
-	if t != nil || err != nil {
-		return
+	if proto.Int32Data != nil {
+		return checkAndCreateTensor(proto, proto.Int32Data, shape)
+	}
+	if proto.StringData != nil {
+		return nil, errors.Errorf("ONNX model tensor %q holds string data which is not supported in GoMLX models", proto.Name)
+	}
+	if len(proto.ExternalData) > 0 {
+		return nil, errors.Errorf("ONNX model tensor %q is stored as external data, which is not implemented", proto.Name)
 	}
 	// Unknown tensor data type!?
 	return nil, errors.Errorf("tensor %q shaped %s has no supported format of data in the ONNX model!?", proto.Name, shape)
