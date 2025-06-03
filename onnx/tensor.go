@@ -50,10 +50,10 @@ func SparseShape(proto *protos.SparseTensorProto) (shape shapes.Shape, err error
 	return
 }
 
-// checkAndCreateTensor implements the generic check and copy of the ONNX proto data to a tensor for the supported data type.
+// checkAndCreateTensorFromProto implements the generic check and copy of the ONNX proto data to a tensor for the supported data type.
 // TODO: It assumes it was saved in the same endian-ness and row-major order. Check/adjust if not.
-func checkAndCreateTensor[T interface {
-	float32 | float64 | int8 | int16 | int32 | int64 | uint8 | uint16 | uint32 | uint64
+func checkAndCreateTensorFromProto[T interface {
+	float32 | float64 | int32 | int64 | uint64
 }](proto *protos.TensorProto, onnxData []T, shape shapes.Shape) (*tensors.Tensor, error) {
 	if onnxData == nil {
 		// Not this type of data.
@@ -65,11 +65,11 @@ func checkAndCreateTensor[T interface {
 	}
 
 	onnxDataTensor := tensors.FromFlatDataAndDimensions[T](onnxData, shape.Dimensions...)
-	defer onnxDataTensor.FinalizeAll() // Help the GC.
 	if shape.DType == dtypes.FromGenericsType[T]() {
 		// The provided ONNX tensor is exactly what we want:
 		return onnxDataTensor, nil
 	}
+	defer onnxDataTensor.FinalizeAll() // Help the GC.
 
 	// Convert from the ONNX proto data type to the target datatype.
 	// It uses GoMLX SimpleGo backend.
@@ -118,19 +118,19 @@ func tensorToGoMLX(proto *protos.TensorProto) (t *tensors.Tensor, err error) {
 
 	// Tries to convert to each data type.
 	if proto.DoubleData != nil {
-		return checkAndCreateTensor(proto, proto.DoubleData, shape)
+		return checkAndCreateTensorFromProto(proto, proto.DoubleData, shape)
 	}
 	if proto.FloatData != nil {
-		return checkAndCreateTensor(proto, proto.FloatData, shape)
+		return checkAndCreateTensorFromProto(proto, proto.FloatData, shape)
 	}
 	if proto.Int64Data != nil {
-		return checkAndCreateTensor(proto, proto.Int64Data, shape)
+		return checkAndCreateTensorFromProto(proto, proto.Int64Data, shape)
 	}
 	if proto.Uint64Data != nil {
-		return checkAndCreateTensor(proto, proto.Uint64Data, shape)
+		return checkAndCreateTensorFromProto(proto, proto.Uint64Data, shape)
 	}
 	if proto.Int32Data != nil {
-		return checkAndCreateTensor(proto, proto.Int32Data, shape)
+		return checkAndCreateTensorFromProto(proto, proto.Int32Data, shape)
 	}
 	if proto.StringData != nil {
 		return nil, errors.Errorf("ONNX model tensor %q holds string data which is not supported in GoMLX models", proto.Name)
@@ -142,18 +142,36 @@ func tensorToGoMLX(proto *protos.TensorProto) (t *tensors.Tensor, err error) {
 	return nil, errors.Errorf("tensor %q shaped %s has no supported format of data in the ONNX model!?", proto.Name, shape)
 }
 
-// checkAndCopyTensor implements the generic check and copy of the tensor to the ONNX proto data.
-func checkAndCopyTensor[T interface {
+// checkAndCopyTensorToProto implements the generic check and copy of the tensor to the ONNX proto data.
+func checkAndCopyTensorToProto[T interface {
 	float32 | float64 | int32 | int64 | uint64
 }](t *tensors.Tensor, proto *protos.TensorProto, onnxData []T) error {
 	shape := t.Shape()
-	if shape.DType != dtypes.FromGenericsType[T]() {
-		return errors.Errorf("tensor %q shaped %s provided data as %T!?", proto.Name, shape, onnxData)
-	}
 	if len(onnxData) != shape.Size() {
 		return errors.Errorf("tensor %q shaped %s has size %d , but ONNX model provided a slice with %d values!?",
 			proto.Name, shape, shape.Size(), len(onnxData))
 	}
+
+	// If dtype of the tensor doesn't match the dtype of the proto storing it:
+	if shape.DType != dtypes.FromGenericsType[T]() {
+		// Convert from GoMLX tensor the ONNX proto data type.
+		// It uses GoMLX SimpleGo backend.
+		var converted *tensors.Tensor
+		backend, err := simplego.New("")
+		if err != nil {
+			return err
+		}
+		defer backend.Finalize()
+		err = exceptions.TryCatch[error](func() {
+			converted = graph.ExecOnce(backend, func(x *graph.Node) *graph.Node {
+				return graph.ConvertDType(x, shape.DType)
+			}, t.OnDeviceClone(backend))
+			converted.ToLocal() // Detach from the temporarily created backend.
+		})
+		t = converted
+	}
+
+	// Copy GoMLX value (potentially converted) to the ONNX proto.
 	tensors.ConstFlatData(t, func(tensorData []T) {
 		copy(onnxData, tensorData) // Copy data to ONNX proto.
 	})
@@ -188,19 +206,19 @@ func TensorValueToONNX(t *tensors.Tensor, proto *protos.TensorProto) (err error)
 
 	// Float32
 	if proto.FloatData != nil {
-		return checkAndCopyTensor(t, proto, proto.FloatData)
+		return checkAndCopyTensorToProto(t, proto, proto.FloatData)
 	}
 	if proto.DoubleData != nil {
-		return checkAndCopyTensor(t, proto, proto.DoubleData)
+		return checkAndCopyTensorToProto(t, proto, proto.DoubleData)
 	}
 	if proto.Int32Data != nil {
-		return checkAndCopyTensor(t, proto, proto.Int32Data)
+		return checkAndCopyTensorToProto(t, proto, proto.Int32Data)
 	}
 	if proto.Int64Data != nil {
-		return checkAndCopyTensor(t, proto, proto.Int64Data)
+		return checkAndCopyTensorToProto(t, proto, proto.Int64Data)
 	}
 	if proto.Uint64Data != nil {
-		return checkAndCopyTensor(t, proto, proto.Uint64Data)
+		return checkAndCopyTensorToProto(t, proto, proto.Uint64Data)
 	}
 	return errors.Errorf("tensor %q shaped %s has no supported format of data in the ONNX model!?", proto.Name, shape)
 }

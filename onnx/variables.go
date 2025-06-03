@@ -1,10 +1,11 @@
 package onnx
 
 import (
+	"strings"
+
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/ml/context"
 	"github.com/pkg/errors"
-	"strings"
 )
 
 // This file defines importing variables from ONNX and (TODO) saving them back to the ONNX model file.
