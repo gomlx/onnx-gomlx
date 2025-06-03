@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// requireSameTensorsFloat32 compares two tensors, and fails the test if they are not within a delta margin.
+// requireSameTensorsFloat32 compares two tensors and fails the test if they are not within a delta margin.
 func requireSameTensorsFloat32(t *testing.T, want, got *tensors.Tensor, delta float64) {
 	// Make sure shapes are the same.
 	require.True(t, got.Shape().Equal(want.Shape()))

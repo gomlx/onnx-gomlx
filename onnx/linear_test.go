@@ -2,13 +2,14 @@ package onnx
 
 import (
 	"fmt"
+	"testing"
+
 	"github.com/gomlx/gomlx/graph"
 	"github.com/gomlx/gomlx/graph/graphtest"
 	"github.com/gomlx/gomlx/ml/context"
 	"github.com/gomlx/gomlx/types/tensors"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 import _ "github.com/gomlx/gomlx/backends/default"
