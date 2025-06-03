@@ -65,6 +65,7 @@ func checkAndCreateTensor[T interface {
 	}
 
 	onnxDataTensor := tensors.FromFlatDataAndDimensions[T](onnxData, shape.Dimensions...)
+	defer onnxDataTensor.FinalizeAll() // Help the GC.
 	if shape.DType == dtypes.FromGenericsType[T]() {
 		// The provided ONNX tensor is exactly what we want:
 		return onnxDataTensor, nil
@@ -73,12 +74,16 @@ func checkAndCreateTensor[T interface {
 	// Convert from the ONNX proto data type to the target datatype.
 	// It uses GoMLX SimpleGo backend.
 	var converted *tensors.Tensor
-	err := exceptions.TryCatch[error](func() {
-		backend := simplego.New("")
-		defer backend.Finalize()
+	backend, err := simplego.New("")
+	if err != nil {
+		return nil, err
+	}
+	defer backend.Finalize()
+	err = exceptions.TryCatch[error](func() {
 		converted = graph.ExecOnce(backend, func(x *graph.Node) *graph.Node {
 			return graph.ConvertDType(x, shape.DType)
 		}, onnxDataTensor)
+		converted.ToLocal() // Detach from the temporarily created backend.
 	})
 	return converted, err
 }
