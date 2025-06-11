@@ -1150,7 +1150,7 @@ func convertLSTM(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 
 // convertDequantizeLinear converts the corresponding ONNX node to a GoMLX node.
 //
-// Not yet supporting axis or block dequantization.
+// Not yet supporting block dequantization.
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__DequantizeLinear.html
@@ -1198,4 +1198,46 @@ func onnxDequantizeLinear(x, scale, xZeroPoint *Node, targetAxis int, outputDTyp
 		x = ConvertDType(x, outputDType)
 	}
 	return x
+}
+
+// convertDynamicQuantizeLinear converts the corresponding ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__DynamicQuantizeLinear.html
+func convertDynamicQuantizeLinear(convertedOutputs map[string]*Node, nodeProto *protos.NodeProto, inputs []*Node) *Node {
+	x := inputs[0]
+	if len(nodeProto.Output) != 3 {
+		exceptions.Panicf("DynamicQuantizeLinear: expected 3 outputs (y, y_scale, y_zero_point), got %d instead (%q)", len(nodeProto.Output), nodeProto.Output)
+	}
+	y, yScale, yZeroPoint := onnxDynamicQuantizeLinear(x)
+	convertedOutputs[nodeProto.Output[0]] = y
+	convertedOutputs[nodeProto.Output[1]] = yScale
+	convertedOutputs[nodeProto.Output[2]] = yZeroPoint
+	return y
+}
+
+func onnxDynamicQuantizeLinear(x *Node) (y, yScale, yZeroPoint *Node) {
+	g := x.Graph()
+	dtype := x.DType()
+	quantizedDType := dtypes.Uint8
+	zero := ScalarZero(g, dtype)
+	one := ScalarOne(g, dtype)
+
+	qMax := Scalar(g, dtype, 255)
+	xMin := Min(ReduceAllMin(x), zero)
+	xMax := Max(ReduceAllMax(x), zero)
+	xRange := Sub(xMax, xMin)
+	yScale = Div(xRange, qMax)
+	yScale = Where(Equal(yScale, zero), one, yScale)
+	xMinScaled := Div(xMin, yScale)
+	yZeroPoint = Round(Clip(Neg(xMinScaled), zero, qMax))
+
+	// QuantizeLinear: important detail is that the rounding occurs **before** adding the yZeroPoint.
+	y = Add(Round(Div(x, yScale)), yZeroPoint)
+	y = Clip(y, zero, qMax)
+
+	// Convert to quantize dtype.
+	y = ConvertDType(y, quantizedDType)
+	yZeroPoint = ConvertDType(yZeroPoint, quantizedDType)
+	return
 }

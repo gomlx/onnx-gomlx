@@ -335,6 +335,11 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 	case "LSTM":
 		res = convertLSTM(m, convertedOutputs, node, inputs)
 
+	// Multiple outputs ops:
+	case "DynamicQuantizeLinear":
+		res = convertDynamicQuantizeLinear(convertedOutputs, node, inputs)
+
+		// Ops not implemented:
 	default:
 		exceptions.Panicf("unimplemented ONNX op %q in %s", node.OpType, nodeToString(node))
 	}
