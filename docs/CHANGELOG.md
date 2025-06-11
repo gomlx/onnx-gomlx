@@ -3,6 +3,8 @@
 * Added support to other ONNX dtypes that requires conversion during reading.
   Also added conversion when saving values back to the ONNX proto.
 * Updated dependencies to GoMLX.
+* Added `onnxtests.py` to help test/explore individual ONNX ops using ONNXRuntime. 
+* New ops: `DequantizeLinear`.
 
 # v0.2.3 2025/05/31
 

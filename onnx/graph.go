@@ -305,6 +305,8 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 		res = convertGemm(node, inputs)
 	case "Flatten":
 		res = convertFlatten(node, inputs)
+	case "DequantizeLinear":
+		res = convertDequantizeLinear(node, inputs)
 
 		// Ops that require constant sub-expression materialization:
 		// they take dynamic (graph) values in ONNX, but only take static values in XLA
