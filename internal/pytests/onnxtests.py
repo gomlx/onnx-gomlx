@@ -40,11 +40,11 @@ def numpy_to_onnx_tensor_type(np_dtype):
 def run_single_onnx_op(
     op_name: str,
     inputs: Dict[str, Any],
+    output_shapes: List[List[Union[int, str, None]]],
+    output_dtypes: List[int],
     attributes: Optional[Dict[str, Any]] = None,
     opset_version: int = 15, # Default opset_version to 15
     ir_version: int = 10,    # Default ir_version to 10
-    output_shape: Optional[List[Union[int, str, None]]] = None,
-    output_dtype: Optional[int] = None # New parameter for explicit output dtype
 ) -> List[np.ndarray]:
     """
     Creates a temporary ONNX model with a single specified ONNX operator,
@@ -64,6 +64,13 @@ def run_single_onnx_op(
                             - `list`: Converted to a `numpy.ndarray`. The dtype will be
                               inferred (e.g., `np.float32` if all elements are floats,
                               `np.int64` if all elements are integers).
+        output_shapes (list of int, str, or None, optional): The explicit list of shapes for the output tensors
+            in the ONNX graph definition.
+             - `int`: for fixed dimensions (e.g., 64).
+             - `str`: for symbolic dimensions (e.g., "batch_size").
+             - `None`: for dynamic dimensions.
+        output_dtypes (int, optional): The explicit ONNX TensorProto.DataType for the output tensors
+                                                in the ONNX graph definition.
         attributes (dict, optional): A dictionary where keys are attribute names (str)
                                      and values are the attribute values. These are
                                      passed directly to `onnx.helper.make_node`.
@@ -72,17 +79,6 @@ def run_single_onnx_op(
                              Defaults to 15 for broader compatibility with older ONNX Runtime versions.
         ir_version (int): The ONNX IR (Intermediate Representation) version to use when creating the model.
                           Defaults to 10 for compatibility with ONNX Runtime 1.22.
-        output_shape (list of int, str, or None, optional): The explicit shape for the output tensor
-                                                                     in the ONNX graph definition.
-                                                                     - `int`: for fixed dimensions (e.g., 64).
-                                                                     - `str`: for symbolic dimensions (e.g., "batch_size").
-                                                                     - `None`: for dynamic dimensions.
-                                                                     If None, the output shape will be inferred dynamically
-                                                                     based on the first input's rank (e.g., `[None, None]`).
-        output_dtype (int, optional): The explicit ONNX TensorProto.DataType for the output tensor
-                                                in the ONNX graph definition. If None, the dtype is
-                                                determined from the 'Cast' op's 'to' attribute (if present)
-                                                or from the first input's dtype.
 
     Returns:
         list: A list of output tensors (numpy arrays) from ONNX Runtime execution.
@@ -105,11 +101,6 @@ def run_single_onnx_op(
         graph_inputs = []
         onnx_runtime_inputs = {}
         input_names = []
-
-        # Define the output name(s). For simplicity, we assume a single output
-        # named "output". For operators with multiple outputs (e.g., "Split"),
-        # this utility would need to be extended to specify them explicitly.
-        output_names = ["output"]
 
         # To infer the output type for the ONNX graph definition, we'll use the
         # ONNX data type of the *first* input provided. This works for many
@@ -182,33 +173,18 @@ def run_single_onnx_op(
              raise ValueError("Could not determine a primary input type or shape to infer the output. "
                               "This typically means the input dictionary was processed unexpectedly.")
 
-        # Determine the output shape for the ONNX graph definition based on the new parameter.
-        if output_shape is not None:
-            # Use the explicitly provided output_shape
-            final_output_shape = output_shape
-        else:
-            # If no explicit output_shape is provided, default to fully dynamic based on input rank.
-            # This tells ONNX that the output has a certain rank (number of dimensions)
-            # but the specific size of each dimension is dynamic and will be inferred at runtime.
-            final_output_shape = [None] * len(first_input_actual_shape) if first_input_actual_shape else []
-
-        # Determine the output dtype for the ONNX graph definition.
-        final_output_onnx_type = output_dtype
-        if final_output_onnx_type is None:
-            # If explicit output_dtype is not provided, try to infer.
-            if op_name == "Cast" and 'to' in attributes:
-                # For Cast operator, the output type is determined by the 'to' attribute.
-                final_output_onnx_type = attributes['to']
-            else:
-                # Otherwise, default to the type of the first input.
-                final_output_onnx_type = first_input_onnx_type
-
-
         # Create a `ValueInfoProto` object for the ONNX graph's output definition.
         # The shape and dtype are now explicitly set based on parameters or robust inference.
-        graph_outputs = [
-            onnx.helper.make_tensor_value_info("output", final_output_onnx_type, final_output_shape)
-        ]
+        num_outputs = len(output_shapes)
+        graph_outputs = []
+        output_names = []
+
+        for outputIdx in range(num_outputs):
+            output_name = "output_{}".format(outputIdx)
+            output_names.append(output_name)
+            graph_outputs.append(
+                onnx.helper.make_tensor_value_info(output_name,
+                    output_dtypes[outputIdx], output_shapes[outputIdx]))
 
         # Create the ONNX `NodeProto` for the specified operator.
         # This defines the operation itself within the graph.
@@ -276,7 +252,7 @@ if __name__ == "__main__":
         'A': np.array([1.0, 2.0, 3.0], dtype=np.float32),
         'B': np.array([4.0, 5.0, 6.0], dtype=np.float32)
     }
-    outputs_add_np = run_single_onnx_op("Add", inputs_add_np)
+    outputs_add_np = run_single_onnx_op("Add", inputs_add_np, [[3]], [onnx.TensorProto.FLOAT])
     print(f"Inputs: {inputs_add_np}")
     print(f"Output for 'Add':\n  Value: {outputs_add_np[0]}\n  Shape: {outputs_add_np[0].shape}\n  Dtype: {outputs_add_np[0].dtype}")
     # Expected Value: [5.0, 7.0, 9.0], Shape: (3,), Dtype: float32
@@ -286,7 +262,7 @@ if __name__ == "__main__":
         'A': 5.0,
         'B': 3.0
     }
-    outputs_add_scalars = run_single_onnx_op("Add", inputs_add_scalars)
+    outputs_add_scalars = run_single_onnx_op("Add", inputs_add_scalars, [[]], [onnx.TensorProto.FLOAT])
     print(f"\nInputs: {inputs_add_scalars}")
     print(f"Output for 'Add' (scalars):\n  Value: {outputs_add_scalars[0]}\n  Shape: {outputs_add_scalars[0].shape}\n  Dtype: {outputs_add_scalars[0].dtype}")
     # Expected Value: 8.0, Shape: (), Dtype: float32 (or int64 depending on initial scalar type)
@@ -297,7 +273,7 @@ if __name__ == "__main__":
     inputs_relu = {
         'X': np.array([-1.0, 0.0, 1.0, -5.0, 2.5], dtype=np.float32)
     }
-    outputs_relu = run_single_onnx_op("Relu", inputs_relu)
+    outputs_relu = run_single_onnx_op("Relu", inputs_relu, [[5]], [onnx.TensorProto.FLOAT])
     print(f"Inputs: {inputs_relu}")
     print(f"Output for 'Relu':\n  Value: {outputs_relu[0]}\n  Shape: {outputs_relu[0].shape}\n  Dtype: {outputs_relu[0].dtype}")
     # Expected Value: [0.0, 0.0, 1.0, 0.0, 2.5], Shape: (5,), Dtype: float32
@@ -323,8 +299,8 @@ if __name__ == "__main__":
     attributes_cast = {
         'to': onnx.TensorProto.FLOAT # This attribute defines the output type of the Cast op
     }
-    # We also explicitly set output_dtype to match the 'to' attribute for graph definition
-    outputs_cast = run_single_onnx_op("Cast", inputs_cast, attributes=attributes_cast, output_dtype=onnx.TensorProto.FLOAT)
+    # We also explicitly set output_dtypes to match the 'to' attribute for graph definition
+    outputs_cast = run_single_onnx_op("Cast", inputs_cast, attributes=attributes_cast, output_dtypes=onnx.TensorProto.FLOAT)
     print(f"Inputs: {inputs_cast}")
     print(f"Output for 'Cast' (int64 to float32):\n  Value: {outputs_cast[0]}\n  Shape: {outputs_cast[0].shape}\n  Dtype: {outputs_cast[0].dtype}")
     # Expected Value: [1.0, 2.0, 3.0], Shape: (3,), Dtype: float32
@@ -372,7 +348,7 @@ if __name__ == "__main__":
     # Expected Value: [11.0, 22.0], Shape: (2,), Dtype: float32
 
 
-    print("\n--- Testing 'Shape' operator with explicit output_shape and output_dtype ---")
+    print("\n--- Testing 'Shape' operator with explicit output_shapes and output_dtypes ---")
     # Example 9: Testing 'Shape' operator, which returns a 1D tensor of long integers
     inputs_shape_op = {
         'data': np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
@@ -381,8 +357,8 @@ if __name__ == "__main__":
     # Its length depends on the input's rank, so it's dynamic.
     # Its dtype is always INT64.
     outputs_shape_op = run_single_onnx_op("Shape", inputs_shape_op,
-                                            output_shape=["num_dims"], # Symbolic dynamic dimension
-                                            output_dtype=onnx.TensorProto.INT64) # Explicit output dtype
+                                            output_shapes=["num_dims"], # Symbolic dynamic dimension
+                                            output_dtypes=onnx.TensorProto.INT64) # Explicit output dtype
     print(f"Inputs: {inputs_shape_op}")
     print(f"Output for 'Shape':\n  Value: {outputs_shape_op[0]}\n  Shape: {outputs_shape_op[0].shape}\n  Dtype: {outputs_shape_op[0].dtype}")
     # Expected Value: [3, 2], Shape: (2,), Dtype: int64
