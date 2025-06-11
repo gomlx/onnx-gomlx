@@ -1191,7 +1191,7 @@ func onnxDequantizeLinear(x, scale, xZeroPoint *Node, targetAxis int, outputDTyp
 		scale = Reshape(scale, newScaleShape.Dimensions...)
 	}
 	if xZeroPoint != nil {
-		x = Sub(x, xZeroPoint)
+		x = Sub(ConvertDType(x, dtypes.Int32), ConvertDType(xZeroPoint, dtypes.Int32))
 	}
 	x = Mul(ConvertDType(x, scale.DType()), scale)
 	if x.DType() != outputDType {
