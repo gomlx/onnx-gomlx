@@ -1167,6 +1167,14 @@ func convertDequantizeLinear(nodeProto *protos.NodeProto, inputs []*Node) *Node 
 
 	x := inputs[0]
 	scale := inputs[1]
+	var xZeroPoint *Node
+	if len(inputs) > 3 {
+		xZeroPoint = inputs[2]
+	}
+	return onnxDequantizeLinear(x, scale, xZeroPoint, targetAxis, outputDType)
+}
+
+func onnxDequantizeLinear(x, scale, xZeroPoint *Node, targetAxis int, outputDType dtypes.DType) *Node {
 	if !scale.IsScalar() {
 		// Add extra axes of dim=1 in scale to match x's rank.
 		if scale.Rank() != 1 {
@@ -1182,9 +1190,7 @@ func convertDequantizeLinear(nodeProto *protos.NodeProto, inputs []*Node) *Node 
 		}
 		scale = Reshape(scale, newScaleShape.Dimensions...)
 	}
-
-	if len(inputs) == 3 {
-		xZeroPoint := inputs[2]
+	if xZeroPoint != nil {
 		x = Sub(x, xZeroPoint)
 	}
 	x = Mul(ConvertDType(x, scale.DType()), scale)
