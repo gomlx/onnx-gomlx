@@ -2,6 +2,7 @@ package onnx
 
 import (
 	"github.com/gomlx/exceptions"
+	"github.com/gomlx/gomlx/backends"
 	"github.com/gomlx/gomlx/backends/simplego"
 	_ "github.com/gomlx/gomlx/backends/simplego"
 	"github.com/gomlx/gomlx/graph"
@@ -54,7 +55,7 @@ func SparseShape(proto *protos.SparseTensorProto) (shape shapes.Shape, err error
 // TODO: It assumes it was saved in the same endian-ness and row-major order. Check/adjust if not.
 func checkAndCreateTensorFromProto[T interface {
 	float32 | float64 | int32 | int64 | uint64
-}](proto *protos.TensorProto, onnxData []T, shape shapes.Shape) (*tensors.Tensor, error) {
+}](backend backends.Backend, proto *protos.TensorProto, onnxData []T, shape shapes.Shape) (*tensors.Tensor, error) {
 	if onnxData == nil {
 		// Not this type of data.
 		return nil, nil
@@ -74,22 +75,17 @@ func checkAndCreateTensorFromProto[T interface {
 	// Convert from the ONNX proto data type to the target datatype.
 	// It uses GoMLX SimpleGo backend.
 	var converted *tensors.Tensor
-	backend, err := simplego.New("")
-	if err != nil {
-		return nil, err
-	}
-	defer backend.Finalize()
-	err = exceptions.TryCatch[error](func() {
+	err := exceptions.TryCatch[error](func() {
 		converted = graph.ExecOnce(backend, func(x *graph.Node) *graph.Node {
 			return graph.ConvertDType(x, shape.DType)
 		}, onnxDataTensor)
-		converted.ToLocal() // Detach from the temporarily created backend.
+		converted.ToLocal() // Detach from the conversion backend.
 	})
 	return converted, err
 }
 
 // tensorToGoMLX converts a protos.TensorProto object to a tensors.Tensor object, handling errors and different data types.
-func tensorToGoMLX(proto *protos.TensorProto) (t *tensors.Tensor, err error) {
+func tensorToGoMLX(backend backends.Backend, proto *protos.TensorProto) (t *tensors.Tensor, err error) {
 	var shape shapes.Shape
 	shape, err = Shape(proto)
 	if err != nil {
@@ -118,19 +114,19 @@ func tensorToGoMLX(proto *protos.TensorProto) (t *tensors.Tensor, err error) {
 
 	// Tries to convert to each data type.
 	if proto.DoubleData != nil {
-		return checkAndCreateTensorFromProto(proto, proto.DoubleData, shape)
+		return checkAndCreateTensorFromProto(backend, proto, proto.DoubleData, shape)
 	}
 	if proto.FloatData != nil {
-		return checkAndCreateTensorFromProto(proto, proto.FloatData, shape)
+		return checkAndCreateTensorFromProto(backend, proto, proto.FloatData, shape)
 	}
 	if proto.Int64Data != nil {
-		return checkAndCreateTensorFromProto(proto, proto.Int64Data, shape)
+		return checkAndCreateTensorFromProto(backend, proto, proto.Int64Data, shape)
 	}
 	if proto.Uint64Data != nil {
-		return checkAndCreateTensorFromProto(proto, proto.Uint64Data, shape)
+		return checkAndCreateTensorFromProto(backend, proto, proto.Uint64Data, shape)
 	}
 	if proto.Int32Data != nil {
-		return checkAndCreateTensorFromProto(proto, proto.Int32Data, shape)
+		return checkAndCreateTensorFromProto(backend, proto, proto.Int32Data, shape)
 	}
 	if proto.StringData != nil {
 		return nil, errors.Errorf("ONNX model tensor %q holds string data which is not supported in GoMLX models", proto.Name)

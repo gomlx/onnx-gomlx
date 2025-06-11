@@ -8,12 +8,15 @@
 package onnx
 
 import (
+	"io"
+	"os"
+
+	"github.com/gomlx/gomlx/backends"
+	"github.com/gomlx/gomlx/backends/simplego"
 	"github.com/gomlx/gomlx/types"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
 	"google.golang.org/protobuf/proto"
-	"io"
-	"os"
 )
 
 // Model represents a parsed ONNX file.
@@ -33,14 +36,24 @@ type Model struct {
 
 	// inputsAsConstants: see WithInputsAsConstants
 	inputsAsConstants map[string]any
+
+	// backend used for ONNX-conversion time tensor processing.
+	backend backends.Backend
 }
 
 // Parse parses an ONNX model into an internal representation that can be used to build a GoMLX graph.
 func Parse(contents []byte) (*Model, error) {
+	// Parse the ONNX proto.
 	m := &Model{}
 	err := proto.Unmarshal(contents, &m.Proto)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to parse ONNX model proto")
+	}
+
+	// Create backend that we'll use for processing of tensors.
+	m.backend, err = simplego.New("")
+	if err != nil {
+		return nil, errors.WithMessage(err, "ONNX conversion requires GoMLX for processing of tensors, but failed to create SimpleGo backend for GoMLX model")
 	}
 
 	// Parse inputs and outputs.

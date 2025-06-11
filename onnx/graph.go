@@ -286,7 +286,7 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 
 		// Ops with attributes:
 	case "Constant":
-		res = convertConstant(node, g)
+		res = convertConstant(m, node, g)
 	case "Gather":
 		res = convertGather(node, inputs)
 	case "GatherElements":

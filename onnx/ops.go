@@ -229,10 +229,16 @@ func getStringsAttrOr(node *protos.NodeProto, attrName string, defaultValues []s
 }
 
 // convertConstant converts a ONNX node to a GoMLX node.
-func convertConstant(node *protos.NodeProto, g *Graph) *Node {
+func convertConstant(m *Model, node *protos.NodeProto, g *Graph) *Node {
 	valueAttr := getNodeAttr(node, "value", true)
+	if valueAttr == nil {
+		panic(errors.Errorf("'value' attribute for ONNX node %s is nil!?", nodeToString(node)))
+	}
 	assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
-	tensor, err := tensorToGoMLX(valueAttr.T)
+	if valueAttr.T == nil {
+		panic(errors.Errorf("TENSOR attribute for ONNX node %s is nil!?", nodeToString(node)))
+	}
+	tensor, err := tensorToGoMLX(m.backend, valueAttr.T)
 	if err != nil {
 		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
 		panic(err)
@@ -756,7 +762,8 @@ func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *p
 
 	valueAttr := getNodeAttr(node, "value", true)
 	assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
-	tensor, err := tensorToGoMLX(valueAttr.T)
+
+	tensor, err := tensorToGoMLX(m.backend, valueAttr.T)
 	if err != nil {
 		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
 		panic(err)

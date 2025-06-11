@@ -28,7 +28,7 @@ func (m *Model) VariablesToContext(ctx *context.Context) error {
 	}
 	ctx = ctx.In(ModelScope).Checked(false)
 	for _, tensorProto := range m.Proto.Graph.Initializer {
-		tensor, err := tensorToGoMLX(tensorProto)
+		tensor, err := tensorToGoMLX(m.backend, tensorProto)
 		if err != nil {
 			return errors.WithMessagef(err, "Model.VariablesToContext()")
 		}
