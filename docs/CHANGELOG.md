@@ -1,4 +1,4 @@
-# Next 
+# 0.2.4 2025/06/12 
 
 * Added support to other ONNX dtypes that requires conversion during reading.
   Also added conversion when saving values back to the ONNX proto.
