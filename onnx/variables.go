@@ -1,10 +1,11 @@
 package onnx
 
 import (
+	"strings"
+
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/ml/context"
 	"github.com/pkg/errors"
-	"strings"
 )
 
 // This file defines importing variables from ONNX and (TODO) saving them back to the ONNX model file.
@@ -27,7 +28,7 @@ func (m *Model) VariablesToContext(ctx *context.Context) error {
 	}
 	ctx = ctx.In(ModelScope).Checked(false)
 	for _, tensorProto := range m.Proto.Graph.Initializer {
-		tensor, err := tensorToGoMLX(tensorProto)
+		tensor, err := tensorToGoMLX(m.backend, tensorProto)
 		if err != nil {
 			return errors.WithMessagef(err, "Model.VariablesToContext()")
 		}

@@ -162,6 +162,22 @@ func getIntAttrOr(node *protos.NodeProto, attrName string, defaultValue int) int
 	return int(attr.I)
 }
 
+// getDTypeAttrOr gets a int attribute for node if present and convert to a GoMLX dtype, or return the given defaultValue.
+// It panics with an error message if the attribute is present but is of the wrong type.
+func getDTypeAttrOr(node *protos.NodeProto, attrName string, defaultValue dtypes.DType) dtypes.DType {
+	attr := getNodeAttr(node, attrName, false)
+	if attr == nil {
+		return defaultValue
+	}
+	assertNodeAttrType(node, attr, protos.AttributeProto_INT)
+	onnxDType := protos.TensorProto_DataType(int32(attr.I))
+	dtype, err := dtypeForONNX(onnxDType)
+	if err != nil {
+		exceptions.Panicf("unsupported ONNX data type %q for attribute %q in %s", onnxDType, attrName, nodeToString(node))
+	}
+	return dtype
+}
+
 // getBoolAttrOr gets a boolean attribute (ONNX uses an int value of 0 or 1) for node if present or return the given defaultValue.
 // It panics with an error message if the attribute is present but is of the wrong type.
 func getBoolAttrOr(node *protos.NodeProto, attrName string, defaultValue bool) bool {
@@ -229,10 +245,16 @@ func getStringsAttrOr(node *protos.NodeProto, attrName string, defaultValues []s
 }
 
 // convertConstant converts a ONNX node to a GoMLX node.
-func convertConstant(node *protos.NodeProto, g *Graph) *Node {
+func convertConstant(m *Model, node *protos.NodeProto, g *Graph) *Node {
 	valueAttr := getNodeAttr(node, "value", true)
+	if valueAttr == nil {
+		panic(errors.Errorf("'value' attribute for ONNX node %s is nil!?", nodeToString(node)))
+	}
 	assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
-	tensor, err := tensorToGoMLX(valueAttr.T)
+	if valueAttr.T == nil {
+		panic(errors.Errorf("TENSOR attribute for ONNX node %s is nil!?", nodeToString(node)))
+	}
+	tensor, err := tensorToGoMLX(m.backend, valueAttr.T)
 	if err != nil {
 		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
 		panic(err)
@@ -756,7 +778,8 @@ func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *p
 
 	valueAttr := getNodeAttr(node, "value", true)
 	assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
-	tensor, err := tensorToGoMLX(valueAttr.T)
+
+	tensor, err := tensorToGoMLX(m.backend, valueAttr.T)
 	if err != nil {
 		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
 		panic(err)
@@ -1015,7 +1038,7 @@ func convertMax(operands []*Node) *Node {
 //
 ////////////////////////////////////////////////////////////////////
 
-// convertLSTM converts a ONNX node to a GoMLX node.
+// convertLSTM converts an ONNX node to a GoMLX node.
 //
 // The GoMLX version used ONNX version as inspiration, so they have the same feature support.
 //
@@ -1117,4 +1140,104 @@ func convertLSTM(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	}
 
 	return allHiddenStates
+}
+
+////////////////////////////////////////////////////////////////////
+//
+// Quantization related ops.
+//
+////////////////////////////////////////////////////////////////////
+
+// convertDequantizeLinear converts the corresponding ONNX node to a GoMLX node.
+//
+// Not yet supporting block dequantization.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__DequantizeLinear.html
+func convertDequantizeLinear(nodeProto *protos.NodeProto, inputs []*Node) *Node {
+	// Attributes:
+	// - Axis (optional) on which to apply the multi-valued scale.
+	// - blockSize: optional, only active if != 0. Not yet implemented.
+	targetAxis := getIntAttrOr(nodeProto, "axis", 1)
+	blockSize := getIntAttrOr(nodeProto, "blockSize", 0)
+	if blockSize != 0 {
+		exceptions.Panicf("DequantizeLinear: support for attribute 'block_size' is not yet implemented")
+	}
+	outputDType := getDTypeAttrOr(nodeProto, "output_dtype", dtypes.Float32)
+
+	x := inputs[0]
+	scale := inputs[1]
+	var xZeroPoint *Node
+	if len(inputs) > 3 {
+		xZeroPoint = inputs[2]
+	}
+	return onnxDequantizeLinear(x, scale, xZeroPoint, targetAxis, outputDType)
+}
+
+func onnxDequantizeLinear(x, scale, xZeroPoint *Node, targetAxis int, outputDType dtypes.DType) *Node {
+	if !scale.IsScalar() {
+		// Add extra axes of dim=1 in scale to match x's rank.
+		if scale.Rank() != 1 {
+			exceptions.Panicf("DequantizeLinear: scale must be a scalar or 1D, got %s instead", scale.Shape())
+		}
+		newScaleShape := x.Shape().Clone()
+		for axis := range newScaleShape.Dimensions {
+			if axis != targetAxis {
+				newScaleShape.Dimensions[axis] = 1
+			} else if newScaleShape.Dimensions[axis] != scale.Shape().Dimensions[0] {
+				exceptions.Panicf("DequantizeLinear: scale must have same dimension as the input axis %d (input shape=%s), got %s instead", targetAxis, x.Shape(), scale.Shape())
+			}
+		}
+		scale = Reshape(scale, newScaleShape.Dimensions...)
+	}
+	if xZeroPoint != nil {
+		x = Sub(ConvertDType(x, dtypes.Int32), ConvertDType(xZeroPoint, dtypes.Int32))
+	}
+	x = Mul(ConvertDType(x, scale.DType()), scale)
+	if x.DType() != outputDType {
+		x = ConvertDType(x, outputDType)
+	}
+	return x
+}
+
+// convertDynamicQuantizeLinear converts the corresponding ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__DynamicQuantizeLinear.html
+func convertDynamicQuantizeLinear(convertedOutputs map[string]*Node, nodeProto *protos.NodeProto, inputs []*Node) *Node {
+	x := inputs[0]
+	if len(nodeProto.Output) != 3 {
+		exceptions.Panicf("DynamicQuantizeLinear: expected 3 outputs (y, y_scale, y_zero_point), got %d instead (%q)", len(nodeProto.Output), nodeProto.Output)
+	}
+	y, yScale, yZeroPoint := onnxDynamicQuantizeLinear(x)
+	convertedOutputs[nodeProto.Output[0]] = y
+	convertedOutputs[nodeProto.Output[1]] = yScale
+	convertedOutputs[nodeProto.Output[2]] = yZeroPoint
+	return y
+}
+
+func onnxDynamicQuantizeLinear(x *Node) (y, yScale, yZeroPoint *Node) {
+	g := x.Graph()
+	dtype := x.DType()
+	quantizedDType := dtypes.Uint8
+	zero := ScalarZero(g, dtype)
+	one := ScalarOne(g, dtype)
+
+	qMax := Scalar(g, dtype, 255)
+	xMin := Min(ReduceAllMin(x), zero)
+	xMax := Max(ReduceAllMax(x), zero)
+	xRange := Sub(xMax, xMin)
+	yScale = Div(xRange, qMax)
+	yScale = Where(Equal(yScale, zero), one, yScale)
+	xMinScaled := Div(xMin, yScale)
+	yZeroPoint = Round(Clip(Neg(xMinScaled), zero, qMax))
+
+	// QuantizeLinear: important detail is that the rounding occurs **before** adding the yZeroPoint.
+	y = Add(Round(Div(x, yScale)), yZeroPoint)
+	y = Clip(y, zero, qMax)
+
+	// Convert to quantize dtype.
+	y = ConvertDType(y, quantizedDType)
+	yZeroPoint = ConvertDType(yZeroPoint, quantizedDType)
+	return
 }

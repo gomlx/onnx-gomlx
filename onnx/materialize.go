@@ -2,13 +2,14 @@ package onnx
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/graph"
 	"github.com/gomlx/gomlx/types"
 	"github.com/gomlx/gomlx/types/tensors"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
-	"strings"
 )
 
 // nonConstantDependencies returns the non-constant dependencies: inputs or variables.
@@ -159,7 +160,7 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 		if !m.isVariableConstant(nodeOutputName) {
 			exceptions.Panicf("attempting to materialize as constant variable %q, which we don't think is constant", nodeOutputName)
 		}
-		t, err := tensorToGoMLX(tensorNode)
+		t, err := tensorToGoMLX(m.backend, tensorNode)
 		if err != nil {
 			panic(errors.WithMessagef(err, "attempting to materialize variable %q as constant", nodeOutputName))
 		}

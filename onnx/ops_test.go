@@ -2,13 +2,14 @@ package onnx
 
 import (
 	"fmt"
+	"testing"
+
 	. "github.com/gomlx/gomlx/graph"
 	"github.com/gomlx/gomlx/graph/graphtest"
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/gomlx/types/tensors"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/stretchr/testify/assert"
-	"testing"
 )
 
 func TestONNXWhere(t *testing.T) {
@@ -198,4 +199,69 @@ func TestONNXFlatten(t *testing.T) {
 
 	// Higher-dimensional tensor.
 	flattenFn(shapes.Make(dtypes.Float32, 7, 2, 3, 4), 2).AssertDims(14, 12)
+}
+
+func TestONNXDequantizeLinear(t *testing.T) {
+	graphtest.RunTestGraphFn(t, "DequantizeLinear-scalar", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]int8{{-1, 0, 1}, {-2, 3, 4}})
+		scale := Const(g, float32(3))
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxDequantizeLinear(x, scale, nil, 1, scale.DType()),
+		}
+		return
+	}, []any{
+		[][]float32{{-3, 0, 3}, {-6, 9, 12}},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "DequantizeLinear-outputDType", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]int8{{-1, 0, 1}, {-2, 3, 4}})
+		scale := Const(g, float32(3))
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxDequantizeLinear(x, scale, nil, 1, dtypes.Float64),
+		}
+		return
+	}, []any{
+		[][]float64{{-3, 0, 3}, {-6, 9, 12}},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "DequantizeLinear-zero-point", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]int8{{-1, 0, 1}, {-2, 3, 4}})
+		scale := Const(g, float32(3))
+		zeroPoint := Const(g, int8(1))
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxDequantizeLinear(x, scale, zeroPoint, 1, scale.DType()),
+		}
+		return
+	}, []any{
+		[][]float32{{-6, -3, 0}, {-9, 6, 9}},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "DequantizeLinear-axis", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]int8{{-1, 0, 1}, {-2, 3, 4}})
+		scale := Const(g, []float32{3, 30, 300})
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxDequantizeLinear(x, scale, nil, 1, scale.DType()),
+		}
+		return
+	}, []any{
+		[][]float32{{-3, 0, 300}, {-6, 90, 1200}},
+	}, -1)
+}
+
+func TestONNX_DynamicQuantizeLinear(t *testing.T) {
+	graphtest.RunTestGraphFn(t, "DequantizeLinear-scalar", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{-3, -0, 3}, {-6, 9, 12}})
+		inputs = []*Node{x}
+		y, yScale, yZeroPoint := onnxDynamicQuantizeLinear(x)
+		outputs = []*Node{y, yScale, yZeroPoint}
+		return
+	}, []any{
+		[][]uint8{{43, 85, 127}, {0, 212, 255}},
+		float32(0.07058824),
+		uint8(85),
+	}, 1e-3)
 }

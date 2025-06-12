@@ -286,7 +286,7 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 
 		// Ops with attributes:
 	case "Constant":
-		res = convertConstant(node, g)
+		res = convertConstant(m, node, g)
 	case "Gather":
 		res = convertGather(node, inputs)
 	case "GatherElements":
@@ -305,6 +305,8 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 		res = convertGemm(node, inputs)
 	case "Flatten":
 		res = convertFlatten(node, inputs)
+	case "DequantizeLinear":
+		res = convertDequantizeLinear(node, inputs)
 
 		// Ops that require constant sub-expression materialization:
 		// they take dynamic (graph) values in ONNX, but only take static values in XLA
@@ -333,6 +335,11 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 	case "LSTM":
 		res = convertLSTM(m, convertedOutputs, node, inputs)
 
+	// Multiple outputs ops:
+	case "DynamicQuantizeLinear":
+		res = convertDynamicQuantizeLinear(convertedOutputs, node, inputs)
+
+		// Ops not implemented:
 	default:
 		exceptions.Panicf("unimplemented ONNX op %q in %s", node.OpType, nodeToString(node))
 	}
