@@ -8,6 +8,7 @@
 package onnx
 
 import (
+	"fmt"
 	"io"
 	"os"
 
@@ -44,6 +45,7 @@ type Model struct {
 // Parse parses an ONNX model into an internal representation that can be used to build a GoMLX graph.
 func Parse(contents []byte) (*Model, error) {
 	// Parse the ONNX proto.
+	fmt.Println("SUCCESSFULLY FOUND THE PARSE FUNCTION")
 	m := &Model{}
 	err := proto.Unmarshal(contents, &m.Proto)
 	if err != nil {

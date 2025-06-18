@@ -1,6 +1,11 @@
 package onnx
 
 import (
+	"fmt"
+	"io"
+	"os"
+	"strconv"
+
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/backends"
 	"github.com/gomlx/gomlx/backends/simplego"
@@ -93,6 +98,15 @@ func tensorToGoMLX(backend backends.Backend, proto *protos.TensorProto) (t *tens
 		return
 	}
 
+	// data is stored in external data
+	if proto.ExternalData != nil {
+		rawData, err := loadExternalData(proto)
+		if err != nil {
+			return nil, errors.WithMessagef(err, "loading external data for tensor %q", proto.Name)
+		}
+		proto.RawData = rawData
+	}
+
 	// If data is provided as RawData: check that the size of the data is the same used in GoMLX.
 	if proto.RawData != nil {
 		t = tensors.FromShape(shape)
@@ -131,11 +145,64 @@ func tensorToGoMLX(backend backends.Backend, proto *protos.TensorProto) (t *tens
 	if proto.StringData != nil {
 		return nil, errors.Errorf("ONNX model tensor %q holds string data which is not supported in GoMLX models", proto.Name)
 	}
-	if len(proto.ExternalData) > 0 {
-		return nil, errors.Errorf("ONNX model tensor %q is stored as external data, which is not implemented", proto.Name)
-	}
 	// Unknown tensor data type!?
 	return nil, errors.Errorf("tensor %q shaped %s has no supported format of data in the ONNX model!?", proto.Name, shape)
+}
+
+func loadExternalData(proto *protos.TensorProto) ([]byte, error) {
+	kv := make(map[string]string)
+	for _, entry := range proto.ExternalData {
+		kv[entry.Key] = entry.Value
+	}
+	fmt.Print("name: ", proto.Name)
+	// fmt.Println("")
+	location, ok := kv["location"]
+	if !ok {
+		return nil, errors.New("external_data missing required 'location' key")
+	}
+
+	// manage offset, if it exists
+	offset := int64(0) // default is no offset
+	if val, ok := kv["offset"]; ok {
+		var err error
+		offset, err = strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return nil, errors.WithMessagef(err, "invalid 'offset' in external_data")
+		}
+	}
+
+	// how long to read, if limit exists
+	length := int64(-1) // default is end of file
+	if val, ok := kv["length"]; ok {
+		var err error
+		length, err = strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return nil, errors.WithMessagef(err, "invalid 'length' in external_data")
+		}
+	}
+	fmt.Println("file location: " + location)
+	file, err := os.Open("/home/rileyoh6/summer_2025/onnx_models/" + location)
+	if err != nil {
+		return nil, errors.WithMessagef(err, "opening external data file %q", location)
+	}
+	defer file.Close()
+
+	_, err = file.Seek(offset, io.SeekStart)
+	if err != nil {
+		return nil, errors.Wrap(err, "seeking to offset in external file")
+	}
+
+	if length >= 0 {
+		buf := make([]byte, length)
+		_, err = io.ReadFull(file, buf)
+		if err != nil {
+			return nil, errors.Wrap(err, "reading external data of specified length")
+		}
+		return buf, nil
+	} else {
+		return io.ReadAll(file)
+	}
+
 }
 
 // checkAndCopyTensorToProto implements the generic check and copy of the tensor to the ONNX proto data.
