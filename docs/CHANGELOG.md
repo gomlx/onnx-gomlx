@@ -1,3 +1,7 @@
+# Next
+
+* Added `Sin` and `Cos`.
+
 # 0.2.4 2025/06/12 
 
 * Added support to other ONNX dtypes that requires conversion during reading.
