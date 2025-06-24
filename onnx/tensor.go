@@ -181,7 +181,7 @@ func loadExternalData(proto *protos.TensorProto) ([]byte, error) {
 		}
 	}
 	fmt.Println("file location: " + location)
-	file, err := os.Open("/home/rileyoh6/summer_2025/onnx_models/" + location)
+	file, err := os.Open("/home/testuser/repositories/onnx_models/" + location)
 	if err != nil {
 		return nil, errors.WithMessagef(err, "opening external data file %q", location)
 	}

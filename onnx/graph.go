@@ -342,6 +342,12 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 	// Multiple outputs ops:
 	case "DynamicQuantizeLinear":
 		res = convertDynamicQuantizeLinear(convertedOutputs, node, inputs)
+	case "Trilu":
+		fmt.Println("entered trilu")
+		res = convertTrilu(m, convertedOutputs, node, inputs)
+	case "ScatterND":
+		fmt.Println("entered ScatterND")
+		res = convertScatterND(m, convertedOutputs, node, inputs)
 
 		// Ops not implemented:
 	default:

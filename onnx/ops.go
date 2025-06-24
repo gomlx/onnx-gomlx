@@ -1031,6 +1031,84 @@ func convertMax(operands []*Node) *Node {
 	}
 	return output
 }
+func convertTrilu(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	input := inputs[0]
+	// get offset k, default is 0
+	k := 0
+	if len(inputs) > 1 {
+		kT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+		if err != nil {
+			panic(errors.WithMessagef(err, "while converting 'k' for node %s", nodeToString(node)))
+		}
+		kValues := tensorToInts(kT)
+		if len(kValues) != 1 {
+			exceptions.Panicf("Trilu 'k' must be scalar, got shape %v", kT.Shape())
+		}
+		k = kValues[0]
+	}
+
+	// Get upper attribute (default: true)
+	upper := getIntAttrOr(node, "upper", 1)
+
+	// Apply Trilu mask
+	if upper == 1 {
+		return TakeUpperTriangular(input, k)
+	} else {
+		return TakeLowerTriangular(input, k)
+	}
+}
+
+func ScatterUpdate(operand, indices, updates *Node) *Node {
+	g := operand.Graph()
+	dtype := operand.DType()
+	updateMask := Scatter(indices, OnesLike(updates), operand.Shape())
+	zeroed := Where(ConvertDType(OnesLike(updateMask), dtypes.Bool), ScalarZero(g, dtype), operand)
+
+	return ScatterAdd(zeroed, indices, updates, false, false)
+}
+
+// convertScatterND operator
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__ScatterND.html
+func convertScatterND(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// inputs
+	data := inputs[0]
+	indices := inputs[1]
+	updates := inputs[2]
+
+	// attributes
+	reduction := getStringAttrOr(node, "reduction", "none")
+
+	rank := indices.Rank()
+	if rank < 1 {
+		exceptions.Panicf("ScatterND: indices must have rank >= 2, got %d", rank)
+	}
+
+	operand := Identity(data)
+	var output *Node
+	switch reduction {
+	case "add":
+		fmt.Println("add")
+		output = ScatterSum(operand, indices, updates, true, true)
+	case "mul":
+		fmt.Println("mul")
+		exceptions.Panicf("ScatterMul has not been implemented yet")
+	case "max":
+		fmt.Println("max")
+		output = ScatterMax(operand, indices, updates, true, true)
+	case "min":
+		fmt.Println("min")
+		output = ScatterMin(operand, indices, updates, true, true)
+	case "none", "":
+		output = ScatterUpdate(operand, indices, updates)
+
+	default:
+		exceptions.Panicf("ScatterND: unrecognized reduction mode %q", reduction)
+	}
+
+	return output
+}
 
 ////////////////////////////////////////////////////////////////////
 //
