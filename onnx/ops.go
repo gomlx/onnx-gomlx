@@ -1058,15 +1058,6 @@ func convertTrilu(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	}
 }
 
-func ScatterUpdate(operand, indices, updates *Node) *Node {
-	g := operand.Graph()
-	dtype := operand.DType()
-	updateMask := Scatter(indices, OnesLike(updates), operand.Shape())
-	zeroed := Where(ConvertDType(OnesLike(updateMask), dtypes.Bool), ScalarZero(g, dtype), operand)
-
-	return ScatterAdd(zeroed, indices, updates, false, false)
-}
-
 // convertScatterND operator
 //
 // See ONNX documentation in:
@@ -1101,7 +1092,7 @@ func convertScatterND(m *Model, convertedOutputs map[string]*Node, node *protos.
 		fmt.Println("min")
 		output = ScatterMin(operand, indices, updates, true, true)
 	case "none", "":
-		output = ScatterUpdate(operand, indices, updates)
+		output = Scatter(indices, updates, operand.Shape())
 
 	default:
 		exceptions.Panicf("ScatterND: unrecognized reduction mode %q", reduction)
