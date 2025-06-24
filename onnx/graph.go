@@ -269,6 +269,10 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 		res = BitwiseNot(inputs[0])
 	case "Tanh":
 		res = Tanh(inputs[0])
+	case "Sin":
+		res = Sin(inputs[0])
+	case "Cos":
+		res = Cos(inputs[0])
 
 		// Ops with equivalents:
 	case "MatMul":
