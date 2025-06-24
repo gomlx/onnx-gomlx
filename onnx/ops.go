@@ -1071,9 +1071,20 @@ func convertScatterND(m *Model, convertedOutputs map[string]*Node, node *protos.
 	// attributes
 	reduction := getStringAttrOr(node, "reduction", "none")
 
-	rank := indices.Rank()
-	if rank < 1 {
-		exceptions.Panicf("ScatterND: indices must have rank >= 2, got %d", rank)
+	r := data.Rank()
+	if !(r >= 1) {
+		exceptions.Panicf("ScatterND: data must have rank >= 1, got %d", r)
+	}
+
+	q := indices.Rank()
+	if !(q >= 1) {
+		exceptions.Panicf("ScatterND: indices must have rank >= 1, got %d", r)
+	}
+
+	v := q + r - indices.Shape().Dimensions[len(indices.Shape().Dimensions)-1] - 1
+
+	if updates.Rank() != v {
+		exceptions.Panicf("ScatterND: updates has wrong rank")
 	}
 
 	operand := Identity(data)
@@ -1098,6 +1109,9 @@ func convertScatterND(m *Model, convertedOutputs map[string]*Node, node *protos.
 		exceptions.Panicf("ScatterND: unrecognized reduction mode %q", reduction)
 	}
 
+	if output.Rank() < 1 {
+		exceptions.Panicf("ScatterND: output must have rank >= 1, got rank %d", output.Rank())
+	}
 	return output
 }
 
