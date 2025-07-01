@@ -14,7 +14,6 @@ import (
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
-	"k8s.io/klog/v2"
 )
 
 // This file implements the ONNX operators that don't have a direct corresponding GoMLX operator.
@@ -636,59 +635,134 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	}
 
 	operand := inputs[0]
+	rank := operand.Rank()
 
 	startsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 	if err != nil {
 		panic(errors.WithMessagef(err, "while converting 'starts' for node %s", nodeToString(node)))
 	}
-	starts := tensorToInts(startsT)
+	inputStarts := tensorToInts(startsT)
 
 	endsT, err := m.materializeConstantExpression(node.Input[2], convertedOutputs)
 	if err != nil {
-		klog.Infof("Error: %+v", err)
 		panic(errors.WithMessagef(err, "while converting 'ends' for node %s", nodeToString(node)))
 	}
-	ends := tensorToInts(endsT)
+	inputEnds := tensorToInts(endsT)
 
-	var axes []int
+	// optional axes param
+	var inputAxes []int
 	if len(inputs) > 3 {
 		axesT, err := m.materializeConstantExpression(node.Input[3], convertedOutputs)
 		if err != nil {
 			panic(errors.WithMessagef(err, "while converting 'axes' for node %s", nodeToString(node)))
 		}
-		axes = tensorToInts(axesT)
+		inputAxes = tensorToInts(axesT)
+	} else {
+		// default values according to spec
+		inputAxes = make([]int, rank)
+		for i := 0; i < rank; i++ {
+			inputAxes[i] = i
+		}
 	}
 
-	var strides []int
+	// optional steps param
+	var inputSteps []int
 	if len(inputs) > 4 {
-		stridesT, err := m.materializeConstantExpression(node.Input[4], convertedOutputs)
+		stepsT, err := m.materializeConstantExpression(node.Input[4], convertedOutputs)
 		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'strides' for node %s", nodeToString(node)))
+			panic(errors.WithMessagef(err, "while converting 'steps' for node %s", nodeToString(node)))
 		}
-		strides = tensorToInts(stridesT)
+		inputSteps = tensorToInts(stepsT)
+	} else {
+		// default steps according to spec
+		inputSteps = make([]int, len(inputStarts))
+		for i := range inputSteps {
+			inputSteps[i] = 1
+		}
 	}
 
-	specs := make([]SliceAxisSpec, operand.Rank())
-	numAxesToDefine := operand.Rank()
-	if len(axes) != 0 {
-		// Define only given axes, and slice the other axes as full range.
-		for ii := range specs {
-			specs[ii] = AxisRange() // Full range.
+	min := func(a, b int) int {
+		if a < b {
+			return a
 		}
-		numAxesToDefine = len(axes)
+		return b
 	}
-	for ii := range numAxesToDefine {
-		axis := ii
-		if len(axes) != 0 {
-			axis = axes[ii]
+	max := func(a, b int) int {
+		if a > b {
+			return a
 		}
-		// ONNX often uses INT64_MAX as end value.
-		endValue := min(ends[ii], operand.Shape().Dim(axis))
-		specs[axis] = AxisRange(starts[ii], endValue)
-		if len(strides) != 0 {
-			specs[axis] = specs[axis].Stride(strides[ii])
+		return b
+	}
+
+	effectiveStarts := make([]int, rank)
+	effectiveEnds := make([]int, rank)
+	effectiveSteps := make([]int, rank)
+
+	for i := 0; i < rank; i++ {
+		effectiveStarts[i] = 0
+		effectiveEnds[i] = operand.Shape().Dim(i)
+		effectiveSteps[i] = 1
+	}
+
+	normalizedAxes := make([]int, len(inputAxes))
+	for i, axis := range inputAxes {
+		if axis < 0 {
+			normalizedAxes[i] = axis + rank
+		} else {
+			normalizedAxes[i] = axis
+		}
+
+		if normalizedAxes[i] < 0 || normalizedAxes[i] >= rank {
+			exceptions.Panicf("axis %d is out of bounds for tensor of rank %d in node %s",
+				inputAxes[i], rank, nodeToString(node))
 		}
 	}
+
+	// Process each specified axis to override the effective values
+	for i := range normalizedAxes {
+		axis := normalizedAxes[i]
+		start := inputStarts[i]
+		end := inputEnds[i]
+		step := inputSteps[i]
+		dimSize := operand.Shape().Dim(axis)
+
+		// Validate step is not zero
+		if step == 0 {
+			panic(errors.Errorf("step cannot be 0 for axis %d in node %s", axis, nodeToString(node)))
+		}
+
+		// Handle negative start and end indices by adding dimension size
+		if start < 0 {
+			start += dimSize
+		}
+		if end < 0 {
+			end += dimSize
+		}
+
+		if step > 0 {
+			// Positive stepping
+			// start clamped to [0, dimSize]
+			// end clamped to [0, dimSize]
+			start = max(0, min(start, dimSize))
+			end = max(0, min(end, dimSize))
+		} else {
+			// Negative stepping (step < 0)
+			// start clamped to [0, dimSize-1]
+			// end clamped to [-1, dimSize-1]
+			start = max(0, min(start, dimSize-1))
+			end = max(-1, min(end, dimSize-1))
+		}
+
+		effectiveStarts[axis] = start
+		effectiveEnds[axis] = end
+		effectiveSteps[axis] = step
+	}
+
+	specs := make([]SliceAxisSpec, rank)
+	for i := 0; i < rank; i++ {
+		specs[i] = AxisRange(effectiveStarts[i], effectiveEnds[i]).Stride(effectiveSteps[i])
+	}
+
 	return Slice(operand, specs...)
 }
 
@@ -1031,6 +1105,11 @@ func convertMax(operands []*Node) *Node {
 	}
 	return output
 }
+
+// convertTrilu operator: given one or batches of 2D-matrices, returns the upper or lower triangular  part.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Trilu.html
 func convertTrilu(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	input := inputs[0]
 	// get offset k, default is 0
@@ -1091,20 +1170,15 @@ func convertScatterND(m *Model, convertedOutputs map[string]*Node, node *protos.
 	var output *Node
 	switch reduction {
 	case "add":
-		fmt.Println("add")
-		output = ScatterSum(operand, indices, updates, true, true)
+		output = ScatterSum(operand, indices, updates, false, false)
 	case "mul":
-		fmt.Println("mul")
 		exceptions.Panicf("ScatterMul has not been implemented yet")
 	case "max":
-		fmt.Println("max")
-		output = ScatterMax(operand, indices, updates, true, true)
+		output = ScatterMax(operand, indices, updates, false, false)
 	case "min":
-		fmt.Println("min")
-		output = ScatterMin(operand, indices, updates, true, true)
+		output = ScatterMin(operand, indices, updates, false, false)
 	case "none", "":
-		output = Scatter(indices, updates, operand.Shape())
-
+		output = ScatterUpdate(operand, indices, updates, false, true)
 	default:
 		exceptions.Panicf("ScatterND: unrecognized reduction mode %q", reduction)
 	}

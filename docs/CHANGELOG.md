@@ -1,6 +1,8 @@
 # Next
 
 * Added `Sin` and `Cos`.
+* Added `ScatterND` and `Trilu`
+* Updated `Slice` to fully match ONNX spec
 
 # 0.2.4 2025/06/12 
 
