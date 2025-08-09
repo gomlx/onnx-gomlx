@@ -11,6 +11,7 @@ import (
 	"github.com/gomlx/gomlx/ml/layers/lstm"
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/gomlx/types/tensors"
+	timage "github.com/gomlx/gomlx/types/tensors/images"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
@@ -1297,6 +1298,134 @@ func convertLSTM(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	}
 
 	return allHiddenStates
+}
+
+// convertConv converts an ONNX Conv node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Conv.html
+func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// ONNX kernel: [M, C, kH, kW] -> GoMLX expects [C, kH, kW, M] for ChannelsFirst
+	x := inputs[0]
+	w := inputs[1]
+
+	if w.Rank() == 4 {
+		w = TransposeAllDims(w, 1, 2, 3, 0)
+	}
+
+	var b *Node
+	if len(inputs) > 2 {
+		b = inputs[2]
+	}
+
+	// Attributes
+	strides := getIntsAttrOr(node, "strides", []int{1, 1})
+	pads := getIntsAttrOr(node, "pads", []int{0, 0, 0, 0})
+	dilations := getIntsAttrOr(node, "dilations", []int{1, 1})
+	groups := getIntAttrOr(node, "group", 1)
+
+	var paddings [][2]int
+	if len(pads) == 4 {
+		paddings = append(paddings, [2]int{pads[0], pads[2]}) // height/top-bottom
+		paddings = append(paddings, [2]int{pads[1], pads[3]}) // width/left-right
+	}
+
+	conv := Convolve(x, w).ChannelsAxis(timage.ChannelsFirst)
+	if len(strides) > 0 {
+		conv = conv.StridePerDim(strides...)
+	}
+	if len(dilations) > 0 {
+		conv = conv.DilationPerDim(dilations...)
+	}
+	if paddings != nil {
+		conv = conv.PaddingPerDim(paddings)
+	}
+	if groups > 1 {
+		conv = conv.FeatureGroupCount(groups)
+	}
+	out := conv.Done()
+	if b != nil {
+		if b.Rank() == 1 && out.Rank() == 4 {
+			b = Reshape(b, 1, b.Shape().Dim(0), 1, 1)
+		}
+		out = Add(out, b)
+	}
+	return out
+}
+
+// convertMaxPool converts an ONNX MaxPool node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__MaxPool.html
+func convertMaxPool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	x := inputs[0]
+	kernelShape := getIntsAttrOr(node, "kernel_shape", nil)
+	strides := getIntsAttrOr(node, "strides", nil)
+	pads := getIntsAttrOr(node, "pads", nil)
+
+	// GoMLX expects paddings as [][2]int: [[pad_top, pad_bottom], [pad_left, pad_right]]
+	var paddings [][2]int
+	if len(pads) == 4 {
+		paddings = append(paddings, [2]int{pads[0], pads[2]}) // height/top-bottom
+		paddings = append(paddings, [2]int{pads[1], pads[3]}) // width/left-right
+	}
+
+	pool := MaxPool(x).ChannelsAxis(timage.ChannelsFirst)
+	if kernelShape != nil {
+		pool = pool.WindowPerAxis(kernelShape...)
+	}
+	if strides != nil {
+		pool = pool.StridePerAxis(strides...)
+	}
+	if paddings != nil {
+		pool = pool.PaddingPerDim(paddings)
+	}
+	out := pool.Done()
+	return out
+}
+
+// convertGlobalAveragePool converts an ONNX GlobalAveragePool node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__GlobalAveragePool.html
+func convertGlobalAveragePool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	x := inputs[0]
+	// ONNX default is NCHW, so set ChannelsFirst
+	// GlobalAveragePool means window covers the entire spatial dimensions
+	spatialDims := x.Rank() - 2
+	window := make([]int, spatialDims)
+	for i := range window {
+		window[i] = x.Shape().Dim(i + 2)
+	}
+	pool := MeanPool(x).ChannelsAxis(timage.ChannelsFirst).WindowPerAxis(window...)
+	out := pool.Done()
+	return out
+}
+
+// convertBatchNormalization converts an ONNX BatchNormalization node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__BatchNormalization.html
+func convertBatchNormalization(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// Inputs: [input, scale, bias, mean, var]
+	x := inputs[0]
+	scale := inputs[1]
+	bias := inputs[2]
+	mean := inputs[3]
+	variance := inputs[4]
+
+	epsilon := getFloatAttrOr(node, "epsilon", 1e-5)
+
+	// ONNX default is NCHW, so set ChannelsFirst
+	if scale.Rank() == 1 && x.Rank() == 4 {
+		scale = Reshape(scale, 1, scale.Shape().Dim(0), 1, 1)
+		bias = Reshape(bias, 1, bias.Shape().Dim(0), 1, 1)
+		mean = Reshape(mean, 1, mean.Shape().Dim(0), 1, 1)
+		variance = Reshape(variance, 1, variance.Shape().Dim(0), 1, 1)
+	}
+	normed := Div(Sub(x, mean), Sqrt(Add(variance, Scalar(x.Graph(), variance.DType(), epsilon))))
+	out := Add(Mul(normed, scale), bias)
+	return out
 }
 
 ////////////////////////////////////////////////////////////////////
