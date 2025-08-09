@@ -401,6 +401,9 @@ func convertShape(node *protos.NodeProto, inputs []*Node) *Node {
 func convertFlatten(node *protos.NodeProto, inputs []*Node) *Node {
 	operand := inputs[0]
 	splitAxis := getIntAttrOr(node, "axis", 0)
+	if operand.Rank() > 1 && splitAxis == 0 {
+		splitAxis = 1 // note: this preserves the batch dimension
+	}
 	splitAxis = AdjustAxisToOperandRank(operand, splitAxis)
 	return onnxFlatten(operand, splitAxis)
 }
@@ -415,7 +418,8 @@ func onnxFlatten(operand *Node, splitAxis int) *Node {
 			innerDim *= dim
 		}
 	}
-	return Reshape(operand, outerDim, innerDim)
+	x := Reshape(operand, outerDim, innerDim)
+	return x
 }
 
 // convertConcat converts a ONNX node to a GoMLX node.
@@ -1359,6 +1363,7 @@ func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 // https://onnx.ai/onnx/operators/onnx__MaxPool.html
 func convertMaxPool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	x := inputs[0]
+	x.SetLogged("max")
 	kernelShape := getIntsAttrOr(node, "kernel_shape", nil)
 	strides := getIntsAttrOr(node, "strides", nil)
 	pads := getIntsAttrOr(node, "pads", nil)
@@ -1390,8 +1395,7 @@ func convertMaxPool(m *Model, convertedOutputs map[string]*Node, node *protos.No
 // https://onnx.ai/onnx/operators/onnx__GlobalAveragePool.html
 func convertGlobalAveragePool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	x := inputs[0]
-	// ONNX default is NCHW, so set ChannelsFirst
-	// GlobalAveragePool means window covers the entire spatial dimensions
+	x.SetLogged("batch")
 	spatialDims := x.Rank() - 2
 	window := make([]int, spatialDims)
 	for i := range window {
@@ -1399,6 +1403,9 @@ func convertGlobalAveragePool(m *Model, convertedOutputs map[string]*Node, node 
 	}
 	pool := MeanPool(x).ChannelsAxis(timage.ChannelsFirst).WindowPerAxis(window...)
 	out := pool.Done()
+	if out.Rank() == 4 && out.Shape().Dim(2) == 1 && out.Shape().Dim(3) == 1 {
+		out = Reshape(out, out.Shape().Dim(0), out.Shape().Dim(1))
+	}
 	return out
 }
 
@@ -1409,6 +1416,7 @@ func convertGlobalAveragePool(m *Model, convertedOutputs map[string]*Node, node 
 func convertBatchNormalization(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	// Inputs: [input, scale, bias, mean, var]
 	x := inputs[0]
+	x.SetLogged("batch")
 	scale := inputs[1]
 	bias := inputs[2]
 	mean := inputs[3]
