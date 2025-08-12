@@ -400,10 +400,7 @@ func convertShape(node *protos.NodeProto, inputs []*Node) *Node {
 // https://onnx.ai/onnx/operators/onnx__Flatten.html
 func convertFlatten(node *protos.NodeProto, inputs []*Node) *Node {
 	operand := inputs[0]
-	splitAxis := getIntAttrOr(node, "axis", 0)
-	if operand.Rank() > 1 && splitAxis == 0 {
-		splitAxis = 1 // note: this preserves the batch dimension
-	}
+	splitAxis := getIntAttrOr(node, "axis", 1)
 	splitAxis = AdjustAxisToOperandRank(operand, splitAxis)
 	return onnxFlatten(operand, splitAxis)
 }
@@ -418,8 +415,7 @@ func onnxFlatten(operand *Node, splitAxis int) *Node {
 			innerDim *= dim
 		}
 	}
-	x := Reshape(operand, outerDim, innerDim)
-	return x
+	return Reshape(operand, outerDim, innerDim)
 }
 
 // convertConcat converts a ONNX node to a GoMLX node.
@@ -1309,12 +1305,16 @@ func convertLSTM(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Conv.html
 func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
-	// ONNX kernel: [M, C, kH, kW] -> GoMLX expects [C, kH, kW, M] for ChannelsFirst
 	x := inputs[0]
 	w := inputs[1]
 
-	if w.Rank() == 4 {
-		w = TransposeAllDims(w, 1, 2, 3, 0)
+	if w.Rank() >= 3 {
+		perm := make([]int, w.Rank())
+		for i := 1; i < w.Rank(); i++ {
+			perm[i-1] = i
+		}
+		perm[w.Rank()-1] = 0
+		w = TransposeAllDims(w, perm...)
 	}
 
 	var b *Node
@@ -1322,16 +1322,20 @@ func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 		b = inputs[2]
 	}
 
-	// Attributes
-	strides := getIntsAttrOr(node, "strides", []int{1, 1})
-	pads := getIntsAttrOr(node, "pads", []int{0, 0, 0, 0})
-	dilations := getIntsAttrOr(node, "dilations", []int{1, 1})
+	strides := getIntsAttrOr(node, "strides", nil)
+	pads := getIntsAttrOr(node, "pads", nil)
+	dilations := getIntsAttrOr(node, "dilations", nil)
 	groups := getIntAttrOr(node, "group", 1)
 
+	// Dynamically build paddings for N-D
 	var paddings [][2]int
-	if len(pads) == 4 {
-		paddings = append(paddings, [2]int{pads[0], pads[2]}) // height/top-bottom
-		paddings = append(paddings, [2]int{pads[1], pads[3]}) // width/left-right
+	if pads != nil && len(pads)%2 == 0 {
+		spatialDims := len(pads) / 2
+		paddings = make([][2]int, spatialDims)
+		for i := range spatialDims {
+			paddings[i][0] = pads[i]
+			paddings[i][1] = pads[i+spatialDims]
+		}
 	}
 
 	conv := Convolve(x, w).ChannelsAxis(timage.ChannelsFirst)
@@ -1341,7 +1345,7 @@ func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	if len(dilations) > 0 {
 		conv = conv.DilationPerDim(dilations...)
 	}
-	if paddings != nil {
+	if len(paddings) > 0 {
 		conv = conv.PaddingPerDim(paddings)
 	}
 	if groups > 1 {
@@ -1349,8 +1353,15 @@ func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	}
 	out := conv.Done()
 	if b != nil {
-		if b.Rank() == 1 && out.Rank() == 4 {
-			b = Reshape(b, 1, b.Shape().Dim(0), 1, 1)
+		// the bias stuff
+		if b.Rank() == 1 && out.Rank() >= 3 {
+			shape := make([]int, out.Rank())
+			shape[0] = 1
+			shape[1] = b.Shape().Dim(0)
+			for i := 2; i < out.Rank(); i++ {
+				shape[i] = 1
+			}
+			b = Reshape(b, shape...)
 		}
 		out = Add(out, b)
 	}
@@ -1363,7 +1374,6 @@ func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 // https://onnx.ai/onnx/operators/onnx__MaxPool.html
 func convertMaxPool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	x := inputs[0]
-	x.SetLogged("max")
 	kernelShape := getIntsAttrOr(node, "kernel_shape", nil)
 	strides := getIntsAttrOr(node, "strides", nil)
 	pads := getIntsAttrOr(node, "pads", nil)
@@ -1395,7 +1405,6 @@ func convertMaxPool(m *Model, convertedOutputs map[string]*Node, node *protos.No
 // https://onnx.ai/onnx/operators/onnx__GlobalAveragePool.html
 func convertGlobalAveragePool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	x := inputs[0]
-	x.SetLogged("batch")
 	spatialDims := x.Rank() - 2
 	window := make([]int, spatialDims)
 	for i := range window {
@@ -1416,7 +1425,6 @@ func convertGlobalAveragePool(m *Model, convertedOutputs map[string]*Node, node 
 func convertBatchNormalization(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	// Inputs: [input, scale, bias, mean, var]
 	x := inputs[0]
-	x.SetLogged("batch")
 	scale := inputs[1]
 	bias := inputs[2]
 	mean := inputs[3]
