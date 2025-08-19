@@ -338,6 +338,14 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 	// Full ML layers ops:
 	case "LSTM":
 		res = convertLSTM(m, convertedOutputs, node, inputs)
+	case "Conv":
+		res = convertConv(m, convertedOutputs, node, inputs)
+	case "MaxPool":
+		res = convertMaxPool(m, convertedOutputs, node, inputs)
+	case "GlobalAveragePool":
+		res = convertGlobalAveragePool(m, convertedOutputs, node, inputs)
+	case "BatchNormalization":
+		res = convertBatchNormalization(m, convertedOutputs, node, inputs)
 
 	// Multiple outputs ops:
 	case "DynamicQuantizeLinear":

@@ -11,6 +11,7 @@ import (
 	"github.com/gomlx/gomlx/ml/layers/lstm"
 	"github.com/gomlx/gomlx/types/shapes"
 	"github.com/gomlx/gomlx/types/tensors"
+	timage "github.com/gomlx/gomlx/types/tensors/images"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
@@ -399,7 +400,7 @@ func convertShape(node *protos.NodeProto, inputs []*Node) *Node {
 // https://onnx.ai/onnx/operators/onnx__Flatten.html
 func convertFlatten(node *protos.NodeProto, inputs []*Node) *Node {
 	operand := inputs[0]
-	splitAxis := getIntAttrOr(node, "axis", 0)
+	splitAxis := getIntAttrOr(node, "axis", 1)
 	splitAxis = AdjustAxisToOperandRank(operand, splitAxis)
 	return onnxFlatten(operand, splitAxis)
 }
@@ -1297,6 +1298,206 @@ func convertLSTM(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	}
 
 	return allHiddenStates
+}
+
+// convertConv converts an ONNX Conv node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Conv.html
+func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	autoPad := getStringAttrOr(node, "auto_pad", "NOTSET")
+	if autoPad != "NOTSET" {
+		exceptions.Panicf("Conv: support for attribute 'auto_pad' (%s) is not yet implemented", autoPad)
+	}
+	kernelShape := getIntsAttrOr(node, "kernel_shape", nil)
+	if kernelShape == nil {
+		exceptions.Panicf("Conv: support for inferring 'kernel_shape' is not yet implemented")
+	}
+	strides := getIntsAttrOr(node, "strides", nil)
+	pads := getIntsAttrOr(node, "pads", nil)
+	dilations := getIntsAttrOr(node, "dilations", nil)
+	groups := getIntAttrOr(node, "group", 1)
+
+	x := inputs[0]
+	w := inputs[1]
+	var b *Node
+	if len(inputs) > 2 {
+		b = inputs[2]
+	}
+
+	var paddings [][2]int
+	numSpatialDims := x.Rank() - 2
+	if pads != nil {
+		if len(pads) != 2*numSpatialDims {
+			exceptions.Panicf("invalid number of padding values: %d spatial axes, got %d padding values -- expected 2 pads per axis", numSpatialDims, len(pads))
+		}
+		paddings = make([][2]int, numSpatialDims)
+		for i := range numSpatialDims {
+			paddings[i][0] = pads[i]
+			paddings[i][1] = pads[i+numSpatialDims]
+		}
+	}
+
+	inputRank := x.Rank()
+	spatialAxes := make([]int, inputRank-2)
+	for i := range spatialAxes {
+		spatialAxes[i] = i + 2
+	}
+
+	// why: cause onnx standard is [O, I, spatial...]
+	// but gomlx Conv accepts different orders by default in channels first/last mode
+	// e.g input as first kernel dim in channelsFirst mode. So we just specify the dimensions.
+	axes := backends.ConvolveAxesConfig{
+		InputBatch:          0,
+		InputChannel:        1,
+		InputSpatial:        spatialAxes,
+		KernelOutputChannel: 0,
+		KernelInputChannel:  1,
+		KernelSpatial:       spatialAxes,
+		OutputBatch:         0,
+		OutputChannel:       1,
+		OutputSpatial:       spatialAxes,
+	}
+	conv := Convolve(x, w).AxesConfig(axes)
+	if len(strides) > 0 {
+		conv = conv.StridePerDim(strides...)
+	}
+	if len(dilations) > 0 {
+		conv = conv.DilationPerDim(dilations...)
+	}
+	if len(paddings) > 0 {
+		conv = conv.PaddingPerDim(paddings)
+	}
+	if groups > 1 {
+		conv = conv.FeatureGroupCount(groups)
+	}
+	out := conv.Done()
+	if b != nil {
+		// the bias stuff
+		if b.Rank() == 1 && out.Rank() >= 3 {
+			shape := make([]int, out.Rank())
+			shape[0] = 1
+			shape[1] = b.Shape().Dim(0)
+			for i := 2; i < out.Rank(); i++ {
+				shape[i] = 1
+			}
+			b = Reshape(b, shape...)
+		}
+		out = Add(out, b)
+	}
+	return out
+}
+
+// convertMaxPool converts an ONNX MaxPool node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__MaxPool.html
+func convertMaxPool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	autoPad := getStringAttrOr(node, "auto_pad", "NOTSET")
+	if autoPad != "NOTSET" {
+		exceptions.Panicf("MaxPool: support for attribute 'auto_pad' (%s) is not yet implemented", autoPad)
+	}
+	ceilMode := getIntAttrOr(node, "ceil_mode", 0)
+	if ceilMode != 0 {
+		exceptions.Panicf("MaxPool: support for attribute 'ceil_mode' is not yet implemented")
+	}
+	dilations := getIntsAttrOr(node, "dilations", nil)
+	if dilations != nil {
+		exceptions.Panicf("MaxPool: support for attribute 'dilations' is not yet implemented")
+	}
+	storageOrder := getIntAttrOr(node, "storage_order", 0)
+	if storageOrder != 0 {
+		exceptions.Panicf("MaxPool: support for attribute 'storage_order' is not yet implemented")
+	}
+	kernelShape := getIntsAttrOr(node, "kernel_shape", nil)
+	strides := getIntsAttrOr(node, "strides", nil)
+	pads := getIntsAttrOr(node, "pads", nil)
+
+	x := inputs[0]
+
+	var paddings [][2]int
+	numSpatialDims := x.Rank() - 2
+	if pads != nil {
+		if len(pads) != 2*numSpatialDims {
+			exceptions.Panicf("invalid number of padding values: %d spatial axes, got %d padding values -- expected 2 pads per axis", numSpatialDims, len(pads))
+		}
+		for i := range numSpatialDims {
+			paddings = append(paddings, [2]int{pads[i], pads[i+numSpatialDims]})
+		}
+	}
+
+	pool := MaxPool(x).ChannelsAxis(timage.ChannelsFirst)
+	if kernelShape != nil {
+		pool = pool.WindowPerAxis(kernelShape...)
+	}
+	if strides != nil {
+		pool = pool.StridePerAxis(strides...)
+	}
+	if paddings != nil {
+		pool = pool.PaddingPerDim(paddings)
+	}
+	out := pool.Done()
+	return out
+}
+
+// convertGlobalAveragePool converts an ONNX GlobalAveragePool node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__GlobalAveragePool.html
+func convertGlobalAveragePool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	x := inputs[0]
+	spatialDims := x.Rank() - 2
+	window := make([]int, spatialDims)
+	for i := range window {
+		window[i] = x.Shape().Dim(i + 2)
+	}
+	pool := MeanPool(x).ChannelsAxis(timage.ChannelsFirst).WindowPerAxis(window...)
+	out := pool.Done()
+	if out.Rank() > 2 {
+		out = Reshape(out, out.Shape().Dim(0), out.Shape().Dim(1))
+	}
+	return out
+}
+
+// convertBatchNormalization converts an ONNX BatchNormalization node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__BatchNormalization.html
+func convertBatchNormalization(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// Inputs: [input, scale, bias, mean, var]
+	x := inputs[0]
+	scale := inputs[1]
+	bias := inputs[2]
+	mean := inputs[3]
+	variance := inputs[4]
+
+	epsilon := getFloatAttrOr(node, "epsilon", 1e-5)
+	momentum := getFloatAttrOr(node, "momentum", 0.9)
+	if momentum != 0.9 {
+		exceptions.Panicf("BatchNormalization: support for attribute 'momentum' is not yet implemented")
+	}
+	trainingMode := getIntAttrOr(node, "training_mode", 0)
+	if trainingMode != 0 {
+		exceptions.Panicf("BatchNormalization: support for attribute 'training_mode' is not yet implemented")
+	}
+
+	inputRank := x.Rank()
+	if scale.Rank() == 1 && inputRank >= 2 {
+		c := scale.Shape().Dim(0)
+		shape := make([]int, inputRank)
+		shape[0] = 1
+		shape[1] = c
+		for i := 2; i < inputRank; i++ {
+			shape[i] = 1
+		}
+		scale = Reshape(scale, shape...)
+		bias = Reshape(bias, shape...)
+		mean = Reshape(mean, shape...)
+		variance = Reshape(variance, shape...)
+	}
+	normed := Div(Sub(x, mean), Sqrt(Add(variance, Scalar(x.Graph(), variance.DType(), epsilon))))
+	out := Add(Mul(normed, scale), bias)
+	return out
 }
 
 ////////////////////////////////////////////////////////////////////
