@@ -1305,40 +1305,60 @@ func convertLSTM(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Conv.html
 func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
-	x := inputs[0]
-	w := inputs[1]
-
-	if w.Rank() >= 3 {
-		perm := make([]int, w.Rank())
-		for i := 1; i < w.Rank(); i++ {
-			perm[i-1] = i
-		}
-		perm[w.Rank()-1] = 0
-		w = TransposeAllDims(w, perm...)
+	autoPad := getStringAttrOr(node, "auto_pad", "NOTSET")
+	if autoPad != "NOTSET" {
+		exceptions.Panicf("Conv: support for attribute 'auto_pad' (%s) is not yet implemented", autoPad)
 	}
-
-	var b *Node
-	if len(inputs) > 2 {
-		b = inputs[2]
+	kernelShape := getIntsAttrOr(node, "kernel_shape", nil)
+	if kernelShape == nil {
+		exceptions.Panicf("Conv: support for inferring 'kernel_shape' is not yet implemented")
 	}
-
 	strides := getIntsAttrOr(node, "strides", nil)
 	pads := getIntsAttrOr(node, "pads", nil)
 	dilations := getIntsAttrOr(node, "dilations", nil)
 	groups := getIntAttrOr(node, "group", 1)
 
-	// Dynamically build paddings for N-D
+	x := inputs[0]
+	w := inputs[1]
+	var b *Node
+	if len(inputs) > 2 {
+		b = inputs[2]
+	}
+
 	var paddings [][2]int
-	if pads != nil && len(pads)%2 == 0 {
-		spatialDims := len(pads) / 2
-		paddings = make([][2]int, spatialDims)
-		for i := range spatialDims {
+	numSpatialDims := x.Rank() - 2
+	if pads != nil {
+		if len(pads) != 2*numSpatialDims {
+			exceptions.Panicf("invalid number of padding values: %d spatial axes, got %d padding values -- expected 2 pads per axis", numSpatialDims, len(pads))
+		}
+		paddings = make([][2]int, numSpatialDims)
+		for i := range numSpatialDims {
 			paddings[i][0] = pads[i]
-			paddings[i][1] = pads[i+spatialDims]
+			paddings[i][1] = pads[i+numSpatialDims]
 		}
 	}
 
-	conv := Convolve(x, w).ChannelsAxis(timage.ChannelsFirst)
+	inputRank := x.Rank()
+	spatialAxes := make([]int, inputRank-2)
+	for i := range spatialAxes {
+		spatialAxes[i] = i + 2
+	}
+
+	// why: cause onnx standard is [O, I, spatial...]
+	// but gomlx Conv accepts different orders by default in channels first/last mode
+	// e.g input as first kernel dim in channelsFirst mode. So we just specify the dimensions.
+	axes := backends.ConvolveAxesConfig{
+		InputBatch:          0,
+		InputChannel:        1,
+		InputSpatial:        spatialAxes,
+		KernelOutputChannel: 0,
+		KernelInputChannel:  1,
+		KernelSpatial:       spatialAxes,
+		OutputBatch:         0,
+		OutputChannel:       1,
+		OutputSpatial:       spatialAxes,
+	}
+	conv := Convolve(x, w).AxesConfig(axes)
 	if len(strides) > 0 {
 		conv = conv.StridePerDim(strides...)
 	}
@@ -1373,16 +1393,37 @@ func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__MaxPool.html
 func convertMaxPool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
-	x := inputs[0]
+	autoPad := getStringAttrOr(node, "auto_pad", "NOTSET")
+	if autoPad != "NOTSET" {
+		exceptions.Panicf("MaxPool: support for attribute 'auto_pad' (%s) is not yet implemented", autoPad)
+	}
+	ceilMode := getIntAttrOr(node, "ceil_mode", 0)
+	if ceilMode != 0 {
+		exceptions.Panicf("MaxPool: support for attribute 'ceil_mode' is not yet implemented")
+	}
+	dilations := getIntsAttrOr(node, "dilations", nil)
+	if dilations != nil {
+		exceptions.Panicf("MaxPool: support for attribute 'dilations' is not yet implemented")
+	}
+	storageOrder := getIntAttrOr(node, "storage_order", 0)
+	if storageOrder != 0 {
+		exceptions.Panicf("MaxPool: support for attribute 'storage_order' is not yet implemented")
+	}
 	kernelShape := getIntsAttrOr(node, "kernel_shape", nil)
 	strides := getIntsAttrOr(node, "strides", nil)
 	pads := getIntsAttrOr(node, "pads", nil)
 
-	// GoMLX expects paddings as [][2]int: [[pad_top, pad_bottom], [pad_left, pad_right]]
+	x := inputs[0]
+
 	var paddings [][2]int
-	if len(pads) == 4 {
-		paddings = append(paddings, [2]int{pads[0], pads[2]}) // height/top-bottom
-		paddings = append(paddings, [2]int{pads[1], pads[3]}) // width/left-right
+	numSpatialDims := x.Rank() - 2
+	if pads != nil {
+		if len(pads) != 2*numSpatialDims {
+			exceptions.Panicf("invalid number of padding values: %d spatial axes, got %d padding values -- expected 2 pads per axis", numSpatialDims, len(pads))
+		}
+		for i := range numSpatialDims {
+			paddings = append(paddings, [2]int{pads[i], pads[i+numSpatialDims]})
+		}
 	}
 
 	pool := MaxPool(x).ChannelsAxis(timage.ChannelsFirst)
@@ -1412,7 +1453,7 @@ func convertGlobalAveragePool(m *Model, convertedOutputs map[string]*Node, node 
 	}
 	pool := MeanPool(x).ChannelsAxis(timage.ChannelsFirst).WindowPerAxis(window...)
 	out := pool.Done()
-	if out.Rank() == 4 && out.Shape().Dim(2) == 1 && out.Shape().Dim(3) == 1 {
+	if out.Rank() > 2 {
 		out = Reshape(out, out.Shape().Dim(0), out.Shape().Dim(1))
 	}
 	return out
@@ -1431,13 +1472,28 @@ func convertBatchNormalization(m *Model, convertedOutputs map[string]*Node, node
 	variance := inputs[4]
 
 	epsilon := getFloatAttrOr(node, "epsilon", 1e-5)
+	momentum := getFloatAttrOr(node, "momentum", 0.9)
+	if momentum != 0.9 {
+		exceptions.Panicf("BatchNormalization: support for attribute 'momentum' is not yet implemented")
+	}
+	trainingMode := getIntAttrOr(node, "training_mode", 0)
+	if trainingMode != 0 {
+		exceptions.Panicf("BatchNormalization: support for attribute 'training_mode' is not yet implemented")
+	}
 
-	// ONNX default is NCHW, so set ChannelsFirst
-	if scale.Rank() == 1 && x.Rank() == 4 {
-		scale = Reshape(scale, 1, scale.Shape().Dim(0), 1, 1)
-		bias = Reshape(bias, 1, bias.Shape().Dim(0), 1, 1)
-		mean = Reshape(mean, 1, mean.Shape().Dim(0), 1, 1)
-		variance = Reshape(variance, 1, variance.Shape().Dim(0), 1, 1)
+	inputRank := x.Rank()
+	if scale.Rank() == 1 && inputRank >= 2 {
+		c := scale.Shape().Dim(0)
+		shape := make([]int, inputRank)
+		shape[0] = 1
+		shape[1] = c
+		for i := 2; i < inputRank; i++ {
+			shape[i] = 1
+		}
+		scale = Reshape(scale, shape...)
+		bias = Reshape(bias, shape...)
+		mean = Reshape(mean, shape...)
+		variance = Reshape(variance, shape...)
 	}
 	normed := Div(Sub(x, mean), Sqrt(Add(variance, Scalar(x.Graph(), variance.DType(), epsilon))))
 	out := Add(Mul(normed, scale), bias)
