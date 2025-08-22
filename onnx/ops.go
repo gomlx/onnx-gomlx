@@ -1348,15 +1348,15 @@ func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	// but gomlx Conv accepts different orders by default in channels first/last mode
 	// e.g input as first kernel dim in channelsFirst mode. So we just specify the dimensions.
 	axes := backends.ConvolveAxesConfig{
-		InputBatch:          0,
-		InputChannel:        1,
-		InputSpatial:        spatialAxes,
-		KernelOutputChannel: 0,
-		KernelInputChannel:  1,
-		KernelSpatial:       spatialAxes,
-		OutputBatch:         0,
-		OutputChannel:       1,
-		OutputSpatial:       spatialAxes,
+		InputBatch:           0,
+		InputChannels:        1,
+		InputSpatial:         spatialAxes,
+		KernelOutputChannels: 0,
+		KernelInputChannels:  1,
+		KernelSpatial:        spatialAxes,
+		OutputBatch:          0,
+		OutputChannels:       1,
+		OutputSpatial:        spatialAxes,
 	}
 	conv := Convolve(x, w).AxesConfig(axes)
 	if len(strides) > 0 {
