@@ -1,6 +1,8 @@
-# Next
+# 0.2.5 2025/08/22
 
-* Added `Sin` and `Cos`.
+* Updated dependencies to GoMLX v0.22.1
+* Added Conv, MaxPool, BatchNormalization, and AverageGlobalPool operations.
+* Added `Sin` and `Cos`
 * Added `ScatterND` and `Trilu`
 * Updated `Slice` to fully match ONNX spec
 

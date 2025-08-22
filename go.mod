@@ -9,8 +9,8 @@ require (
 	github.com/daulet/tokenizers v1.20.2
 	github.com/gomlx/exceptions v0.0.3
 	github.com/gomlx/go-huggingface v0.1.1
-	github.com/gomlx/gomlx v0.21.0
-	github.com/gomlx/gopjrt v0.7.3
+	github.com/gomlx/gomlx v0.22.1
+	github.com/gomlx/gopjrt v0.8.0
 	github.com/janpfeifer/go-benchmarks v0.1.1
 	github.com/janpfeifer/must v0.2.0
 	github.com/parquet-go/parquet-go v0.24.0
