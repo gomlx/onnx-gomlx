@@ -1,10 +1,14 @@
-# ONNX-GoMLX from ONNX to GoMLX and back
+# ONNX-GoMLX: Inference and fine-tuning ONNX models with GoMLX
 
 [![GoDev](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/gomlx/onnx-gomlx?tab=doc)
 
 ## 📖 Overview
 ONNX-GoMLX converts [ONNX models](https://onnx.ai/) (`.onnx` suffix) to 
-[GoMLX (an accelerated machine learning framework for Go](https://github.com/gomlx/gomlx) and optionally back to ONNX.
+[GoMLX (an accelerated machine learning framework for Go](https://github.com/gomlx/gomlx).
+
+One can also fine-tune models with GoMLX and then save back its weights to the ONNX model.
+
+Future plan also includes creating an ONNX backend for GoMLX: so one can execute or export GoMLX models using ONNX.
 
 The main use cases so far are:
 
