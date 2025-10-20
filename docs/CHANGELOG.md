@@ -1,3 +1,8 @@
+# Next: Updated to GoMLX v0.24.0
+
+* Updated dependencies to GoMLX v0.24.0, and its improved directory organization.
+* Updates to README.md.
+
 # 0.2.5 2025/08/22
 
 * Updated dependencies to GoMLX v0.22.1
