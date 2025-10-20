@@ -5,9 +5,9 @@ import (
 	"github.com/gomlx/gomlx/backends"
 	"github.com/gomlx/gomlx/backends/simplego"
 	_ "github.com/gomlx/gomlx/backends/simplego"
-	"github.com/gomlx/gomlx/graph"
-	"github.com/gomlx/gomlx/types/shapes"
-	"github.com/gomlx/gomlx/types/tensors"
+	"github.com/gomlx/gomlx/pkg/core/graph"
+	"github.com/gomlx/gomlx/pkg/core/shapes"
+	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
@@ -76,7 +76,7 @@ func checkAndCreateTensorFromProto[T interface {
 	// It uses GoMLX SimpleGo backend.
 	var converted *tensors.Tensor
 	err := exceptions.TryCatch[error](func() {
-		converted = graph.ExecOnce(backend, func(x *graph.Node) *graph.Node {
+		converted = graph.MustExecOnce(backend, func(x *graph.Node) *graph.Node {
 			return graph.ConvertDType(x, shape.DType)
 		}, onnxDataTensor)
 		converted.ToLocal() // Detach from the conversion backend.
@@ -148,9 +148,9 @@ func checkAndCopyTensorToProto[T interface {
 			proto.Name, shape, shape.Size(), len(onnxData))
 	}
 
-	// If dtype of the tensor doesn't match the dtype of the proto storing it:
+	// If the dtype of the tensor doesn't match the dtype of the proto storing it:
 	if shape.DType != dtypes.FromGenericsType[T]() {
-		// Convert from GoMLX tensor the ONNX proto data type.
+		// Convert from GoMLX tensor to the ONNX proto data type.
 		// It uses GoMLX SimpleGo backend.
 		var converted *tensors.Tensor
 		backend, err := simplego.New("")
@@ -159,7 +159,7 @@ func checkAndCopyTensorToProto[T interface {
 		}
 		defer backend.Finalize()
 		err = exceptions.TryCatch[error](func() {
-			converted = graph.ExecOnce(backend, func(x *graph.Node) *graph.Node {
+			converted = graph.MustExecOnce(backend, func(x *graph.Node) *graph.Node {
 				return graph.ConvertDType(x, shape.DType)
 			}, t.OnDeviceClone(backend))
 			converted.ToLocal() // Detach from the temporarily created backend.

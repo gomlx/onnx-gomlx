@@ -5,15 +5,15 @@ import (
 	"runtime"
 
 	"github.com/gomlx/exceptions"
-	. "github.com/gomlx/gomlx/graph"
-	"github.com/gomlx/gomlx/ml/context"
-	"github.com/gomlx/gomlx/ml/layers/activations"
-	"github.com/gomlx/gomlx/types"
-	"github.com/gomlx/gomlx/types/shapes"
+	. "github.com/gomlx/gomlx/pkg/core/graph"
+	"github.com/gomlx/gomlx/pkg/core/shapes"
+	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
+	"github.com/gomlx/gomlx/pkg/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 )
 
-// sliceMap executes the given function sequentially for every element on in, and returns a mapped slice.
+// sliceMap executes the given function sequentially for every element on in and returns a mapped slice.
 func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
 	out = make([]Out, len(in))
 	for ii, e := range in {
@@ -22,7 +22,7 @@ func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
 	return
 }
 
-// CallGraph calls the ONNX graph, and hence building it with GoMLX ops.
+// CallGraph calls the ONNX graph, and hence are building it with GoMLX ops.
 // This can be used for inference or training.
 //
 // If the model has any variables, call Model.VariablesToContext first (only once) to upload all
@@ -30,7 +30,7 @@ func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
 //
 // If the model has no variables, the context in ctx can be set to nil.
 //
-// The inputs (a map of input name to its graph.Node) can be given as normal input parameters to the graph or as
+// The inputs (a map of the input name to its graph.Node) can be given as normal input parameters to the graph or as
 // static constants -- see WithInputsAsConstants.
 // Set the inputs as constants if they are meant to be interpreted as constants (static) values, that won't change
 // in different inference/training steps.
@@ -40,7 +40,9 @@ func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
 //
 // The graph being built is given in g.
 //
-// As in GoMLX graph functions, it panics (throws exceptions) in case of errors.
+// You can pass a nil context (ctx) if the model has no variables.
+//
+// As in GoMLX graph building (symbolic) functions, it panics (throws exceptions) in case of errors.
 func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Node, outputNames ...string) (outputs []*Node) {
 	if ctx != nil {
 		ctx = ctx.In(ModelScope).Checked(false)
@@ -59,13 +61,13 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 		outputNames = m.OutputsNames
 	}
 
-	// Map the given inputs to the corresponding ONNX inputs, and report (throw exception) if there are
+	// Map the given inputs to the corresponding ONNX inputs and report (throw exception) if there are
 	// any discrepancies.
-	// Also initialize convertedOutputs with the given/converted inputs.
+	// Also, initialize convertedOutputs with the given/converted inputs.
 	convertedOutputs := make(map[string]*Node)
-	missingInputs := types.MakeSet[string]()
-	repeatedInputs := types.MakeSet[string]()
-	unknownInputs := types.MakeSet[string]()
+	missingInputs := sets.Make[string]()
+	repeatedInputs := sets.Make[string]()
+	unknownInputs := sets.Make[string]()
 	for inputIdx, inputName := range m.InputsNames {
 		if inputName == "" {
 			inputName = fmt.Sprintf("#%d", inputIdx)
@@ -128,7 +130,7 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 		}
 	}
 
-	// Makes sure all temporarily allocated tensor on device are freed.
+	// Makes sure all the temporarily allocated on-device tensors are freed.
 	for _ = range 3 {
 		runtime.GC()
 	}
@@ -136,15 +138,21 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 }
 
 // recursiveCallGraph recursively creates a GoMLX graph for the target output name.
-// The convertedOutputs is used both as input, and as output to store the converted nodes.
+// The convertedOutputs are used both as input and as output to store the converted nodes.
+//
+// The ctx may be nil if no variables are used.
 func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputName string, convertedOutputs map[string]*Node) {
 	if _, found := convertedOutputs[nodeOutputName]; found {
 		// Already converted.
 		return
 	}
 
-	// Is it the output of a variable ?
+	// Is it the output of a variable?
 	if _, found := m.variableNameToValue[nodeOutputName]; found {
+		if ctx == nil {
+			exceptions.Panicf("onnx.CallGraph(): model has variables, but a nil context was given")
+			panic(nil) // for lint benefit.
+		}
 		varName := SafeVarName(nodeOutputName)
 		v := ctx.GetVariable(varName)
 		if v == nil {
@@ -194,173 +202,173 @@ func opRequiresContext(opType string) bool {
 // See the definitions in:
 // . https://openxla.org/xla/broadcasting
 // . https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
-func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodeProto, convertedOutputs map[string]*Node) {
+func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto, convertedOutputs map[string]*Node) {
 	if node.Overload != "" {
 		exceptions.Panicf("overload %q to in-model function in ONNX model not implemented in node %q", node.Overload, node.Name)
 	}
 
 	// Convert the node: the usual case is that there is only one output.
-	// If res is not nil, it is set to convertedOutputs[output[0]].
+	// If the result is not nil, it is set to convertedOutputs[output[0]].
 	// Anything different must be implemented by the specific op switch.
-	var res *Node
+	var result *Node
 	inputs := sliceMap(node.Input, func(n string) *Node { return convertedOutputs[n] })
 	switch node.OpType {
-	// Binary operators: see note on differences on default broadcasting.
+	// Binary operators: see the note on differences on default broadcasting.
 	case "Add":
-		res = convertBinaryOp(Add, inputs[0], inputs[1])
+		result = convertBinaryOp(Add, inputs[0], inputs[1])
 	case "Sub":
-		res = convertBinaryOp(Sub, inputs[0], inputs[1])
+		result = convertBinaryOp(Sub, inputs[0], inputs[1])
 	case "Mul":
-		res = convertBinaryOp(Mul, inputs[0], inputs[1])
+		result = convertBinaryOp(Mul, inputs[0], inputs[1])
 	case "Div":
-		res = convertBinaryOp(Div, inputs[0], inputs[1])
+		result = convertBinaryOp(Div, inputs[0], inputs[1])
 	case "Pow":
-		//res = convertBinaryOp(Pow, inputs[0], inputs[1])
-		res = convertPow(m, convertedOutputs, node, inputs)
+		//result = convertBinaryOp(Pow, inputs[0], inputs[1])
+		result = convertPow(m, convertedOutputs, node, inputs)
 	case "And":
-		res = convertBinaryOp(LogicalAnd, inputs[0], inputs[1])
+		result = convertBinaryOp(LogicalAnd, inputs[0], inputs[1])
 	case "Or":
-		res = convertBinaryOp(LogicalOr, inputs[0], inputs[1])
+		result = convertBinaryOp(LogicalOr, inputs[0], inputs[1])
 	case "Xor":
-		res = convertBinaryOp(LogicalXor, inputs[0], inputs[1])
+		result = convertBinaryOp(LogicalXor, inputs[0], inputs[1])
 	case "BitwiseAnd":
-		res = convertBinaryOp(BitwiseAnd, inputs[0], inputs[1])
+		result = convertBinaryOp(BitwiseAnd, inputs[0], inputs[1])
 	case "BitwiseOr":
-		res = convertBinaryOp(BitwiseOr, inputs[0], inputs[1])
+		result = convertBinaryOp(BitwiseOr, inputs[0], inputs[1])
 	case "BitwiseXor":
-		res = convertBinaryOp(BitwiseXor, inputs[0], inputs[1])
+		result = convertBinaryOp(BitwiseXor, inputs[0], inputs[1])
 	case "Equal":
-		res = convertBinaryOp(Equal, inputs[0], inputs[1])
+		result = convertBinaryOp(Equal, inputs[0], inputs[1])
 	case "Less":
-		res = convertBinaryOp(LessThan, inputs[0], inputs[1])
+		result = convertBinaryOp(LessThan, inputs[0], inputs[1])
 	case "LessOrEqual":
-		res = convertBinaryOp(LessOrEqual, inputs[0], inputs[1])
+		result = convertBinaryOp(LessOrEqual, inputs[0], inputs[1])
 	case "Greater":
-		res = convertBinaryOp(GreaterThan, inputs[0], inputs[1])
+		result = convertBinaryOp(GreaterThan, inputs[0], inputs[1])
 	case "GreaterOrEqual":
-		res = convertBinaryOp(GreaterOrEqual, inputs[0], inputs[1])
+		result = convertBinaryOp(GreaterOrEqual, inputs[0], inputs[1])
 
 	// Unary operators
 	case "Sqrt":
-		res = Sqrt(inputs[0])
+		result = Sqrt(inputs[0])
 	case "Exp":
-		res = Exp(inputs[0])
+		result = Exp(inputs[0])
 	case "Log":
-		res = Log(inputs[0])
+		result = Log(inputs[0])
 	case "Erf":
-		res = Erf(inputs[0])
+		result = Erf(inputs[0])
 	case "Relu":
-		res = activations.Relu(inputs[0])
+		result = activations.Relu(inputs[0])
 	case "Abs":
-		res = Abs(inputs[0])
+		result = Abs(inputs[0])
 	case "Neg":
-		res = Neg(inputs[0])
+		result = Neg(inputs[0])
 	case "Sign":
-		res = Sign(inputs[0])
+		result = Sign(inputs[0])
 	case "Ceil":
-		res = Ceil(inputs[0])
+		result = Ceil(inputs[0])
 	case "Floor":
-		res = Floor(inputs[0])
+		result = Floor(inputs[0])
 	case "Identity":
-		res = Identity(inputs[0])
+		result = Identity(inputs[0])
 	case "Not":
-		res = LogicalNot(inputs[0])
+		result = LogicalNot(inputs[0])
 	case "BitwiseNot":
-		res = BitwiseNot(inputs[0])
+		result = BitwiseNot(inputs[0])
 	case "Tanh":
-		res = Tanh(inputs[0])
+		result = Tanh(inputs[0])
 	case "Sin":
-		res = Sin(inputs[0])
+		result = Sin(inputs[0])
 	case "Cos":
-		res = Cos(inputs[0])
+		result = Cos(inputs[0])
 
 		// Ops with equivalents:
 	case "MatMul":
-		res = MatMul(inputs[0], inputs[1])
+		result = MatMul(inputs[0], inputs[1])
 
 	// Ops with special behavior:
 	case "Clip":
-		res = convertClip(node, inputs)
+		result = convertClip(node, inputs)
 	case "Where":
-		res = convertWhere(node, inputs)
+		result = convertWhere(node, inputs)
 	case "Min":
-		res = convertMin(inputs)
+		result = convertMin(inputs)
 	case "Max":
-		res = convertMax(inputs)
+		result = convertMax(inputs)
 
 		// Ops with attributes:
 	case "Constant":
-		res = convertConstant(m, node, g)
+		result = convertConstant(m, node, g)
 	case "Gather":
-		res = convertGather(node, inputs)
+		result = convertGather(node, inputs)
 	case "GatherElements":
-		res = convertGatherElements(node, inputs)
+		result = convertGatherElements(node, inputs)
 	case "Shape":
-		res = convertShape(node, inputs)
+		result = convertShape(node, inputs)
 	case "Concat":
-		res = convertConcat(node, inputs)
+		result = convertConcat(node, inputs)
 	case "Softmax":
-		res = convertSoftmax(node, inputs)
+		result = convertSoftmax(node, inputs)
 	case "Cast":
-		res = convertCast(node, inputs)
+		result = convertCast(node, inputs)
 	case "Transpose":
-		res = convertTranspose(node, inputs)
+		result = convertTranspose(node, inputs)
 	case "Gemm":
-		res = convertGemm(node, inputs)
+		result = convertGemm(node, inputs)
 	case "Flatten":
-		res = convertFlatten(node, inputs)
+		result = convertFlatten(node, inputs)
 	case "DequantizeLinear":
-		res = convertDequantizeLinear(node, inputs)
+		result = convertDequantizeLinear(node, inputs)
 
 		// Ops that require constant sub-expression materialization:
-		// they take dynamic (graph) values in ONNX, but only take static values in XLA
+		// they take dynamic (graph) values in ONNX but only take static values in XLA
 	case "Squeeze":
-		res = convertSqueeze(m, convertedOutputs, node, inputs)
+		result = convertSqueeze(m, convertedOutputs, node, inputs)
 	case "Unsqueeze":
-		res = convertUnsqueeze(m, convertedOutputs, node, inputs)
+		result = convertUnsqueeze(m, convertedOutputs, node, inputs)
 	case "Slice":
-		res = convertSlice(m, convertedOutputs, node, inputs)
+		result = convertSlice(m, convertedOutputs, node, inputs)
 	case "Reshape":
-		res = convertReshape(m, convertedOutputs, node, inputs)
+		result = convertReshape(m, convertedOutputs, node, inputs)
 	case "ReduceMean":
-		res = convertReduceMean(m, convertedOutputs, node, inputs)
+		result = convertReduceMean(m, convertedOutputs, node, inputs)
 	case "ConstantOfShape":
-		res = convertConstantOfShape(m, convertedOutputs, node, inputs)
+		result = convertConstantOfShape(m, convertedOutputs, node, inputs)
 	case "Expand":
-		res = convertExpand(m, convertedOutputs, node, inputs)
+		result = convertExpand(m, convertedOutputs, node, inputs)
 	case "Tile":
-		res = convertTile(m, convertedOutputs, node, inputs)
+		result = convertTile(m, convertedOutputs, node, inputs)
 	case "Range":
-		res = convertRange(m, convertedOutputs, node, inputs)
+		result = convertRange(m, convertedOutputs, node, inputs)
 	case "CumSum":
-		res = convertCumSum(m, convertedOutputs, node, inputs)
+		result = convertCumSum(m, convertedOutputs, node, inputs)
 
 	// Full ML layers ops:
 	case "LSTM":
-		res = convertLSTM(m, convertedOutputs, node, inputs)
+		result = convertLSTM(m, convertedOutputs, node, inputs)
 	case "Conv":
-		res = convertConv(m, convertedOutputs, node, inputs)
+		result = convertConv(m, convertedOutputs, node, inputs)
 	case "MaxPool":
-		res = convertMaxPool(m, convertedOutputs, node, inputs)
+		result = convertMaxPool(m, convertedOutputs, node, inputs)
 	case "GlobalAveragePool":
-		res = convertGlobalAveragePool(m, convertedOutputs, node, inputs)
+		result = convertGlobalAveragePool(m, convertedOutputs, node, inputs)
 	case "BatchNormalization":
-		res = convertBatchNormalization(m, convertedOutputs, node, inputs)
+		result = convertBatchNormalization(m, convertedOutputs, node, inputs)
 
 	// Multiple outputs ops:
 	case "DynamicQuantizeLinear":
-		res = convertDynamicQuantizeLinear(convertedOutputs, node, inputs)
+		result = convertDynamicQuantizeLinear(convertedOutputs, node, inputs)
 	case "Trilu":
-		res = convertTrilu(m, convertedOutputs, node, inputs)
+		result = convertTrilu(m, convertedOutputs, node, inputs)
 	case "ScatterND":
-		res = convertScatterND(m, convertedOutputs, node, inputs)
+		result = convertScatterND(m, convertedOutputs, node, inputs)
 
 		// Ops not implemented:
 	default:
 		exceptions.Panicf("unimplemented ONNX op %q in %s", node.OpType, nodeToString(node))
 	}
-	if res != nil {
-		convertedOutputs[node.Output[0]] = res
+	if result != nil {
+		convertedOutputs[node.Output[0]] = result
 	} else {
 		exceptions.Panicf("nil output for ONNX node %q", node.Name)
 	}

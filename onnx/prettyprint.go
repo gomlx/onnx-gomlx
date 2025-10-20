@@ -3,19 +3,20 @@ package onnx
 import (
 	"bytes"
 	"fmt"
-	"github.com/gomlx/gomlx/types"
-	"github.com/gomlx/gomlx/types/shapes"
-	"github.com/gomlx/onnx-gomlx/internal/protos"
-	"github.com/pkg/errors"
 	"io"
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/gomlx/gomlx/pkg/core/shapes"
+	"github.com/gomlx/gomlx/pkg/support/sets"
+	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/pkg/errors"
 )
 
 // String implements fmt.Stringer, and pretty prints model information.
 func (m *Model) String() string {
-	// Convenient writing to buffer that will hold result.
+	// Convenient writing to buffer that will hold the result.
 	var buf bytes.Buffer
 	w := func(format string, args ...any) { buf.WriteString(fmt.Sprintf(format, args...)) }
 
@@ -46,12 +47,12 @@ func (m *Model) String() string {
 	w("\t# tensors (variables):\t%d\n", len(m.Proto.Graph.Initializer))
 	w("\t# sparse tensors (variables):\t%d\n", len(m.Proto.Graph.SparseInitializer))
 
-	// List op-types used.
-	opTypesSet := types.MakeSet[string]()
+	// List op-sets used.
+	opTypesSet := sets.Make[string]()
 	for _, n := range m.Proto.Graph.Node {
 		opTypesSet.Insert(n.GetOpType())
 	}
-	w("\tOp types:\t%#v\n", slices.Sorted(maps.Keys(opTypesSet)))
+	w("\tOp sets:\t%#v\n", slices.Sorted(maps.Keys(opTypesSet)))
 
 	// Training Info.
 	if len(m.Proto.TrainingInfo) > 0 {
@@ -60,7 +61,7 @@ func (m *Model) String() string {
 
 	// Extra functions:
 	if len(m.Proto.Functions) > 0 {
-		fnSet := types.MakeSet[string]()
+		fnSet := sets.Make[string]()
 		for _, f := range m.Proto.Functions {
 			fnSet.Insert(f.Name)
 		}
@@ -138,7 +139,7 @@ func (m *Model) PrintGraph(writer io.Writer) error {
 	}
 
 	w("Model Graph %q:\n", m.Proto.Graph.Name)
-	// Convenient writing to buffer that will hold result.
+	// Convenient writing to buffer that will hold the result.
 	for _, n := range m.Proto.Graph.Node {
 		w("%q:\t[%s]\n", n.GetName(), n.GetOpType())
 		w("\tInputs: %q\n", n.GetInput())
@@ -176,7 +177,7 @@ func (m *Model) PrintGraph(writer io.Writer) error {
 	return err
 }
 
-// nodeToString converts a NodeProto to a one-line string, that can be used for debugging.
+// nodeToString converts a NodeProto to a one-line string that can be used for debugging.
 func nodeToString(n *protos.NodeProto) string {
 	var buf bytes.Buffer
 	w := func(format string, args ...any) { _, _ = fmt.Fprintf(&buf, format, args...) }
@@ -237,7 +238,7 @@ func (m *Model) PrintVariables(writer io.Writer) error {
 // PrintGraphviz outputs the model graph using the "dot" language, starting from the target nodes towards
 // its dependencies.
 //
-// If targets is left empty, it takes the default graph outputs as targets.
+// If targets are left empty, it takes the default graph outputs as targets.
 func (m *Model) PrintGraphviz(writer io.Writer, targets ...string) error {
 	if targets == nil {
 		targets = m.OutputsNames
@@ -255,7 +256,7 @@ func (m *Model) PrintGraphviz(writer io.Writer, targets ...string) error {
 	}
 
 	w("digraph %s {\n", m.Name())
-	visited := types.MakeSet[string]()
+	visited := sets.Make[string]()
 	for _, target := range targets {
 		if err != nil {
 			break
@@ -271,7 +272,7 @@ var (
 	GraphvizVarColor   = "#E0E0E0"
 )
 
-func (m *Model) recursiveGraphviz(writer io.Writer, visited types.Set[string], target string) error {
+func (m *Model) recursiveGraphviz(writer io.Writer, visited sets.Set[string], target string) error {
 	if visited.Has(target) {
 		return nil
 	}
@@ -289,13 +290,13 @@ func (m *Model) recursiveGraphviz(writer io.Writer, visited types.Set[string], t
 		}
 	}
 
-	// target is an input.
+	// The target is an input.
 	if m.inputsNameSet.Has(target) {
 		w("\t%q [shape=box, style=filled, fillcolor=%q];\n", target, GraphvizInputColor)
 		return err
 	}
 
-	// target is a label.
+	// the target is a label.
 	if v, found := m.variableNameToValue[target]; found {
 		var vShape shapes.Shape
 		vShape, err = Shape(v)

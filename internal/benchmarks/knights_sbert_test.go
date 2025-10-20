@@ -14,23 +14,23 @@ import (
 	dtok "github.com/daulet/tokenizers"
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/go-huggingface/hub"
-	"github.com/gomlx/gomlx/graph"
-	"github.com/gomlx/gomlx/graph/graphtest"
-	"github.com/gomlx/gomlx/ml/context"
-	"github.com/gomlx/gomlx/types/shapes"
-	"github.com/gomlx/gomlx/types/tensors"
+	"github.com/gomlx/gomlx/pkg/core/graph"
+	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
+	"github.com/gomlx/gomlx/pkg/core/shapes"
+	"github.com/gomlx/gomlx/pkg/core/tensors"
+	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
-	benchmarks "github.com/janpfeifer/go-benchmarks"
+	"github.com/janpfeifer/go-benchmarks"
 	"github.com/janpfeifer/must"
-	parquet "github.com/parquet-go/parquet-go"
+	"github.com/parquet-go/parquet-go"
 	ort "github.com/yalue/onnxruntime_go"
 	"google.golang.org/protobuf/proto"
 )
 
 var (
-	// HuggingFace authentication token read from environment.
+	// HuggingFace authentication token read from the environment.
 	// It can be created in https://huggingface.co
 	// Some files may require it for downloading.
 	hfAuthToken = os.Getenv("HF_TOKEN")
@@ -48,7 +48,7 @@ var (
 	flagPrintXLAGraph = flag.Bool("xla_graph", false, "Prints XLA graph")
 	flagExcludePadded = flag.Bool("exclude_padded", false, "Exclude sentences with less than 128 tokens")
 
-	// Save embeddings to file, one per example, named /tmp/embeddings_%03d.bin
+	// Save embeddings to a file, one per example, named /tmp/embeddings_%03d.bin
 	flagSaveEmbeddings  = flag.Bool("save_embeddings", false, "Save embeddings to file, one per example, named embeddings-%03d.bin")
 	flagCheckEmbeddings = flag.Bool("check_embeddings", false, "Check embeddings generated match the ones loaded from files")
 )
@@ -58,7 +58,7 @@ type tokenizedSentence struct {
 	Encoding [3][]int64 // IDs, Masks, tokenTypeIDs
 }
 
-// fineWebEntry: inspection of fields in parquet file done with tool in
+// fineWebEntry: inspection of fields in a parquet file done with tool in
 // github.com/xitongsys/parquet-go/tool/parquet-tools.
 //
 // The parquet annotations are described in: https://pkg.go.dev/github.com/parquet-go/parquet-go#SchemaOf
@@ -70,7 +70,7 @@ type fineWebEntry struct {
 	Score float64 `parquet:"language_score"`
 }
 
-// trimString returns s trimmed to at most maxLength runes. If trimmed it appends "…" at the end.
+// trimString returns s trimmed to at most maxLength runes. If trimmed, it appends "…" at the end.
 func trimString(s string, maxLength int) string {
 	if utf8.RuneCountInString(s) <= maxLength {
 		return s
@@ -105,7 +105,7 @@ func sampleFineWeb(modelID string, n, sequenceLen int) []tokenizedSentence {
 	repo := hub.New(FineWebID).WithType(hub.RepoTypeDataset).WithAuth(hfAuthToken)
 	localSampleFile := must.M1(repo.DownloadFile(FineWebSampleFile))
 
-	// Parquet reading using parquet-go: it's somewhat cumbersome (to open the file it needs its size!?), but it works.
+	// Parquet reading using parquet-go: it's somewhat cumbersome (to open the file, it needs its size!?), but it works.
 	schema := parquet.SchemaOf(&fineWebEntry{})
 	fSize := must.M1(os.Stat(localSampleFile)).Size()
 	fReader := must.M1(os.Open(localSampleFile))
@@ -191,7 +191,7 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()
-	exec := context.NewExec(backend, ctx, func(ctx *context.Context, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
+	exec := context.MustNewExec(backend, ctx, func(ctx *context.Context, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
 		outputs := model.CallGraph(ctx, g,
@@ -218,7 +218,7 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 	testFn := benchmarks.NamedFunction{
 		Name: fmt.Sprintf("XLA/%s/BatchSize=%2d:", name, batchSize),
 		Func: func() {
-			// Create batch for each input tensor.
+			// Create the batch for each input tensor.
 			for inputIdx, t := range inputTensors {
 				tensors.MutableFlatData[int64](t, func(flat []int64) {
 					for exampleIdx := range batchSize {
@@ -230,7 +230,7 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 
 			// Execute program.
 			//start := time.Now()
-			output := exec.Call(inputTensors[0], inputTensors[1], inputTensors[2])[0]
+			output := exec.MustExec(inputTensors[0], inputTensors[1], inputTensors[2])[0]
 			tensors.ConstFlatData(output, func(flat []float32) {
 				if runIdx == 0 {
 					fmt.Printf("\t> Last value of result: %v\n", flat[len(flat)-1])
@@ -320,7 +320,7 @@ func benchmarkONNXModelWithORT(withHeader bool,
 	testFn := benchmarks.NamedFunction{
 		Name: fmt.Sprintf("ORT/%s/BatchSize=%2d:", name, batchSize),
 		Func: func() {
-			// Create batch for each input tensor.
+			// Create a batch for each input tensor.
 			for inputIdx, t := range inputTensors {
 				flat := t.GetData()
 				for batchIdx := range batchSize {
@@ -392,11 +392,11 @@ func recursivelyTagNode(allNodes, usedNodes map[string]*protos.NodeProto, output
 }
 
 // saveONNXModelWithOutput reads an ONNX model from fromPath, changes its output to
-// the node named newOutputNode and then saves the modified model to toPath.
+// the node named newOutputNode, and then saves the modified model to toPath.
 func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBatchSize map[int]shapes.Shape) {
 	model := must.M1(onnx.ReadFile(fromPath))
 
-	// Find output shape for each batchSize.
+	// Find the output shape for each batchSize.
 	shapePerBatchSize = make(map[int]shapes.Shape, len(BatchSizes))
 	backend := graphtest.BuildTestBackend()
 	ctx := context.New()
@@ -427,7 +427,7 @@ func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBa
 	}
 	graphProto.Output = []*protos.ValueInfoProto{newOutput}
 
-	// Mark nodes that are needed to generate target output node.
+	// Mark nodes that are needed to generate the target output node.
 	allNodes := make(map[string]*protos.NodeProto, 2*len(graphProto.Node))
 	for _, node := range graphProto.Node {
 		for _, outputName := range node.Output {

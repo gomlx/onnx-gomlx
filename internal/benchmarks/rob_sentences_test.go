@@ -13,12 +13,12 @@ import (
 	dtok "github.com/daulet/tokenizers"
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/go-huggingface/hub"
-	"github.com/gomlx/gomlx/graph"
-	"github.com/gomlx/gomlx/graph/graphtest"
-	"github.com/gomlx/gomlx/ml/context"
-	"github.com/gomlx/gomlx/types/shapes"
-	"github.com/gomlx/gomlx/types/tensors"
-	"github.com/gomlx/gomlx/types/xsync"
+	"github.com/gomlx/gomlx/pkg/core/graph"
+	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
+	"github.com/gomlx/gomlx/pkg/core/shapes"
+	"github.com/gomlx/gomlx/pkg/core/tensors"
+	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/pkg/support/xsync"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/janpfeifer/go-benchmarks"
@@ -139,7 +139,7 @@ func implParallelBenchmark[E any](
 	done := xsync.NewLatch()
 
 	// Start producer of inputs:
-	//   - We add some buffer, because we don't want the preparation of the inputs (producer)
+	//   - We add some buffer because we don't want the preparation of the inputs (producer)
 	//     to be a bottleneck or even accounted for.
 	examplesChan := make(chan E, numWorkers)
 	wg.Add(1)
@@ -261,7 +261,7 @@ func implBenchRobSentencesORT(parallelization, batchSize int, header bool) {
 		for ii := range inputTensors {
 			inputTensors[ii] = must.M1(ort.NewEmptyTensor[int64](inputShape))
 		}
-		// Create batch for each input tensor.
+		// Create a batch for each input tensor.
 		for inputIdx, t := range inputTensors {
 			flat := t.GetData()
 			for inBatchIdx := range batchSize {
@@ -300,7 +300,7 @@ const robSentencesEmbeddingsFileName = "rob_sentences_embeddings.bin"
 func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, header bool) {
 	name := fmt.Sprintf("XLA/RobSentences/Parallel=%02d/BatchSize=%02d", parallelization, batchSize)
 	// Make sure to release all resources no longer in use.
-	for _ = range 10 {
+	for range 10 {
 		runtime.GC()
 	}
 
@@ -322,7 +322,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()
-	exec := context.NewExec(backend, ctx, func(ctx *context.Context, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
+	exec := context.MustNewExec(backend, ctx, func(ctx *context.Context, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
 		outputs := model.CallGraph(ctx, g,
@@ -381,7 +381,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 		// Run inline and save the resulting embeddings:
 		fmt.Println("Generating embeddings to save:")
 		inputTensors := inputFn()
-		output := exec.Call(inputTensors[0], inputTensors[1], inputTensors[2])[0]
+		output := exec.MustExec1(inputTensors[0], inputTensors[1], inputTensors[2])
 		fmt.Printf("\tSaving reference embeddings to %q - shape=%s, embedding[0, 0, 0]=%.3f, token[0, 0]=%d\n",
 			robSentencesEmbeddingsFileName,
 			output.Shape(),
@@ -398,7 +398,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	var workerCount int
 	workerFn := func(workerIdx int, inputTensors ExampleInput) {
 		defer inputsPool.Put(inputTensors)
-		output := exec.Call(inputTensors[0], inputTensors[1], inputTensors[2])[0]
+		output := exec.MustExec1(inputTensors[0], inputTensors[1], inputTensors[2])
 		tensors.ConstFlatData(output, func(flat []float32) {
 			// Force local copy: this should be part of the cost.
 			_ = flat

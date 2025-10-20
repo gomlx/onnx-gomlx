@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/gomlx/gomlx/graph"
-	"github.com/gomlx/gomlx/graph/graphtest"
-	"github.com/gomlx/gomlx/ml/context"
-	"github.com/gomlx/gomlx/types/tensors"
+	"github.com/gomlx/gomlx/pkg/core/graph"
+	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
+	"github.com/gomlx/gomlx/pkg/core/tensors"
+	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +47,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// Check conversion.
 	backend := graphtest.BuildTestBackend()
-	y := context.ExecOnce(backend, ctx, func(ctx *context.Context, x *graph.Node) *graph.Node {
+	y := context.MustExecOnce(backend, ctx, func(ctx *context.Context, x *graph.Node) *graph.Node {
 		g := x.Graph()
 		outputs := model.CallGraph(ctx, g, map[string]*graph.Node{"X": x})
 		vB = ctx.In(ModelScope).GetVariable("B")
@@ -57,7 +57,7 @@ func TestEndToEnd(t *testing.T) {
 	require.NoError(t, y.Shape().Check(dtypes.Float32, 1))
 	require.InDeltaSlice(t, []float32{7123.45}, tensors.CopyFlatData[float32](y), 0.1)
 
-	// Save change of variable "B" to ONNX model.
+	// Save change of variable "B" to the ONNX model.
 	require.NoError(t, model.ContextToONNX(ctx))
 	tensorProto, found := model.variableNameToValue["B"]
 	require.True(t, found, "Didn't find B variable")
