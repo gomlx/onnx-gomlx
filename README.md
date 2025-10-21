@@ -1,6 +1,7 @@
 # ONNX-GoMLX: Inference and fine-tuning ONNX models with GoMLX
 
 [![GoDev](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/gomlx/onnx-gomlx?tab=doc)
+[![Slack](https://img.shields.io/badge/Slack-GoMLX-purple.svg?logo=slack)](https://app.slack.com/client/T029RQSE6/C08TX33BX6U)
 
 ## 📖 Overview
 ONNX-GoMLX converts [ONNX models](https://onnx.ai/) (`.onnx` suffix) to 
@@ -8,16 +9,16 @@ ONNX-GoMLX converts [ONNX models](https://onnx.ai/) (`.onnx` suffix) to
 
 One can also fine-tune models with GoMLX and then save back its weights to the ONNX model.
 
-Future plan also includes creating an ONNX backend for GoMLX: so one can execute or export GoMLX models using ONNX.
+Future plans also include creating an ONNX backend for GoMLX: so one can execute or export GoMLX models using ONNX.
 
 The main use cases so far are:
 
-1. **Fine-tuning**: import an inference only ONNX model to GoMLX, and use its auto-differentiation and training loop to
-   fine-tune models. It allows saving the fine-tuned model as a GoMLX checkpoint or export the fine-tuned weights
+1. **Fine-tuning**: import an inference-only ONNX model to GoMLX and use its auto-differentiation and training loop to
+   fine-tune models. It allows saving the fine-tuned model as a GoMLX checkpoint or exporting the fine-tuned weights
    back to the ONNX model. This can also be used to expand / combine models.
 2. **Inference**: use an ONNX file using Go and not having to include [ONNX Runtime](https://onnxruntime.ai/) (or Python)
    -- at the cost of including XLA/PJRT (the current only backend for GoMLX). It also allows one to extend the
-   model with extra ML pre/post-processing using GoMLX (image transformations, normalization, combining models,
+   model with extra ML pre-/post-processing using GoMLX (image transformations, normalization, combining models,
    building ensembles, etc.). This may be interesting for large/expensive models, or large throughput on large
    batches.
     * Notice if you want to simply get a pure Go inference of ONNX models, see 
@@ -30,22 +31,20 @@ The main use cases so far are:
 
 There are at least 10 or so models that are working so far:
 
-* [Sentence Enconding all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
+* [Sentence Encoding all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
 has been working perfectly, see example below.
-* [ONNX-GoMLX demo/development notebook](https://github.com/gomlx/onnx-gomlx/blob/main/onnx-go.ipynb): both serves as a functional test and to demo what it can do.
+* [ONNX-GoMLX demo/development notebook](https://github.com/gomlx/onnx-gomlx/blob/main/onnx-go.ipynb): both serve as a functional test and to demo what it can do.
 
-But **not all operations ("ops") are converted yet**. If you try it and find some that is not,
-please let us know (create an "issue") we will be happy to try to convert them -- generally, 
-all the required scaffolding and tooling is already there, and
-converting ops has been very easy.
+But **not all operations ("ops") are converted yet**. 
+If you try it and find some operation that is not converted, please let us know (create an "issue") we will be happy to try to convert them.
+Generally, all the required scaffolding and tooling are already there, and converting ops has been straightforward.
 
 ## 🎓 Example
 
 We download (and cache) the [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)  
 using [github.com/gomlx/go-huggingface](https://github.com/gomlx/go-huggingface).
 
-The tokens were for now hardcoded -- eventually [github.com/gomlx/go-huggingface](https://github.com/gomlx/go-huggingface) should also
-do the tokenization for various models.
+The tokens in the example are hardcoded for simplicity. See [github.com/gomlx/go-huggingface](https://github.com/gomlx/go-huggingface) for tokenization for various models.
 
 ```go
 import (
@@ -55,7 +54,7 @@ import (
 
 ...
 
-// Download and cache ONNX model from HuggingFace.
+// Download and cache the ONNX model from HuggingFace.
 hfAuthToken := os.Getenv("HF_TOKEN")
 hfModelID := "sentence-transformers/all-MiniLM-L6-v2"
 repo := hub.New(modelID).WithAuth(hfAuthToken)
@@ -64,7 +63,7 @@ modelPath := must.M1(repo.DownloadFile("onnx/model.onnx"))
 // Parse ONNX model.
 model := must.M1(onnx.ReadFile(modelPath))
 
-// Convert ONNX variables (model weights) to GoMLX Context -- which stores variables and can be checkpointed (saved):
+// Convert ONNX variables (model weights) to GoMLX Context -- which stores variables and can be checkpoint (saved):
 ctx := context.New()
 must.M(model.VariablesToContext(ctx))
 
@@ -83,7 +82,7 @@ attentionMask := [][]int64{
     {1, 1, 1, 1, 1, 1, 1},
     {1, 1, 1, 1, 1, 1, 0}}
 var embeddings []*tensors.Tensor
-embeddings = context.ExecOnceN( // Execute a GoMLX computation graph with a context
+embeddings = context.MustExecOnceN( // Execute a GoMLX computation graph with a context
 	backends.New(),  // GoMLX backend to use (defaults to XLA) 
 	ctx, // Context store the model variables/weights and optional hyperparameters.
 	func (ctx *context.Context, inputs []*Node) []*Node {
@@ -122,7 +121,7 @@ Embeddings: [2][7][384]float32{
 1. Extract the ONNX model's weight to GoMLX `Context`: see `Model.VariablesToContext()`.
 2. Use `Model.CallGraph()` in your GoMLX model function (see example just above).
 3. Train model as usual in GoMLX.
-4. Depending how you are going to use the model:
+4. Depending on how you are going to use the model:
    1. Save the model as a GoMLX checkpoint, as usual.
    2. Save the model by updating the ONNX model: after training use `Model.ContextToONNX()` to copy the update variable  
       values from GoMLX `Context` back to the ONNX model (in-memory), and then use `Model.Write()` or 
@@ -131,15 +130,17 @@ Embeddings: [2][7][384]float32{
 ## Benchmarks
 
 We have some GoMLX/XLA and ONNX Runtime (Microsoft) benchmarks in [this spreadsheet](https://docs.google.com/spreadsheets/d/1ikpJH6rVVHq8ES-IA8U4lkKH4XsTSpRyZewXwGTgits/edit?usp=sharing), 
-tested on the sentence encoder model we were interested in. This was used during development, and reflects
-how it improves performance -- the numbers on the bottom of the sheets are the currently accurate.
+tested on the sentence encoder model we were interested in. This was used during development and reflects
+how it improves performance—the numbers on the bottom of the sheets are the currently accurate.
 
 See [docs/benchmarks.md](docs/benchmarks.md) for more information.
    
 ## 🤝 Collaborating
 
-Collaboration is very welcome: either in the form of code, or simply with ideas with real applicability. Don't
-hesitate starting a discussion or issue in the repository.
+Collaboration is very welcome: either in the form of code or simply with ideas with real applicability. Don't
+hesitate to start a discussion or issue in the repository.
+
+You can find the author and other interested parties in the [Slack channel #gomlx](https://app.slack.com/client/T029RQSE6/C08TX33BX6U) (you can [join the slack server here](https://invite.slack.golangbridge.org/)).
 
 If you are interested, we have two notebooks we use to compare results. They are a good starting point for anyone curious:
 
@@ -149,7 +150,7 @@ If you are interested, we have two notebooks we use to compare results. They are
 ## 🥳 Thanks
 
 * This project was born from brainstorming with the talented folks at [KnightAnalytics](https://www.knightsanalytics.com/).
-  Without their insights and enthusiasm this wouldn't have gotten off the ground.
+  Without their insight and enthusiasm this wouldn't have gotten off the ground.
 * [ONNX models](https://onnx.ai/) is such a nice open source standard to communicate models across different implementations.
 * [OpenXLA/XLA](https://github.com/openxla/xla) the open-source backend engine by Google that powers this implementation.
 * Sources of inspiration:

@@ -1,4 +1,10 @@
-# 0.2.5 2025/08/22
+# v0.3.0: Updated to GoMLX v0.24.0
+
+* Updated dependencies to GoMLX v0.24.0, and its improved directory organization.
+  Since GoMLX changed the API (package directories changed), we bump the version here as well.
+* Updates to README.md.
+
+# v0.2.5 2025/08/22
 
 * Updated dependencies to GoMLX v0.22.1
 * Added Conv, MaxPool, BatchNormalization, and AverageGlobalPool operations.
@@ -6,7 +12,7 @@
 * Added `ScatterND` and `Trilu`
 * Updated `Slice` to fully match ONNX spec
 
-# 0.2.4 2025/06/12 
+# v0.2.4 2025/06/12 
 
 * Added support to other ONNX dtypes that requires conversion during reading.
   Also added conversion when saving values back to the ONNX proto.

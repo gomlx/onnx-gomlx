@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/gomlx/exceptions"
-	"github.com/gomlx/gomlx/ml/context"
+	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/pkg/errors"
 )
 

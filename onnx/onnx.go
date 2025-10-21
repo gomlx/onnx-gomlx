@@ -13,7 +13,7 @@ import (
 
 	"github.com/gomlx/gomlx/backends"
 	"github.com/gomlx/gomlx/backends/simplego"
-	"github.com/gomlx/gomlx/types"
+	"github.com/gomlx/gomlx/pkg/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
 	"google.golang.org/protobuf/proto"
@@ -25,9 +25,9 @@ type Model struct {
 	Proto            protos.ModelProto
 	nodeOutputToNode map[string]*protos.NodeProto
 
-	// names used for variables and inputs: these are like internal outputs, but they come not from a node,
+	// Names used for variables and inputs: these are like internal outputs, but they come not from a node,
 	// but from an input or variable. Used to introspect the graph.
-	inputsNameSet       types.Set[string]
+	inputsNameSet       sets.Set[string]
 	variableNameToValue map[string]*protos.TensorProto
 
 	name                        string
@@ -50,7 +50,7 @@ func Parse(contents []byte) (*Model, error) {
 		return nil, errors.Wrap(err, "failed to parse ONNX model proto")
 	}
 
-	// Create backend that we'll use for processing of tensors.
+	// Create the backend that we'll use for processing of tensors.
 	m.backend, err = simplego.New("")
 	if err != nil {
 		return nil, errors.WithMessage(err, "ONNX conversion requires GoMLX for processing of tensors, but failed to create SimpleGo backend for GoMLX model")
@@ -58,7 +58,7 @@ func Parse(contents []byte) (*Model, error) {
 
 	// Parse inputs and outputs.
 	m.name = m.Proto.Graph.Name
-	m.inputsNameSet = types.MakeSet[string]()
+	m.inputsNameSet = sets.Make[string]()
 	m.InputsNames = make([]string, len(m.Proto.Graph.Input))
 	m.InputsShapes = make([]DynamicShape, len(m.Proto.Graph.Input))
 	for ii, input := range m.Proto.Graph.Input {
@@ -126,12 +126,12 @@ func ReadFile(filePath string) (*Model, error) {
 // Name of the model graph.
 func (m *Model) Name() string { return m.name }
 
-// Inputs returns the names and DynamicShapes of the inputs.
+// Inputs return the names and DynamicShapes of the inputs.
 func (m *Model) Inputs() (names []string, dshapes []DynamicShape) {
 	return m.InputsNames, m.InputsShapes
 }
 
-// Outputs returns a description of the outputs.
+// Outputs return a description of the outputs.
 func (m *Model) Outputs() (names []string, dshapes []DynamicShape) {
 	return m.OutputsNames, m.OutputsShapes
 }
@@ -141,9 +141,10 @@ func (m *Model) NumInputs() int {
 	return len(m.InputsNames)
 }
 
-// WithInputsAsConstants marks inputs to be considered as constants, and not vary for different examples in training
+// WithInputsAsConstants marks inputs to be considered as constants and not vary for different examples in training
 // or inference.
-// Use this just immediately after the creation of the Model. Later changes can cause inconsistencies.
+// Use this just immediately after the creation of the Model.
+// Later changes can cause inconsistencies.
 //
 // This makes them become constants in the graph, and they shouldn't be passed to CallGraph as inputs.
 //
@@ -155,7 +156,7 @@ func (m *Model) WithInputsAsConstants(inputsAsConstants map[string]any) *Model {
 
 // Write will write the ONNX model to the given writer (usually a file).
 //
-// This is useful, if the model variables were updated (e.g.: fine-tuning in GoMLX) and one wants to save the
+// This is useful if the model variables were updated (e.g.: fine-tuning in GoMLX) and one wants to save the
 // model.
 // See ContextToONNX to copy over the variables in GoMLX's Context (presumably after some training/update) to the
 // ONNX's model proto.
@@ -175,7 +176,7 @@ func (m *Model) Write(w io.Writer) error {
 
 // SaveToFile serializes the ONNX model to the given file.
 //
-// This is useful, if the model variables were updated (e.g.: fine-tuning in GoMLX) and one wants to save the
+// This is useful if the model variables were updated (e.g.: fine-tuning in GoMLX) and one wants to save the
 // model.
 // See ContextToONNX to copy over the variables in GoMLX's Context (presumably after some training/update) to the
 // ONNX's model proto.

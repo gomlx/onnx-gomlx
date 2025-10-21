@@ -12,22 +12,23 @@ package benchmarks
 
 import (
 	"fmt"
+	"os"
+	"runtime"
+	"sync"
+	"testing"
+
 	"github.com/chewxy/math32"
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/backends"
-	"github.com/gomlx/gomlx/graph"
-	"github.com/gomlx/gomlx/graph/graphtest"
-	"github.com/gomlx/gomlx/types/shapes"
-	"github.com/gomlx/gomlx/types/tensors"
+	"github.com/gomlx/gomlx/pkg/core/graph"
+	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
+	"github.com/gomlx/gomlx/pkg/core/shapes"
+	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/janpfeifer/must"
 	ort "github.com/yalue/onnxruntime_go"
 	"k8s.io/klog/v2"
-	"os"
-	"runtime"
-	"sync"
-	"testing"
 )
 
 func init() {
@@ -41,8 +42,6 @@ var (
 		//shapes.Make(dtypes.Float32, 100, 100),
 		shapes.Make(dtypes.Float32, 1000, 1000),
 	}
-	numShapes = len(TestShapes)
-
 	SmallTestPrograms = [][2]string{
 		{"add1.onnx", "f(x)=x+1"},
 		{"add1div2.onnx", "f(x)=(x+1)/2"},
@@ -76,7 +75,7 @@ var (
 // goVectorFunc defines the signature for functions that process slices.
 type goVectorFunc func(inputs, outputs []float32)
 
-// sliceMap executes the given function sequentially for every element on in, and returns a mapped slice.
+// sliceMap executes the given function sequentially for every element on in and returns a mapped slice.
 func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
 	out = make([]Out, len(in))
 	for ii, e := range in {
@@ -121,7 +120,7 @@ func BenchmarkSmallXLAExec(b *testing.B) {
 	execs := make([]*graph.Exec, numPrograms)
 	for progIdx, program := range SmallTestPrograms {
 		model := must.M1(onnx.ReadFile(program[0]))
-		execs[progIdx] = graph.NewExec(backend, func(x *graph.Node) *graph.Node {
+		execs[progIdx] = graph.MustNewExec(backend, func(x *graph.Node) *graph.Node {
 			g := x.Graph()
 			outputs := model.CallGraph(nil, g, map[string]*graph.Node{"X": x})
 			return outputs[0]
@@ -143,7 +142,7 @@ func BenchmarkSmallXLAExec(b *testing.B) {
 			exec := execs[progIdx]
 			b.Run(fmt.Sprintf("shape=%s/%s%s", s, program[1], benchmarkNameSuffix),
 				func(b *testing.B) {
-					// Set input to value of v.
+					// Set input to the value of v.
 					x := inputTensors[shapeIdx]
 					tensors.MutableFlatData[float32](x, func(flat []float32) {
 						for ii := range flat {
@@ -152,14 +151,14 @@ func BenchmarkSmallXLAExec(b *testing.B) {
 					})
 
 					// WarmUp:
-					for _ = range 10 {
-						tmpOutput := exec.Call(x)[0]
+					for range 10 {
+						tmpOutput := exec.MustExec1(x)
 						tmpOutput.FinalizeAll()
 					}
 					b.ResetTimer()
 
-					for _ = range b.N {
-						tmpOutput := exec.Call(x)[0]
+					for range b.N {
+						tmpOutput := exec.MustExec1(x)
 						tmpOutput.FinalizeAll()
 					}
 				})
@@ -195,7 +194,7 @@ func BenchmarkSmallXLADirect(b *testing.B) {
 		for progIdx, program := range SmallTestPrograms {
 			b.Run(fmt.Sprintf("shape=%s/%s%s", s, program[1], benchmarkNameSuffix),
 				func(b *testing.B) {
-					// Set input to value of v.
+					// Set input to the value of v.
 					x := inputTensors[shapeIdx]
 					tensors.MutableFlatData[float32](x, func(flat []float32) {
 						for ii := range flat {
@@ -206,7 +205,7 @@ func BenchmarkSmallXLADirect(b *testing.B) {
 					g := graphPerShapePerProgram[shapeIdx][progIdx]
 
 					// WarmUp:
-					for _ = range 10 {
+					for range 10 {
 						tmpOutput := g.RunWithBuffers(
 							[]backends.Buffer{xBuf},
 							[]bool{false})[0]
@@ -214,7 +213,7 @@ func BenchmarkSmallXLADirect(b *testing.B) {
 					}
 					b.ResetTimer()
 
-					for _ = range b.N {
+					for range b.N {
 						tmpOutput := g.RunWithBuffers(
 							[]backends.Buffer{xBuf},
 							[]bool{false})[0]
@@ -267,7 +266,7 @@ func BenchmarkSmallORT(b *testing.B) {
 		for progIdx, program := range SmallTestPrograms {
 			b.Run(fmt.Sprintf("shape=%s/%s%s", s, program[1], benchmarkNameSuffix),
 				func(b *testing.B) {
-					// Set input to value of v.
+					// Set input to the value of v.
 					input := inputsPerShape[shapeIdx]
 					data := input.GetData()
 					for ii := range data {
@@ -276,12 +275,12 @@ func BenchmarkSmallORT(b *testing.B) {
 					session := sessions[shapeIdx][progIdx]
 
 					// WarmUp:
-					for _ = range 10 {
+					for range 10 {
 						must.M(session.Run())
 					}
 					b.ResetTimer()
 
-					for _ = range b.N {
+					for range b.N {
 						must.M(session.Run())
 					}
 				})
@@ -315,7 +314,7 @@ func BenchmarkPureGo(b *testing.B) {
 					testProgram := testGoPrograms[progIdx]
 
 					// Warm-up:
-					for _ = range 10 {
+					for range 10 {
 						tensors.ConstFlatData[float32](x, func(inputs []float32) {
 							tensors.MutableFlatData[float32](y, func(outputs []float32) {
 								testProgram(inputs, outputs)
@@ -325,7 +324,7 @@ func BenchmarkPureGo(b *testing.B) {
 
 					// Benchmark
 					b.ResetTimer()
-					for _ = range b.N {
+					for range b.N {
 						tensors.ConstFlatData[float32](x, func(inputs []float32) {
 							tensors.MutableFlatData[float32](y, func(outputs []float32) {
 								testProgram(inputs, outputs)

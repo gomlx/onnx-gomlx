@@ -5,22 +5,22 @@ import (
 	"strings"
 
 	"github.com/gomlx/exceptions"
-	. "github.com/gomlx/gomlx/graph"
-	"github.com/gomlx/gomlx/types"
-	"github.com/gomlx/gomlx/types/tensors"
+	. "github.com/gomlx/gomlx/pkg/core/graph"
+	"github.com/gomlx/gomlx/pkg/core/tensors"
+	"github.com/gomlx/gomlx/pkg/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
 )
 
 // nonConstantDependencies returns the non-constant dependencies: inputs or variables.
 func (m *Model) nonConstantDependencies(nodeOutputName string) (inputs, variables []string, contextNodes []*protos.NodeProto) {
-	visitedNodes := types.MakeSet[string]()
+	visitedNodes := sets.Make[string]()
 	return m.recursiveNonConstantDependencies(nodeOutputName, visitedNodes, inputs, variables, contextNodes)
 }
 
 // recursiveNonConstantDependencies is the recursive implementation of nonConstantDependencies.
 // Use nonConstantDependencies.
-func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes types.Set[string],
+func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.Set[string],
 	nonConstInputs, variables []string, contextNodes []*protos.NodeProto) ([]string, []string, []*protos.NodeProto) {
 	visitedNodes.Insert(name)
 	if _, found := m.variableNameToValue[name]; found {
@@ -64,7 +64,7 @@ func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes types
 }
 
 // isVariableConstant tries to guess if the variable can be used as a constant during the graph construction.
-// For instance as the dimension for a "Reshape" or axis for a "Slice" method.
+// For instance, as the dimension for a "Reshape" or axis for a "Slice" method.
 // Some ONNX models use variables instead of constants.
 //
 // varName must be an existing variable name.
@@ -88,10 +88,10 @@ func (m *Model) isVariableConstant(varName string) bool {
 
 // materializeConstantExpression materializes a node to its constant expression.
 //
-// This is required for ONNX ops that take dynamic values (like axes and shapes), but for which GoMLX only accept
+// This is required for ONNX ops that take dynamic values (like axes and shapes), but for which GoMLX only accepts
 // static (materialized) values.
 //
-// If the node depends on non-constant values (like input parameters) this fails with an exception.
+// If the node depends on non-constant values (like input parameters), this fails with an exception.
 func (m *Model) materializeConstantExpression(nodeOutputName string, convertedOutputs map[string]*Node) (*tensors.Tensor, error) {
 	// Easy reply: if the node is already a constant.
 	node := convertedOutputs[nodeOutputName]
@@ -102,19 +102,19 @@ func (m *Model) materializeConstantExpression(nodeOutputName string, convertedOu
 		return node.ConstantValue(), nil
 	}
 
-	// See if it is possible: if subgraph that generated the node is a constant expression.
+	// See if it is possible: if the subgraph that generated the node is a constant expression.
 	nonConstInputs, nonConstVariables, contextNodes := m.nonConstantDependencies(nodeOutputName)
 	if len(nonConstInputs) > 0 || len(nonConstVariables) > 0 || len(contextNodes) > 0 {
 		// Add shape info for variables.
 		varDesc := make([]string, 0, len(nonConstVariables))
 		for _, varName := range nonConstVariables {
-			// We discard the error, because we know this conversion works already, to have reached this point.
+			// We discard the error because we know this conversion works already, to have reached this point.
 			shape, _ := Shape(m.variableNameToValue[varName])
 			varDesc = append(varDesc, fmt.Sprintf("%q (%s)", varName, shape))
 		}
 		opsDesc := make([]string, 0, len(contextNodes))
 		for _, node := range contextNodes {
-			// We discard the error, because we know this conversion works already, to have reached this point.
+			// We discard the error because we know this conversion works already, to have reached this point.
 			varDesc = append(opsDesc, node.String())
 		}
 		return nil, errors.Errorf("cannot materialize constant/static value for %q: it depends on non-constant: inputs=%q, variables: %s, ops with context: %s",
@@ -125,7 +125,7 @@ func (m *Model) materializeConstantExpression(nodeOutputName string, convertedOu
 	backend := node.Graph().Backend()
 	var result *tensors.Tensor
 	err := exceptions.TryCatch[error](func() {
-		result = ExecOnce(backend, func(g *Graph) *Node {
+		result = MustExecOnce(backend, func(g *Graph) *Node {
 			constConvertedOutputs := make(map[string]*Node)
 			m.recursiveMaterializeConstantExpression(nodeOutputName, g, constConvertedOutputs, convertedOutputs)
 			return constConvertedOutputs[nodeOutputName]
@@ -145,7 +145,7 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 		return
 	}
 
-	// Check in the original graph being converted if this node was converted as a constant (for instance for nodes like "Shape"),
+	// Check in the original graph being converted if this node was converted as a constant (for instance, for nodes like "Shape"),
 	// in which case we take the constant value and inject it directly in the new constant expression graph.
 	if originalNode, found := originalConvertedOutput[nodeOutputName]; found {
 		if originalNode.Type() == NodeTypeConstant {
@@ -170,14 +170,14 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 		return
 	}
 
-	// Find node generating this output.
+	// Find the node generating this output.
 	onnxNode, found := m.nodeOutputToNode[nodeOutputName]
 	if !found {
 		exceptions.Panicf("ONNX node %q not found as the output of an Op, and not a constant either -- is this really a constant expression!?", nodeOutputName)
 	}
 	if opRequiresContext(onnxNode.OpType) {
 		// Operation requires a context, which is not supported when materializing constant sub-expressions.
-		exceptions.Panicf("attempting to materialize expression with operation %q, which is not supported for matelization: %s", onnxNode.OpType, onnxNode)
+		exceptions.Panicf("attempting to materialize expression with operation %q, which is not supported for materialization: %s", onnxNode.OpType, onnxNode)
 	}
 
 	// Recursively converts the inputs of the onnxNode:

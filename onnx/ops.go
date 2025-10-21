@@ -7,11 +7,11 @@ import (
 
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/backends"
-	. "github.com/gomlx/gomlx/graph"
-	"github.com/gomlx/gomlx/ml/layers/lstm"
-	"github.com/gomlx/gomlx/types/shapes"
-	"github.com/gomlx/gomlx/types/tensors"
-	timage "github.com/gomlx/gomlx/types/tensors/images"
+	. "github.com/gomlx/gomlx/pkg/core/graph"
+	"github.com/gomlx/gomlx/pkg/core/shapes"
+	"github.com/gomlx/gomlx/pkg/core/tensors"
+	timage "github.com/gomlx/gomlx/pkg/core/tensors/images"
+	"github.com/gomlx/gomlx/pkg/ml/layers/lstm"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
@@ -1020,7 +1020,7 @@ func isUnsigned(dtype dtypes.DType) bool {
 }
 
 func rangeCount(backend backends.Backend, start, limit, delta *tensors.Tensor) int {
-	count := ExecOnce(backend, func(start, limit, delta *Node) *Node {
+	count := MustExecOnce(backend, func(start, limit, delta *Node) *Node {
 		amount := Sub(limit, start)
 		var count *Node
 		if start.DType().IsFloat() {
