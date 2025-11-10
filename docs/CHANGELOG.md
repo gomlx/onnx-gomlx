@@ -1,3 +1,5 @@
+
+
 # v0.3.0: Updated to GoMLX v0.24.0
 
 * Updated dependencies to GoMLX v0.24.0, and its improved directory organization.
@@ -14,7 +16,7 @@
 
 # v0.2.4 2025/06/12 
 
-* Added support to other ONNX dtypes that requires conversion during reading.
+* Added support for other ONNX dtypes that require conversion during reading.
   Also added conversion when saving values back to the ONNX proto.
 * Updated dependencies to GoMLX.
 * Added `onnxtests.py` to help test/explore individual ONNX ops using ONNXRuntime. 
@@ -58,8 +60,8 @@
 
 # v0.1.3 - 2024/11/21
 
-* Added ContextToONNX to save variables back to ONNX model (in memory).
-* Refactored internal/togomlx to inside onnx/ subdir.
+* Added ContextToONNX to save variables back to the ONNX model (in memory).
+* Refactored internal/togomlx to inside onnx/ subdirectory.
 * Added Model.Write and Model.SaveToFile.
 
 # v0.1.2 - 2024/11/17
@@ -75,6 +77,6 @@
 
 # v0.1.0
 
-* First working version -- for a few models.
-* Constant-expression evaluation during model build: needed for parameters that are fed dynamically 
-  to ONNX, but require static values in GoMLX/XLA.
+* First working version – for a few models.
+* Constant-expression evaluation during a model build: needed for parameters that are fed dynamically 
+  to ONNX but require static values in GoMLX/XLA.
