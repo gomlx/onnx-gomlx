@@ -29,7 +29,7 @@ func TestEndToEnd(t *testing.T) {
 	require.Equal(t, model.OutputsShapes[0].Rank(), 1)
 	require.Equal(t, "batch_size", model.OutputsShapes[0].Names[0])
 
-	// Verify correct setting of variables.
+	// Verify the correct setting of variables.
 	ctx := context.New()
 	require.NoError(t, model.VariablesToContext(ctx))
 	for v := range ctx.IterVariables() {
