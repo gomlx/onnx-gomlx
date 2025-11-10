@@ -348,6 +348,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertLSTM(m, convertedOutputs, node, inputs)
 	case "Conv":
 		result = convertConv(m, convertedOutputs, node, inputs)
+	case "AveragePool":
+		result = convertAveragePool(m, convertedOutputs, node, inputs)
 	case "MaxPool":
 		result = convertMaxPool(m, convertedOutputs, node, inputs)
 	case "GlobalAveragePool":
@@ -356,6 +358,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertBatchNormalization(m, convertedOutputs, node, inputs)
 
 	// Multiple outputs ops:
+	case "Pad":
+		result = convertPad(m, convertedOutputs, node, inputs)
 	case "DynamicQuantizeLinear":
 		result = convertDynamicQuantizeLinear(convertedOutputs, node, inputs)
 	case "Trilu":

@@ -8,6 +8,7 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
+	timage "github.com/gomlx/gomlx/pkg/core/tensors/images"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/stretchr/testify/assert"
 )
@@ -264,4 +265,68 @@ func TestONNX_DynamicQuantizeLinear(t *testing.T) {
 		float32(0.07058824),
 		uint8(85),
 	}, 1e-3)
+}
+
+func TestONNXAveragePool(t *testing.T) {
+	graphtest.RunTestGraphFn(t, "AveragePool", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][][][]float32{
+			{{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}},
+		})
+		inputs = []*Node{x}
+
+		// Simple case: 2x2 kernel, 1x1 stride.
+		pool := MeanPool(x).ChannelsAxis(timage.ChannelsFirst).WindowPerAxis(2, 2).StridePerAxis(1, 1)
+		outputs = append(outputs, pool.Done())
+		return
+	}, []any{
+		[][][][]float32{
+			{{{3, 4}, {6, 7}}},
+		},
+	}, -1)
+}
+
+func TestONNXPad(t *testing.T) {
+	graphtest.RunTestGraphFn(t, "Pad", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{
+			{1, 2, 3},
+			{4, 5, 6},
+		})
+		inputs = []*Node{x}
+
+		// Simple case: 1 pad on each side.
+		paddings := []backends.PadAxis{{Low: 1, High: 1}, {Low: 1, High: 1}}
+		padded := Pad(x, Scalar(g, x.DType(), 0), paddings)
+		outputs = append(outputs, padded)
+		return
+	}, []any{
+		[][]float32{
+			{0, 0, 0, 0, 0},
+			{0, 1, 2, 3, 0},
+			{0, 4, 5, 6, 0},
+			{0, 0, 0, 0, 0},
+		},
+	}, -1)
+}
+
+func TestONNXPad(t *testing.T) {
+	graphtest.RunTestGraphFn(t, "Pad", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{
+			{1, 2, 3},
+			{4, 5, 6},
+		})
+		inputs = []*Node{x}
+
+		// Simple case: 1 pad on each side.
+		paddings := [][2]int{{1, 1}, {1, 1}}
+		padded := Pad(x, Scalar(g, x.DType(), 0), paddings)
+		outputs = append(outputs, padded)
+		return
+	}, []any{
+		[][]float32{
+			{0, 0, 0, 0, 0},
+			{0, 1, 2, 3, 0},
+			{0, 4, 5, 6, 0},
+			{0, 0, 0, 0, 0},
+		},
+	}, -1)
 }

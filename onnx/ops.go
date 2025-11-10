@@ -1392,6 +1392,86 @@ func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__MaxPool.html
+func convertAveragePool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	autoPad := getStringAttrOr(node, "auto_pad", "NOTSET")
+	if autoPad != "NOTSET" {
+		exceptions.Panicf("AveragePool: support for attribute 'auto_pad' (%s) is not yet implemented", autoPad)
+	}
+	ceilMode := getIntAttrOr(node, "ceil_mode", 0)
+	if ceilMode != 0 {
+		exceptions.Panicf("AveragePool: support for attribute 'ceil_mode' is not yet implemented")
+	}
+	countIncludePad := getIntAttrOr(node, "count_include_pad", 0)
+	if countIncludePad != 0 {
+		// GoMLX MeanPool doesn't support including padding in the count.
+		exceptions.Panicf("AveragePool: support for attribute 'count_include_pad' is not yet implemented")
+	}
+	kernelShape := getIntsAttrOr(node, "kernel_shape", nil)
+	strides := getIntsAttrOr(node, "strides", nil)
+	pads := getIntsAttrOr(node, "pads", nil)
+
+	x := inputs[0]
+
+	var paddings [][2]int
+	numSpatialDims := x.Rank() - 2
+	if pads != nil {
+		if len(pads) != 2*numSpatialDims {
+			exceptions.Panicf("invalid number of padding values: %d spatial axes, got %d padding values -- expected 2 pads per axis", numSpatialDims, len(pads))
+		}
+		for i := range numSpatialDims {
+			paddings = append(paddings, [2]int{pads[i], pads[i+numSpatialDims]})
+		}
+	}
+
+	pool := MeanPool(x).ChannelsAxis(timage.ChannelsFirst)
+	if kernelShape != nil {
+		pool = pool.WindowPerAxis(kernelShape...)
+	}
+	if strides != nil {
+		pool = pool.StridePerAxis(strides...)
+	}
+	if paddings != nil {
+		pool = pool.PaddingPerDim(paddings)
+	}
+	out := pool.Done()
+	return out
+}
+
+func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	mode := getStringAttrOr(node, "mode", "constant")
+	if mode != "constant" {
+		exceptions.Panicf("Pad: support for mode '%s' is not yet implemented", mode)
+	}
+	padsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+	if err != nil {
+		panic(errors.WithMessagef(err, "while converting 'pads' for node %s", nodeToString(node)))
+	}
+	pads := tensorToInts(padsT)
+
+	x := inputs[0]
+	var constantValueNode *Node
+	if len(inputs) > 2 {
+		constantValueNode = inputs[2]
+	} else {
+		constantValueNode = Scalar(x.Graph(), x.DType(), 0)
+	}
+
+	rank := x.Rank()
+	if len(pads) != 2*rank {
+		exceptions.Panicf("invalid number of padding values: %d axes, got %d padding values -- expected 2 pads per axis", rank, len(pads))
+	}
+	paddings := make([]backends.PadAxis, rank)
+	for i := range rank {
+		paddings[i] = backends.PadAxis{Low: int64(pads[i]), High: int64(pads[i+rank])}
+	}
+
+	return Pad(x, constantValueNode, paddings)
+}
+
+// convertMaxPool converts an ONNX MaxPool node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__MaxPool.html
 func convertMaxPool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	autoPad := getStringAttrOr(node, "auto_pad", "NOTSET")
 	if autoPad != "NOTSET" {
