@@ -1585,6 +1585,156 @@ func convertBatchNormalization(m *Model, convertedOutputs map[string]*Node, node
 	return out
 }
 
+// convertLayerNormalization converts the corresponding ONNX node to a GoMLX node.
+//
+// LayerNormalization normalizes the input tensor over the last dimensions starting from axis.
+// This is commonly used in transformer architectures.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__LayerNormalization.html
+func convertLayerNormalization(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// Inputs: [X, Scale, B]
+	// X: input tensor
+	// Scale (gamma): scale parameter
+	// B (bias/beta): bias parameter (optional in ONNX but usually provided)
+	x := inputs[0]
+	scale := inputs[1]
+	var bias *Node
+	if len(inputs) > 2 {
+		bias = inputs[2]
+	}
+
+	// Attributes
+	axis := getIntAttrOr(node, "axis", -1)
+	epsilon := getFloatAttrOr(node, "epsilon", 1e-5)
+
+	// Normalize axis to positive value
+	inputRank := x.Rank()
+	if axis < 0 {
+		axis = inputRank + axis
+	}
+
+	// Calculate axes to reduce over (from axis to the end)
+	axes := make([]int, inputRank-axis)
+	for i := range axes {
+		axes[i] = axis + i
+	}
+
+	// Reshape scale and bias to match input rank for broadcasting
+	// Scale/bias have shape matching the normalized dimensions
+	// Need to add leading 1s to match the input rank
+	if scale.Rank() < inputRank {
+		scaleShape := make([]int, inputRank)
+		biasShape := make([]int, inputRank)
+		// Set leading dimensions to 1
+		for i := 0; i < axis; i++ {
+			scaleShape[i] = 1
+			biasShape[i] = 1
+		}
+		// Copy the scale/bias dimensions for the normalized axes
+		scaleDims := scale.Shape().Dimensions
+		scaleRank := len(scaleDims)
+		for i := axis; i < inputRank; i++ {
+			// Check bounds to prevent index out of bounds
+			scaleIdx := i - axis
+			if scaleIdx >= scaleRank {
+				exceptions.Panicf("LayerNormalization: scale tensor has insufficient dimensions (rank=%d) for input rank=%d and axis=%d",
+					scaleRank, inputRank, axis)
+			}
+			scaleShape[i] = scaleDims[scaleIdx]
+			if bias != nil {
+				biasShape[i] = scaleDims[scaleIdx]
+			}
+		}
+		scale = Reshape(scale, scaleShape...)
+		if bias != nil {
+			bias = Reshape(bias, biasShape...)
+		}
+	}
+
+	// Calculate mean and variance over the normalization axes
+	// Use ReduceAndKeep to preserve dimensions for broadcasting
+	mean := ReduceAndKeep(x, ReduceMean, axes...)
+	// Variance calculation: E[(X - mean)^2]
+	centered := Sub(x, mean)
+	variance := ReduceAndKeep(Square(centered), ReduceMean, axes...)
+
+	// Normalize: (X - mean) / sqrt(variance + epsilon)
+	normalized := Div(centered, Sqrt(Add(variance, Scalar(x.Graph(), x.DType(), epsilon))))
+
+	// Apply scale (gamma)
+	result := Mul(normalized, scale)
+
+	// Apply bias (beta) if provided
+	if bias != nil {
+		result = Add(result, bias)
+	}
+
+	return result
+}
+
+// convertSplit converts the corresponding ONNX node to GoMLX nodes.
+//
+// Split splits a tensor into multiple outputs along a specified axis.
+// This is commonly used in attention mechanisms to split into Q, K, V.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Split.html
+func convertSplit(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	x := inputs[0]
+
+	// Get axis attribute (default is 0)
+	axis := getIntAttrOr(node, "axis", 0)
+
+	// Determine the number of splits from the output count
+	numOutputs := len(node.Output)
+	if numOutputs == 0 {
+		exceptions.Panicf("Split: expected at least 1 output, got 0")
+	}
+
+	// Check if split sizes are provided as second input (ONNX opset >= 13)
+	// or as attribute (older opset)
+	var splitSizes []int
+	if len(inputs) > 1 {
+		// Split sizes provided as input (need to materialize it)
+		splitSizesTensor, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+		if err != nil {
+			exceptions.Panicf("Split: failed to materialize split sizes for node %s: %v", nodeToString(node), err)
+		}
+		// Convert tensor to int slice
+		splitSizes = tensorToInts(splitSizesTensor)
+	} else {
+		// Equal splits - divide dimension evenly
+		dim := x.Shape().Dim(axis)
+		if dim%numOutputs != 0 {
+			exceptions.Panicf("Split: dimension %d (size=%d) not evenly divisible by number of outputs (%d)",
+				axis, dim, numOutputs)
+		}
+		splitSize := dim / numOutputs
+		splitSizes = make([]int, numOutputs)
+		for i := range splitSizes {
+			splitSizes[i] = splitSize
+		}
+	}
+
+	// Perform the split using SliceAxis
+	splits := make([]*Node, numOutputs)
+	currentStart := 0
+	for i := 0; i < numOutputs; i++ {
+		end := currentStart + splitSizes[i]
+		splits[i] = SliceAxis(x, axis, AxisRange(currentStart, end))
+		currentStart = end
+	}
+
+	// Assign each output to convertedOutputs
+	for i, split := range splits {
+		convertedOutputs[node.Output[i]] = split
+	}
+
+	// Return first output (convention for multi-output ops)
+	return splits[0]
+}
+
 ////////////////////////////////////////////////////////////////////
 //
 // Quantization related ops.
@@ -1683,4 +1833,135 @@ func onnxDynamicQuantizeLinear(x *Node) (y, yScale, yZeroPoint *Node) {
 	y = ConvertDType(y, quantizedDType)
 	yZeroPoint = ConvertDType(yZeroPoint, quantizedDType)
 	return
+}
+
+////////////////////////////////////////////////////////////////////
+//
+// Control flow ops.
+//
+////////////////////////////////////////////////////////////////////
+
+// convertIf converts the corresponding ONNX node to a GoMLX node.
+//
+// The If operator evaluates a boolean condition and executes one of two sub-graphs.
+//
+// IMPORTANT PERFORMANCE NOTE: Unlike traditional conditional execution where only one branch
+// is evaluated, this implementation evaluates BOTH the then_branch and else_branch sub-graphs
+// and uses the Where operator to select the appropriate result. This is a fundamental constraint
+// of XLA's static computation graph model - all operations must be known at compile time.
+// While this ensures correctness, it means both branches will be computed regardless of the
+// condition value, which may impact performance for expensive branch operations.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__If.html
+func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	if len(inputs) != 1 {
+		exceptions.Panicf("If: expected exactly 1 input (condition), got %d", len(inputs))
+	}
+
+	cond := inputs[0]
+	if !cond.IsScalar() || cond.DType() != dtypes.Bool {
+		exceptions.Panicf("If: condition must be a boolean scalar, got %s", cond.Shape())
+	}
+
+	// Get the then_branch and else_branch sub-graphs from attributes
+	thenBranchAttr := getNodeAttr(node, "then_branch", true)
+	elseBranchAttr := getNodeAttr(node, "else_branch", true)
+
+	if thenBranchAttr.Type != protos.AttributeProto_GRAPH {
+		exceptions.Panicf("If: then_branch must be a GRAPH attribute, got %s", thenBranchAttr.Type)
+	}
+	if elseBranchAttr.Type != protos.AttributeProto_GRAPH {
+		exceptions.Panicf("If: else_branch must be a GRAPH attribute, got %s", elseBranchAttr.Type)
+	}
+
+	thenGraph := thenBranchAttr.G
+	elseGraph := elseBranchAttr.G
+
+	if thenGraph == nil || elseGraph == nil {
+		exceptions.Panicf("If: then_branch or else_branch graph is nil")
+	}
+
+	// Execute both branches
+	// Note: In a true conditional, only one branch would execute. Here we execute both
+	// and use Where to select. This is necessary because XLA requires static computation graphs.
+	g := cond.Graph()
+
+	// Convert then_branch sub-graph
+	// Note: convertSubGraph will update convertedOutputs with any main model nodes it converts
+	thenResults := m.convertSubGraph(g, thenGraph, convertedOutputs)
+
+	// Convert else_branch sub-graph (will see nodes converted by then_branch via convertedOutputs)
+	elseResults := m.convertSubGraph(g, elseGraph, convertedOutputs)
+
+	// Both branches must produce the same number of outputs
+	if len(thenResults) != len(elseResults) {
+		exceptions.Panicf("If: then_branch produced %d outputs but else_branch produced %d outputs",
+			len(thenResults), len(elseResults))
+	}
+
+	// Use Where to select between then and else results based on condition
+	// For multiple outputs, we handle the first one here and store the rest
+	results := make([]*Node, len(thenResults))
+	for i := range thenResults {
+		thenOut := thenResults[i]
+		elseOut := elseResults[i]
+
+		// Ensure both branches have the same shape by broadcasting to the larger rank
+		if thenOut.Rank() != elseOut.Rank() {
+			maxRank := thenOut.Rank()
+			if elseOut.Rank() > maxRank {
+				maxRank = elseOut.Rank()
+			}
+			if thenOut.Rank() < maxRank {
+				thenOut = ExpandLeftToRank(thenOut, maxRank)
+			}
+			if elseOut.Rank() < maxRank {
+				elseOut = ExpandLeftToRank(elseOut, maxRank)
+			}
+		}
+
+		// Now broadcast both to the same dimensions
+		if !slices.Equal(thenOut.Shape().Dimensions, elseOut.Shape().Dimensions) {
+			// Find the common broadcast shape
+			commonDims := make([]int, thenOut.Rank())
+			for axis := range commonDims {
+				thenDim := thenOut.Shape().Dim(axis)
+				elseDim := elseOut.Shape().Dim(axis)
+				if thenDim == elseDim {
+					commonDims[axis] = thenDim
+				} else if thenDim == 1 {
+					commonDims[axis] = elseDim
+				} else if elseDim == 1 {
+					commonDims[axis] = thenDim
+				} else {
+					exceptions.Panicf("If: incompatible shapes for output %d: then=%s, else=%s",
+						i, thenOut.Shape(), elseOut.Shape())
+				}
+			}
+			thenOut = BroadcastToDims(thenOut, commonDims...)
+			elseOut = BroadcastToDims(elseOut, commonDims...)
+		}
+
+		// Broadcast condition to match the result shape
+		condBroadcast := cond
+		if !thenOut.IsScalar() {
+			condBroadcast = BroadcastToDims(cond, thenOut.Shape().Dimensions...)
+		}
+
+		results[i] = Where(condBroadcast, thenOut, elseOut)
+	}
+
+	// Store additional outputs in convertedOutputs
+	for i, result := range results {
+		if i < len(node.Output) && node.Output[i] != "" {
+			convertedOutputs[node.Output[i]] = result
+		}
+	}
+
+	// Return the first output (convention for ops)
+	if len(results) > 0 {
+		return results[0]
+	}
+	return nil
 }

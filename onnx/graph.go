@@ -182,6 +182,166 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 	m.convertNode(ctx, g, onnxNode, convertedOutputs)
 }
 
+// convertSubGraph converts an ONNX sub-graph (used in control flow ops like If) to GoMLX nodes.
+// It takes the parent graph g and the sub-graph proto, along with the current convertedOutputs mapping.
+// Returns a slice of output nodes from the sub-graph in the order they appear in the sub-graph's output list.
+func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, parentConvertedOutputs map[string]*Node) []*Node {
+	// Create a new local context for the sub-graph
+	// Note: Sub-graphs in ONNX can reference outputs from the parent graph
+	localConvertedOutputs := make(map[string]*Node)
+
+	// Copy parent outputs into local context so sub-graph can reference them
+	for name, node := range parentConvertedOutputs {
+		localConvertedOutputs[name] = node
+	}
+
+	// Convert sub-graph initializers (constants) to GoMLX nodes
+	// Also temporarily add them to model's variableNameToValue for materializeConstantExpression
+	subGraphInitializers := make(map[string]*protos.TensorProto)
+	for _, initializerProto := range subGraphProto.Initializer {
+		initializerName := initializerProto.Name
+		if initializerName == "" {
+			continue
+		}
+		// Convert the initializer tensor to a GoMLX constant
+		tensor, err := tensorToGoMLX(g.Backend(), initializerProto)
+		if err != nil {
+			exceptions.Panicf("failed to convert sub-graph initializer %q: %v", initializerName, err)
+		}
+		localConvertedOutputs[initializerName] = Const(g, tensor)
+		subGraphInitializers[initializerName] = initializerProto
+		m.variableNameToValue[initializerName] = initializerProto
+	}
+
+	// Build a mapping from output name to the node that produces it (for this sub-graph only)
+	subGraphNodeOutputToNode := make(map[string]*protos.NodeProto)
+	for _, node := range subGraphProto.Node {
+		for _, outputName := range node.Output {
+			if outputName != "" {
+				subGraphNodeOutputToNode[outputName] = node
+			}
+		}
+	}
+
+	// Temporarily add sub-graph nodes to the model's nodeOutputToNode map
+	// This is needed for materializeConstantExpression to work with sub-graph nodes
+	for outputName, node := range subGraphNodeOutputToNode {
+		m.nodeOutputToNode[outputName] = node
+	}
+
+	// Consolidated cleanup: remove all temporary entries from model's maps when done
+	// Using a single defer with recovery handling to ensure cleanup always happens
+	defer func() {
+		// Clean up sub-graph initializers from model's variableNameToValue map
+		for initName := range subGraphInitializers {
+			delete(m.variableNameToValue, initName)
+		}
+		// Clean up sub-graph nodes from model's nodeOutputToNode map
+		for outputName := range subGraphNodeOutputToNode {
+			delete(m.nodeOutputToNode, outputName)
+		}
+	}()
+
+	// Recursive helper to convert a node output within the sub-graph
+	var convertSubGraphOutput func(outputName string)
+	convertSubGraphOutput = func(outputName string) {
+		// Empty output name means optional output
+		if outputName == "" {
+			return
+		}
+
+		// Already converted?
+		if _, found := localConvertedOutputs[outputName]; found {
+			return
+		}
+
+		// Check if it's a model-level initializer (variable)
+		if initializerProto, found := m.variableNameToValue[outputName]; found {
+			// Convert the model-level initializer to a constant in the sub-graph
+			tensor, err := tensorToGoMLX(g.Backend(), initializerProto)
+			if err != nil {
+				exceptions.Panicf("failed to convert model initializer %q in sub-graph: %v", outputName, err)
+			}
+			localConvertedOutputs[outputName] = Const(g, tensor)
+			return
+		}
+
+		// Is it a sub-graph node output?
+		node, found := subGraphNodeOutputToNode[outputName]
+		if !found {
+			// Not found in sub-graph nodes - might be in parent scope
+			if _, foundInParent := parentConvertedOutputs[outputName]; foundInParent {
+				// Already available from parent - nothing to do
+				return
+			}
+
+			// Not in parent outputs yet - try to find and convert it from the main model
+			if mainNode, foundInMain := m.nodeOutputToNode[outputName]; foundInMain {
+				// This is a main model node that hasn't been converted yet
+				// Recursively convert its inputs first
+				for _, inputName := range mainNode.Input {
+					if inputName == "" {
+						continue
+					}
+					convertSubGraphOutput(inputName)
+				}
+				// Now convert this main model node and add to local outputs
+				m.convertNode(nil, g, mainNode, localConvertedOutputs)
+
+				// Also add to parent outputs so other branches/sub-graphs can reuse it
+				parentConvertedOutputs[outputName] = localConvertedOutputs[outputName]
+				return
+			}
+
+			// Not found anywhere - this is an error
+			exceptions.Panicf("sub-graph output %q not found in sub-graph nodes, parent outputs, model initializers, or main model nodes", outputName)
+		}
+
+		// Recursively convert all inputs first
+		for _, inputName := range node.Input {
+			if inputName == "" {
+				// Optional input not provided
+				continue
+			}
+
+			// Try to convert the input
+			convertSubGraphOutput(inputName)
+		}
+
+		// Verify all required inputs are available before converting the node
+		for i, inputName := range node.Input {
+			if inputName == "" {
+				// Optional input - skip verification
+				continue
+			}
+			if _, found := localConvertedOutputs[inputName]; !found {
+				exceptions.Panicf("input[%d] %q for sub-graph node %q (%s) not found after conversion attempt",
+					i, inputName, node.Name, node.OpType)
+			}
+		}
+
+		// Now convert this node
+		m.convertNode(nil, g, node, localConvertedOutputs)
+	}
+
+	// Convert all output nodes recursively (which will convert their dependencies)
+	for _, output := range subGraphProto.Output {
+		convertSubGraphOutput(output.Name)
+	}
+
+	// Collect the sub-graph outputs
+	outputs := make([]*Node, len(subGraphProto.Output))
+	for i, output := range subGraphProto.Output {
+		outputNode, found := localConvertedOutputs[output.Name]
+		if !found {
+			exceptions.Panicf("sub-graph output %q not found after conversion", output.Name)
+		}
+		outputs[i] = outputNode
+	}
+
+	return outputs
+}
+
 // opRequiresContext checks if the given operation type requires a context.
 // Currently only LSTM.
 func opRequiresContext(opType string) bool {
@@ -356,16 +516,24 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertGlobalAveragePool(m, convertedOutputs, node, inputs)
 	case "BatchNormalization":
 		result = convertBatchNormalization(m, convertedOutputs, node, inputs)
+	case "LayerNormalization":
+		result = convertLayerNormalization(m, convertedOutputs, node, inputs)
 
 	// Multiple outputs ops:
 	case "Pad":
 		result = convertPad(m, convertedOutputs, node, inputs)
 	case "DynamicQuantizeLinear":
 		result = convertDynamicQuantizeLinear(convertedOutputs, node, inputs)
+	case "Split":
+		result = convertSplit(m, convertedOutputs, node, inputs)
 	case "Trilu":
 		result = convertTrilu(m, convertedOutputs, node, inputs)
 	case "ScatterND":
 		result = convertScatterND(m, convertedOutputs, node, inputs)
+
+	// Control flow ops:
+	case "If":
+		result = convertIf(m, convertedOutputs, node, inputs)
 
 		// Ops not implemented:
 	default:
