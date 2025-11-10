@@ -1388,10 +1388,10 @@ func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	return out
 }
 
-// convertMaxPool converts an ONNX MaxPool node to a GoMLX node.
+// convertAveragePool converts an ONNX AveragePool node to a GoMLX node.
 //
 // See ONNX documentation in:
-// https://onnx.ai/onnx/operators/onnx__MaxPool.html
+// https://onnx.ai/onnx/operators/onnx__AveragePool.html
 func convertAveragePool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	autoPad := getStringAttrOr(node, "auto_pad", "NOTSET")
 	if autoPad != "NOTSET" {
@@ -1437,6 +1437,10 @@ func convertAveragePool(m *Model, convertedOutputs map[string]*Node, node *proto
 	return out
 }
 
+// convertPad converts an ONNX Pad node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Pad.html
 func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	mode := getStringAttrOr(node, "mode", "constant")
 	if mode != "constant" {
@@ -1462,10 +1466,10 @@ func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodePr
 	}
 	paddings := make([]backends.PadAxis, rank)
 	for i := range rank {
-		paddings[i] = backends.PadAxis{Low: int64(pads[i]), High: int64(pads[i+rank])}
+		paddings[i] = backends.PadAxis{Start: pads[i], End: pads[i+rank]}
 	}
 
-	return Pad(x, constantValueNode, paddings)
+	return Pad(x, constantValueNode, paddings...)
 }
 
 // convertMaxPool converts an ONNX MaxPool node to a GoMLX node.
@@ -1499,7 +1503,8 @@ func convertMaxPool(m *Model, convertedOutputs map[string]*Node, node *protos.No
 	numSpatialDims := x.Rank() - 2
 	if pads != nil {
 		if len(pads) != 2*numSpatialDims {
-			exceptions.Panicf("invalid number of padding values: %d spatial axes, got %d padding values -- expected 2 pads per axis", numSpatialDims, len(pads))
+			exceptions.Panicf("invalid number of padding values: %d spatial axes, got %d padding values -- "+
+				"expected 2 pads per axis", numSpatialDims, len(pads))
 		}
 		for i := range numSpatialDims {
 			paddings = append(paddings, [2]int{pads[i], pads[i+numSpatialDims]})
