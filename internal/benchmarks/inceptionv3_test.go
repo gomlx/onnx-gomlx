@@ -18,6 +18,7 @@ import (
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/janpfeifer/go-benchmarks"
 	"github.com/janpfeifer/must"
+	ort "github.com/yalue/onnxruntime_go"
 )
 
 func TestBenchInceptionV3(t *testing.T) {
@@ -29,7 +30,8 @@ func TestBenchInceptionV3(t *testing.T) {
 		fmt.Printf("Skipping InceptionV3 benchmark test: --bench_duration is not set\n")
 		t.SkipNow()
 	}
-	t.Run("ONNX-GoMLX", benchONNXGoMLXInceptionV3)
+	t.Run("ONNX-GoMLX", benchGoMLXInceptionV3)
+	t.Run("ONNX-ORT", benchORTInceptionV3)
 }
 
 var (
@@ -38,7 +40,7 @@ var (
 	inceptionV3BatchSizes    = []int{1, 16, 32, 64} // {1, 16, 64}
 )
 
-func benchONNXGoMLXInceptionV3(t *testing.T) {
+func downloadInceptionV3Model() string {
 	fmt.Printf("HuggingFace repository:  %s\n", inceptionV3RepoID)
 	repo := hub.New(inceptionV3RepoID)
 	if !repo.HasFile(inceptionV3ModelFileName) {
@@ -52,9 +54,15 @@ func benchONNXGoMLXInceptionV3(t *testing.T) {
 	fileContent := must.M1(os.ReadFile(onnxModelPath))
 	hash := sha256.Sum256(fileContent)
 	fmt.Printf("File SHA256:             %x\n", hash)
+	return onnxModelPath
+}
 
+func benchGoMLXInceptionV3(t *testing.T) {
+	onnxModelPath := downloadInceptionV3Model()
 	model := must.M1(onnx.ReadFile(onnxModelPath))
-	fmt.Printf("Model details:\n%s\n", model)
+	if *flagVerbose {
+		fmt.Printf("Model details:\n%s\n", model)
+	}
 	backend := graphtest.BuildTestBackend()
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
@@ -104,5 +112,63 @@ func benchONNXGoMLXInceptionV3(t *testing.T) {
 			Done()
 		runtime.UnlockOSThread()
 		exec.Finalize()
+	}
+}
+
+func benchORTInceptionV3(t *testing.T) {
+	onnxModelPath := downloadInceptionV3Model()
+	ortInitFn()
+	var options *ort.SessionOptions
+	if ortIsCUDA {
+		options = must.M1(ort.NewSessionOptions())
+		cudaOptions := must.M1(ort.NewCUDAProviderOptions())
+		// must.M(cudaOptions.Update(map[string]string{"device_id": "0"}))
+		must.M(options.AppendExecutionProviderCUDA(cudaOptions))
+	}
+	session := must.M1(ort.NewDynamicAdvancedSession(
+		onnxModelPath,
+		[]string{"input_1:0"}, []string{"Identity:0"},
+		options))
+	defer func() {
+		err := session.Destroy()
+		if err != nil {
+			fmt.Printf("Error destroying session: %v\n", err)
+		}
+	}()
+
+	for batchIdx, batchSize := range inceptionV3BatchSizes {
+		inputShape := ort.NewShape(int64(batchSize), int64(299), int64(299), int64(3))
+		images := must.M1(ort.NewEmptyTensor[float32](inputShape))
+		r := rand.New(rand.NewPCG(42, 0))
+		{
+			flat := images.GetData()
+			for i := range flat {
+				flat[i] = r.Float32()
+			}
+		}
+		outputShape := ort.NewShape(int64(batchSize), int64(5))
+		outputTensor := must.M1(ort.NewEmptyTensor[float32](outputShape))
+
+		benchFn := benchmarks.NamedFunction{
+			Name: fmt.Sprintf("%s/batchSize=%02d", t.Name(), batchSize),
+			Func: func() {
+				must.M(session.Run(
+					[]ort.Value{images},
+					[]ort.Value{outputTensor},
+				))
+				{
+					// Force transfer to local memory: this should be part of the cost.
+					flat := outputTensor.GetData()
+					_ = flat[0]
+				}
+			},
+		}
+		runtime.LockOSThread()
+		benchmarks.New(benchFn).
+			WithWarmUps(128).
+			WithDuration(*flagBenchDuration).
+			WithHeader(batchIdx == 0).
+			Done()
+		runtime.UnlockOSThread()
 	}
 }

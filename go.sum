@@ -25,6 +25,8 @@ github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkp
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/go-logr/logr v1.4.3 h1:CjnDlHq8ikf6E492q6eKboGOC0T8CDaOvkHCIg8idEI=
 github.com/go-logr/logr v1.4.3/go.mod h1:9T104GzyrTigFIr8wt5mBrctHMim0Nb2HLGrmQ40KvY=
+github.com/gofrs/flock v0.13.0 h1:95JolYOvGMqeH31+FC7D2+uULf6mG61mEZ/A8dRYMzw=
+github.com/gofrs/flock v0.13.0/go.mod h1:jxeyy9R1auM5S6JYDBhDt+E2TCo7DkratH4Pgi8P+Z0=
 github.com/gomlx/exceptions v0.0.3 h1:HKnTgEjj4jlmhr8zVFkTP9qmV1ey7ypYYosQ8GzXWuM=
 github.com/gomlx/exceptions v0.0.3/go.mod h1:uHL0TQwJ0xaV2/snJOJV6hSE4yRmhhfymuYgNredGxU=
 github.com/gomlx/go-huggingface v0.1.1 h1:N+I8nfXZ+pA4KfWR3Nlk9RaxSy6Cyeg5Q+XIr6OlUJQ=
@@ -33,6 +35,8 @@ github.com/gomlx/go-huggingface v0.2.2 h1:k9EGJpTecY+vbMrKOsMocSY6e7Ul6WW47mODue
 github.com/gomlx/go-huggingface v0.2.2/go.mod h1:pSI9KFkGVksYYnNNO5lqLPBR0hzboFQb2FGrpGjseIY=
 github.com/gomlx/go-huggingface v0.3.0 h1:RB0UWpnChZW3Evyc9bfL/RDbD2sLZgbF4ja5PBTbkAU=
 github.com/gomlx/go-huggingface v0.3.0/go.mod h1:IApca8jsxH09ChOzce1FLg/+B1n04kn8ITjMhHN2Oh0=
+github.com/gomlx/go-huggingface v0.3.1 h1:kMXA0ecTKywh4xo3WpklCDqUPmyg4ihsyftgCZNYGaA=
+github.com/gomlx/go-huggingface v0.3.1/go.mod h1:j1cd4gD0A2pwdYHZfkPMYfYr1C+KHCc2YA1kTEBWlTo=
 github.com/gomlx/gomlx v0.22.1 h1:vPSjMqW6J8Oq9MwrOa7d1C+XqYWsAKfRt7UjS7KM20k=
 github.com/gomlx/gomlx v0.22.1/go.mod h1:0LXDKNFzZtCbVzkRzqKsIbfSkj9vPXMnAvf5jHFisa0=
 github.com/gomlx/gomlx v0.23.2 h1:C/qZjb2nRhoquMDHBbiWKpnE7E/VZ0X1RrNOBB2ECeY=
@@ -118,6 +122,7 @@ golang.org/x/sys v0.33.0 h1:q3i8TbbEz+JRD9ywIRlyRAQbM0qF7hu24q3teo2hbuw=
 golang.org/x/sys v0.33.0/go.mod h1:BJP2sWEmIv4KK5OTEluFJCKSidICx8ciO85XgH3Ak8k=
 golang.org/x/sys v0.35.0 h1:vz1N37gP5bs89s7He8XuIYXpyY0+QlsKmzipCbUtyxI=
 golang.org/x/sys v0.35.0/go.mod h1:BJP2sWEmIv4KK5OTEluFJCKSidICx8ciO85XgH3Ak8k=
+golang.org/x/sys v0.38.0 h1:3yZWxaJjBmCWXqhN1qh02AkOnCQ1poK6oF+a7xWL6Gc=
 golang.org/x/sys v0.38.0/go.mod h1:OgkHotnGiDImocRcuBABYBEXf8A9a87e/uXjp9XT3ks=
 golang.org/x/term v0.32.0 h1:DR4lr0TjUs3epypdhTOkMmuF5CDFJ/8pOnbzMZPQ7bg=
 golang.org/x/term v0.32.0/go.mod h1:uZG1FhGx848Sqfsq4/DlJr3xGGsYMu/L5GW4abiaEPQ=
