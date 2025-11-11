@@ -1,4 +1,7 @@
+# v0.3.1: Updated test dependencies
 
+* Updated test dependencies: including go-huggingface and github.com/daulet/tokenizers to their latest versions.
+* Added InceptionV3 model benchmark.
 
 # v0.3.0: Updated to GoMLX v0.24.0
 
