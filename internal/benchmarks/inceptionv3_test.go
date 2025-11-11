@@ -1,8 +1,10 @@
 package benchmarks
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"math/rand/v2"
+	"os"
 	"runtime"
 	"testing"
 
@@ -33,22 +35,33 @@ func TestBenchInceptionV3(t *testing.T) {
 var (
 	inceptionV3RepoID        = "recursionerr/nsfw_01"
 	inceptionV3ModelFileName = "inception_v3.onnx"
+	inceptionV3BatchSizes    = []int{1, 16, 32, 64} // {1, 16, 64}
 )
 
 func benchONNXGoMLXInceptionV3(t *testing.T) {
-	fmt.Printf("\n%s\n", inceptionV3RepoID)
-	repo := hub.New(inceptionV3RepoID).WithAuth(hfAuthToken)
+	fmt.Printf("HuggingFace repository:  %s\n", inceptionV3RepoID)
+	repo := hub.New(inceptionV3RepoID)
+	if !repo.HasFile(inceptionV3ModelFileName) {
+		fmt.Printf("Could not find %q for repo %q", inceptionV3ModelFileName, repo)
+	}
+	fmt.Printf("HuggingFace file:        %s\n", inceptionV3ModelFileName)
 	onnxModelPath := must.M1(repo.DownloadFile(inceptionV3ModelFileName))
-	fmt.Printf("\tmodel path: %s\n", onnxModelPath)
+	fmt.Printf("Locally downloaded file: %s\n", onnxModelPath)
+
+	// Calculate and print sha256 hash of the model file
+	fileContent := must.M1(os.ReadFile(onnxModelPath))
+	hash := sha256.Sum256(fileContent)
+	fmt.Printf("File SHA256:             %x\n", hash)
+
 	model := must.M1(onnx.ReadFile(onnxModelPath))
-	fmt.Printf("%s\n", model)
+	fmt.Printf("Model details:\n%s\n", model)
 	backend := graphtest.BuildTestBackend()
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()
 	inputName := model.InputsNames[0]
 	outputName := model.OutputsNames[0]
-	for batchIdx, batchSize := range BatchSizes {
+	for batchIdx, batchSize := range inceptionV3BatchSizes {
 		//t.Run(fmt.Sprintf("batchSize=%02d", batchSize), func(t *testing.T) {
 		exec := context.MustNewExec(backend, ctx, func(ctx *context.Context, images *Node) *Node {
 			g := images.Graph()
@@ -71,18 +84,15 @@ func benchONNXGoMLXInceptionV3(t *testing.T) {
 			}
 		})
 
-		runIdx := 0
 		benchFn := benchmarks.NamedFunction{
 			Name: fmt.Sprintf("%s/batchSize=%02d", t.Name(), batchSize),
 			Func: func() {
 				output := exec.MustExec1(inputImages)
+				// Force transfer to local memory: this should be part of the cost.
 				tensors.ConstFlatData(output, func(flat []float32) {
-					if runIdx == 0 {
-						fmt.Printf("\t> Last value of result: %v\n", flat[len(flat)-1])
-					}
+					_ = flat[0]
 				})
 				output.FinalizeAll()
-				runIdx++
 			},
 		}
 
