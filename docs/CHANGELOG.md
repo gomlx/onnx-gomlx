@@ -2,6 +2,7 @@
 
 * Updated test dependencies: including go-huggingface and github.com/daulet/tokenizers to their latest versions.
 * Added InceptionV3 model benchmark.
+* Added support for `Pad` and `AveragePool` ONNX ops.
 
 # v0.3.0: Updated to GoMLX v0.24.0
 
