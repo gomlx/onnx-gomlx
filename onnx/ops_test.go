@@ -9,6 +9,7 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gopjrt/dtypes"
+	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -264,4 +265,531 @@ func TestONNX_DynamicQuantizeLinear(t *testing.T) {
 		float32(0.07058824),
 		uint8(85),
 	}, 1e-3)
+}
+
+////////////////////////////////////////////////////////////////////
+//
+// Tests for new operators added in this branch
+//
+////////////////////////////////////////////////////////////////////
+
+func TestLayerNormalization(t *testing.T) {
+	// Test basic layer normalization with default axis (-1)
+	graphtest.RunTestGraphFn(t, "LayerNormalization-basic", func(g *Graph) (inputs, outputs []*Node) {
+		// Input tensor [2, 3]: normalize over last axis (axis=-1, which is axis 1)
+		x := Const(g, [][]float32{{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}})
+		scale := Const(g, []float32{1.0, 1.0, 1.0})
+		bias := Const(g, []float32{0.0, 0.0, 0.0})
+
+		// Create a mock node to pass attributes
+		node := &protos.NodeProto{
+			OpType: "LayerNormalization",
+		}
+		inputs = []*Node{x, scale, bias}
+		outputs = []*Node{
+			convertLayerNormalization(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Expected: normalized values with mean=0, variance=1 for each row
+		// For [1,2,3]: mean=2, std≈0.8165, normalized ≈ [-1.224, 0, 1.224]
+		// For [4,5,6]: mean=5, std≈0.8165, normalized ≈ [-1.224, 0, 1.224]
+		[][]float32{{-1.2247, 0.0, 1.2247}, {-1.2247, 0.0, 1.2247}},
+	}, 1e-3)
+
+	// Test with scale and bias
+	graphtest.RunTestGraphFn(t, "LayerNormalization-scale-bias", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}})
+		scale := Const(g, []float32{2.0, 2.0, 2.0})
+		bias := Const(g, []float32{1.0, 1.0, 1.0})
+
+		node := &protos.NodeProto{
+			OpType: "LayerNormalization",
+		}
+		inputs = []*Node{x, scale, bias}
+		outputs = []*Node{
+			convertLayerNormalization(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Expected: (normalized * 2) + 1
+		[][]float32{{-1.4494, 1.0, 3.4494}, {-1.4494, 1.0, 3.4494}},
+	}, 1e-3)
+
+	// Test with custom axis
+	graphtest.RunTestGraphFn(t, "LayerNormalization-axis0", func(g *Graph) (inputs, outputs []*Node) {
+		// Normalize over axis 0 and axis 1 (from axis 0 to end)
+		x := Const(g, [][]float32{{1.0, 4.0}, {2.0, 5.0}, {3.0, 6.0}})
+		scale := Const(g, [][]float32{{1.0, 1.0}, {1.0, 1.0}, {1.0, 1.0}})
+		bias := Const(g, [][]float32{{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}})
+
+		node := &protos.NodeProto{
+			OpType: "LayerNormalization",
+			Attribute: []*protos.AttributeProto{
+				{Name: "axis", Type: protos.AttributeProto_INT, I: 0},
+			},
+		}
+		inputs = []*Node{x, scale, bias}
+		outputs = []*Node{
+			convertLayerNormalization(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Normalize over all elements (axis 0 to end means entire tensor)
+		// Mean = 3.5, values normalized around that
+		[][]float32{{-1.4638, 0.2928}, {-0.8783, 0.8783}, {-0.2928, 1.4638}},
+	}, 1e-3)
+
+	// Test 3D tensor (common in transformers: batch, sequence, features)
+	graphtest.RunTestGraphFn(t, "LayerNormalization-3D", func(g *Graph) (inputs, outputs []*Node) {
+		// Shape [2, 2, 3]: batch=2, seq_len=2, features=3
+		x := Const(g, [][][]float32{
+			{{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}},
+			{{7.0, 8.0, 9.0}, {10.0, 11.0, 12.0}},
+		})
+		scale := Const(g, []float32{1.0, 1.0, 1.0})
+		bias := Const(g, []float32{0.0, 0.0, 0.0})
+
+		node := &protos.NodeProto{
+			OpType: "LayerNormalization",
+			Attribute: []*protos.AttributeProto{
+				{Name: "axis", Type: protos.AttributeProto_INT, I: -1}, // Last axis
+			},
+		}
+		inputs = []*Node{x, scale, bias}
+		outputs = []*Node{
+			convertLayerNormalization(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Each feature vector should be normalized independently
+		[][][]float32{
+			{{-1.2247, 0.0, 1.2247}, {-1.2247, 0.0, 1.2247}},
+			{{-1.2247, 0.0, 1.2247}, {-1.2247, 0.0, 1.2247}},
+		},
+	}, 1e-3)
+}
+
+func TestSplit(t *testing.T) {
+	// Test equal splits
+	graphtest.RunTestGraphFn(t, "Split-equal", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{1.0, 2.0, 3.0, 4.0}, {5.0, 6.0, 7.0, 8.0}})
+
+		node := &protos.NodeProto{
+			OpType: "Split",
+			Output: []string{"out1", "out2"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "axis", Type: protos.AttributeProto_INT, I: 1},
+			},
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{x}
+		convertSplit(nil, convertedOutputs, node, inputs)
+
+		outputs = []*Node{
+			convertedOutputs["out1"],
+			convertedOutputs["out2"],
+		}
+		return
+	}, []any{
+		[][]float32{{1.0, 2.0}, {5.0, 6.0}},
+		[][]float32{{3.0, 4.0}, {7.0, 8.0}},
+	}, -1)
+
+	// Test Split on different axis (axis=1)
+	graphtest.RunTestGraphFn(t, "Split-axis1", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{1.0, 2.0, 3.0, 4.0, 5.0, 6.0}, {7.0, 8.0, 9.0, 10.0, 11.0, 12.0}})
+
+		node := &protos.NodeProto{
+			OpType: "Split",
+			Output: []string{"out1", "out2", "out3"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "axis", Type: protos.AttributeProto_INT, I: 1},
+			},
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{x}
+		convertSplit(nil, convertedOutputs, node, inputs)
+
+		outputs = []*Node{
+			convertedOutputs["out1"],
+			convertedOutputs["out2"],
+			convertedOutputs["out3"],
+		}
+		return
+	}, []any{
+		[][]float32{{1.0, 2.0}, {7.0, 8.0}},
+		[][]float32{{3.0, 4.0}, {9.0, 10.0}},
+		[][]float32{{5.0, 6.0}, {11.0, 12.0}},
+	}, -1)
+
+	// Test 3-way equal split on axis 0
+	graphtest.RunTestGraphFn(t, "Split-3way", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{
+			{1.0, 2.0},
+			{3.0, 4.0},
+			{5.0, 6.0},
+			{7.0, 8.0},
+			{9.0, 10.0},
+			{11.0, 12.0},
+		})
+
+		node := &protos.NodeProto{
+			OpType: "Split",
+			Output: []string{"out1", "out2", "out3"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "axis", Type: protos.AttributeProto_INT, I: 0},
+			},
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{x}
+		convertSplit(nil, convertedOutputs, node, inputs)
+
+		outputs = []*Node{
+			convertedOutputs["out1"],
+			convertedOutputs["out2"],
+			convertedOutputs["out3"],
+		}
+		return
+	}, []any{
+		[][]float32{{1.0, 2.0}, {3.0, 4.0}},
+		[][]float32{{5.0, 6.0}, {7.0, 8.0}},
+		[][]float32{{9.0, 10.0}, {11.0, 12.0}},
+	}, -1)
+}
+
+func TestIf(t *testing.T) {
+	// Test basic If with scalar condition - true case
+	graphtest.RunTestGraphFn(t, "If-true-branch", func(g *Graph) (inputs, outputs []*Node) {
+		cond := Const(g, true)
+
+		// Create simple then/else branches
+		thenGraph := &protos.GraphProto{
+			Output: []*protos.ValueInfoProto{{Name: "result"}},
+			Node: []*protos.NodeProto{
+				{
+					OpType: "Constant",
+					Output: []string{"result"},
+					Attribute: []*protos.AttributeProto{
+						{
+							Name: "value",
+							Type: protos.AttributeProto_TENSOR,
+							T: &protos.TensorProto{
+								Dims:      []int64{2, 2},
+								DataType:  int32(protos.TensorProto_FLOAT),
+								FloatData: []float32{1.0, 2.0, 3.0, 4.0},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		elseGraph := &protos.GraphProto{
+			Output: []*protos.ValueInfoProto{{Name: "result"}},
+			Node: []*protos.NodeProto{
+				{
+					OpType: "Constant",
+					Output: []string{"result"},
+					Attribute: []*protos.AttributeProto{
+						{
+							Name: "value",
+							Type: protos.AttributeProto_TENSOR,
+							T: &protos.TensorProto{
+								Dims:      []int64{2, 2},
+								DataType:  int32(protos.TensorProto_FLOAT),
+								FloatData: []float32{10.0, 20.0, 30.0, 40.0},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		node := &protos.NodeProto{
+			OpType: "If",
+			Input:  []string{"cond"},
+			Output: []string{"output"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "then_branch", Type: protos.AttributeProto_GRAPH, G: thenGraph},
+				{Name: "else_branch", Type: protos.AttributeProto_GRAPH, G: elseGraph},
+			},
+		}
+
+		model := &Model{
+			variableNameToValue: make(map[string]*protos.TensorProto),
+			nodeOutputToNode:    make(map[string]*protos.NodeProto),
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{cond}
+		result := convertIf(model, convertedOutputs, node, inputs)
+		outputs = []*Node{result}
+		return
+	}, []any{
+		[][]float32{{1.0, 2.0}, {3.0, 4.0}},
+	}, -1)
+
+	// Test basic If with scalar condition - false case
+	graphtest.RunTestGraphFn(t, "If-false-branch", func(g *Graph) (inputs, outputs []*Node) {
+		cond := Const(g, false)
+
+		thenGraph := &protos.GraphProto{
+			Output: []*protos.ValueInfoProto{{Name: "result"}},
+			Node: []*protos.NodeProto{
+				{
+					OpType: "Constant",
+					Output: []string{"result"},
+					Attribute: []*protos.AttributeProto{
+						{
+							Name: "value",
+							Type: protos.AttributeProto_TENSOR,
+							T: &protos.TensorProto{
+								Dims:      []int64{2, 2},
+								DataType:  int32(protos.TensorProto_FLOAT),
+								FloatData: []float32{1.0, 2.0, 3.0, 4.0},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		elseGraph := &protos.GraphProto{
+			Output: []*protos.ValueInfoProto{{Name: "result"}},
+			Node: []*protos.NodeProto{
+				{
+					OpType: "Constant",
+					Output: []string{"result"},
+					Attribute: []*protos.AttributeProto{
+						{
+							Name: "value",
+							Type: protos.AttributeProto_TENSOR,
+							T: &protos.TensorProto{
+								Dims:      []int64{2, 2},
+								DataType:  int32(protos.TensorProto_FLOAT),
+								FloatData: []float32{10.0, 20.0, 30.0, 40.0},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		node := &protos.NodeProto{
+			OpType: "If",
+			Input:  []string{"cond"},
+			Output: []string{"output"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "then_branch", Type: protos.AttributeProto_GRAPH, G: thenGraph},
+				{Name: "else_branch", Type: protos.AttributeProto_GRAPH, G: elseGraph},
+			},
+		}
+
+		model := &Model{
+			variableNameToValue: make(map[string]*protos.TensorProto),
+			nodeOutputToNode:    make(map[string]*protos.NodeProto),
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{cond}
+		result := convertIf(model, convertedOutputs, node, inputs)
+		outputs = []*Node{result}
+		return
+	}, []any{
+		[][]float32{{10.0, 20.0}, {30.0, 40.0}},
+	}, -1)
+
+	// Test If with multiple outputs
+	graphtest.RunTestGraphFn(t, "If-multiple-outputs", func(g *Graph) (inputs, outputs []*Node) {
+		cond := Const(g, true)
+
+		thenGraph := &protos.GraphProto{
+			Output: []*protos.ValueInfoProto{{Name: "result1"}, {Name: "result2"}},
+			Node: []*protos.NodeProto{
+				{
+					OpType: "Constant",
+					Output: []string{"result1"},
+					Attribute: []*protos.AttributeProto{
+						{
+							Name: "value",
+							Type: protos.AttributeProto_TENSOR,
+							T: &protos.TensorProto{
+								Dims:      []int64{2},
+								DataType:  int32(protos.TensorProto_FLOAT),
+								FloatData: []float32{1.0, 2.0},
+							},
+						},
+					},
+				},
+				{
+					OpType: "Constant",
+					Output: []string{"result2"},
+					Attribute: []*protos.AttributeProto{
+						{
+							Name: "value",
+							Type: protos.AttributeProto_TENSOR,
+							T: &protos.TensorProto{
+								Dims:      []int64{2},
+								DataType:  int32(protos.TensorProto_FLOAT),
+								FloatData: []float32{3.0, 4.0},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		elseGraph := &protos.GraphProto{
+			Output: []*protos.ValueInfoProto{{Name: "result1"}, {Name: "result2"}},
+			Node: []*protos.NodeProto{
+				{
+					OpType: "Constant",
+					Output: []string{"result1"},
+					Attribute: []*protos.AttributeProto{
+						{
+							Name: "value",
+							Type: protos.AttributeProto_TENSOR,
+							T: &protos.TensorProto{
+								Dims:      []int64{2},
+								DataType:  int32(protos.TensorProto_FLOAT),
+								FloatData: []float32{10.0, 20.0},
+							},
+						},
+					},
+				},
+				{
+					OpType: "Constant",
+					Output: []string{"result2"},
+					Attribute: []*protos.AttributeProto{
+						{
+							Name: "value",
+							Type: protos.AttributeProto_TENSOR,
+							T: &protos.TensorProto{
+								Dims:      []int64{2},
+								DataType:  int32(protos.TensorProto_FLOAT),
+								FloatData: []float32{30.0, 40.0},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		node := &protos.NodeProto{
+			OpType: "If",
+			Input:  []string{"cond"},
+			Output: []string{"output1", "output2"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "then_branch", Type: protos.AttributeProto_GRAPH, G: thenGraph},
+				{Name: "else_branch", Type: protos.AttributeProto_GRAPH, G: elseGraph},
+			},
+		}
+
+		model := &Model{
+			variableNameToValue: make(map[string]*protos.TensorProto),
+			nodeOutputToNode:    make(map[string]*protos.NodeProto),
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{cond}
+		convertIf(model, convertedOutputs, node, inputs)
+
+		outputs = []*Node{
+			convertedOutputs["output1"],
+			convertedOutputs["output2"],
+		}
+		return
+	}, []any{
+		[]float32{1.0, 2.0},
+		[]float32{3.0, 4.0},
+	}, -1)
+
+	// Test If with sub-graph that references parent outputs
+	graphtest.RunTestGraphFn(t, "If-subgraph-parent-reference", func(g *Graph) (inputs, outputs []*Node) {
+		cond := Const(g, true)
+		parentValue := Const(g, []float32{100.0, 200.0})
+
+		// Then branch: Add parent value
+		thenGraph := &protos.GraphProto{
+			Output: []*protos.ValueInfoProto{{Name: "result"}},
+			Node: []*protos.NodeProto{
+				{
+					OpType: "Add",
+					Input:  []string{"parent_val", "const_val"},
+					Output: []string{"result"},
+				},
+				{
+					OpType: "Constant",
+					Output: []string{"const_val"},
+					Attribute: []*protos.AttributeProto{
+						{
+							Name: "value",
+							Type: protos.AttributeProto_TENSOR,
+							T: &protos.TensorProto{
+								Dims:      []int64{2},
+								DataType:  int32(protos.TensorProto_FLOAT),
+								FloatData: []float32{1.0, 2.0},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// Else branch: Subtract from parent value
+		elseGraph := &protos.GraphProto{
+			Output: []*protos.ValueInfoProto{{Name: "result"}},
+			Node: []*protos.NodeProto{
+				{
+					OpType: "Sub",
+					Input:  []string{"parent_val", "const_val"},
+					Output: []string{"result"},
+				},
+				{
+					OpType: "Constant",
+					Output: []string{"const_val"},
+					Attribute: []*protos.AttributeProto{
+						{
+							Name: "value",
+							Type: protos.AttributeProto_TENSOR,
+							T: &protos.TensorProto{
+								Dims:      []int64{2},
+								DataType:  int32(protos.TensorProto_FLOAT),
+								FloatData: []float32{10.0, 20.0},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		node := &protos.NodeProto{
+			OpType: "If",
+			Input:  []string{"cond"},
+			Output: []string{"output"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "then_branch", Type: protos.AttributeProto_GRAPH, G: thenGraph},
+				{Name: "else_branch", Type: protos.AttributeProto_GRAPH, G: elseGraph},
+			},
+		}
+
+		model := &Model{
+			variableNameToValue: make(map[string]*protos.TensorProto),
+			nodeOutputToNode:    make(map[string]*protos.NodeProto),
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		convertedOutputs["parent_val"] = parentValue
+		inputs = []*Node{cond}
+		result := convertIf(model, convertedOutputs, node, inputs)
+		outputs = []*Node{result}
+		return
+	}, []any{
+		// Then branch should execute: 100+1=101, 200+2=202
+		[]float32{101.0, 202.0},
+	}, -1)
 }
