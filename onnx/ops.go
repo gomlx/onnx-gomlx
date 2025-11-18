@@ -38,6 +38,43 @@ func onnxImplicitExpansion(operands []*Node) []*Node {
 	})
 }
 
+// onnxBroadcastToCommonShape implements the full ONNX multidirectional broadcasting rule.
+// It first expands operands to the same rank (by prepending 1-dimensional axes), then
+// broadcasts all operands to a common shape where each dimension is the maximum across
+// all operands.
+//
+// This implements the ONNX broadcasting semantics as described in:
+// https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
+func onnxBroadcastToCommonShape(operands []*Node) []*Node {
+	// Step 1: Expand to common rank
+	operands = onnxImplicitExpansion(operands)
+
+	// Step 2: Find the maximum dimension for each axis
+	ranks := sliceMap(operands, func(n *Node) int { return n.Rank() })
+	maxRank := slices.Max(ranks)
+	maxDims := make([]int, maxRank)
+	for axis := range maxRank {
+		allDims := sliceMap(operands, func(n *Node) int {
+			if n.IsScalar() {
+				return 1
+			}
+			return n.Shape().Dim(axis)
+		})
+		maxDims[axis] = slices.Max(allDims)
+	}
+
+	// Step 3: Broadcast each operand to the common shape
+	result := make([]*Node, len(operands))
+	for ii, operand := range operands {
+		if !operand.IsScalar() && !slices.Equal(operand.Shape().Dimensions, maxDims) {
+			result[ii] = BroadcastToDims(operand, maxDims...)
+		} else {
+			result[ii] = operand
+		}
+	}
+	return result
+}
+
 // convertBinaryOp applies ONNX broadcasting rule before calling the fn.
 //
 // It differs from GoMLX and XLA in that it automatically prepend 1-dimensional axes to
@@ -82,24 +119,7 @@ func convertWhere(node *protos.NodeProto, inputs []*Node) *Node {
 // inputs is a tuple with (cond, onTrue, onFalse) values.
 func onnxWhere(inputs []*Node) *Node {
 	// Broadcast according to ONNX rules.
-	inputs = onnxImplicitExpansion(inputs)
-	ranks := sliceMap(inputs, func(n *Node) int { return n.Rank() })
-	maxRank := slices.Max(ranks)
-	maxDims := make([]int, maxRank)
-	for axis := range maxRank {
-		allDims := sliceMap(inputs, func(n *Node) int {
-			if n.IsScalar() {
-				return 1
-			}
-			return n.Shape().Dim(axis)
-		})
-		maxDims[axis] = slices.Max(allDims)
-	}
-	for ii, input := range inputs {
-		if !input.IsScalar() && !slices.Equal(input.Shape().Dimensions, maxDims) {
-			inputs[ii] = BroadcastToDims(input, maxDims...)
-		}
-	}
+	inputs = onnxBroadcastToCommonShape(inputs)
 
 	// Now we can use GoMLX Where:
 	cond, onTrue, onFalse := inputs[0], inputs[1], inputs[2]
@@ -1847,10 +1867,10 @@ func onnxDynamicQuantizeLinear(x *Node) (y, yScale, yZeroPoint *Node) {
 //
 // IMPORTANT PERFORMANCE NOTE: Unlike traditional conditional execution where only one branch
 // is evaluated, this implementation evaluates BOTH the then_branch and else_branch sub-graphs
-// and uses the Where operator to select the appropriate result. This is a fundamental constraint
-// of XLA's static computation graph model - all operations must be known at compile time.
-// While this ensures correctness, it means both branches will be computed regardless of the
-// condition value, which may impact performance for expensive branch operations.
+// and uses the Where operator to select the appropriate result. This is because GoMLX doesn't
+// yet support control flow operators (though XLA's StableHLO+PJRT do support them). While this
+// ensures correctness, it means both branches will be computed regardless of the condition value,
+// which may impact performance for expensive branch operations.
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__If.html
@@ -1884,7 +1904,7 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 
 	// Execute both branches
 	// Note: In a true conditional, only one branch would execute. Here we execute both
-	// and use Where to select. This is necessary because XLA requires static computation graphs.
+	// and use Where to select. This is necessary because GoMLX doesn't yet support control flow.
 	g := cond.Graph()
 
 	// Convert then_branch sub-graph
@@ -1907,47 +1927,11 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 		thenOut := thenResults[i]
 		elseOut := elseResults[i]
 
-		// Ensure both branches have the same shape by broadcasting to the larger rank
-		if thenOut.Rank() != elseOut.Rank() {
-			maxRank := thenOut.Rank()
-			if elseOut.Rank() > maxRank {
-				maxRank = elseOut.Rank()
-			}
-			if thenOut.Rank() < maxRank {
-				thenOut = ExpandLeftToRank(thenOut, maxRank)
-			}
-			if elseOut.Rank() < maxRank {
-				elseOut = ExpandLeftToRank(elseOut, maxRank)
-			}
-		}
-
-		// Now broadcast both to the same dimensions
-		if !slices.Equal(thenOut.Shape().Dimensions, elseOut.Shape().Dimensions) {
-			// Find the common broadcast shape
-			commonDims := make([]int, thenOut.Rank())
-			for axis := range commonDims {
-				thenDim := thenOut.Shape().Dim(axis)
-				elseDim := elseOut.Shape().Dim(axis)
-				if thenDim == elseDim {
-					commonDims[axis] = thenDim
-				} else if thenDim == 1 {
-					commonDims[axis] = elseDim
-				} else if elseDim == 1 {
-					commonDims[axis] = thenDim
-				} else {
-					exceptions.Panicf("If: incompatible shapes for output %d: then=%s, else=%s",
-						i, thenOut.Shape(), elseOut.Shape())
-				}
-			}
-			thenOut = BroadcastToDims(thenOut, commonDims...)
-			elseOut = BroadcastToDims(elseOut, commonDims...)
-		}
-
-		// Broadcast condition to match the result shape
-		condBroadcast := cond
-		if !thenOut.IsScalar() {
-			condBroadcast = BroadcastToDims(cond, thenOut.Shape().Dimensions...)
-		}
+		// Apply ONNX broadcasting rules to ensure compatible shapes
+		broadcasted := onnxBroadcastToCommonShape([]*Node{cond, thenOut, elseOut})
+		condBroadcast := broadcasted[0]
+		thenOut = broadcasted[1]
+		elseOut = broadcasted[2]
 
 		results[i] = Where(condBroadcast, thenOut, elseOut)
 	}
