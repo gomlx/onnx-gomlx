@@ -1,3 +1,17 @@
+# v0.3.2: New ops (2025/11/18) 
+
+- Thanks to @timakey11 for this release the contribution!
+- New Operators: 
+  - `LayerNormalization`: Added support for the LayerNormalization operator, a key component in
+    many modern neural network architectures.
+  - `Split`: Implemented the Split operator, allowing tensors to be split into multiple outputs.
+  - `If`: Added support for the If control flow operator, enabling conditional execution within the
+    graph.
+- Subgraph support: used by the `If` operator.
+- New Models that we can now run :
+  - https://huggingface.co/mirth/chonky_modernbert_base_1
+  - https://huggingface.co/mixedbread-ai/mxbai-rerank-base-v1
+
 # v0.3.1: Updated test dependencies
 
 * Updated test dependencies: including go-huggingface and github.com/daulet/tokenizers to their latest versions.

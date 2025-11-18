@@ -29,7 +29,7 @@ The main use cases so far are:
 
 ## Coverage of ONNX Ops Set
 
-There are at least 10 or so models that are working so far:
+There are at least some 20 or so models that are working so far, but the list is growing.
 
 * [Sentence Encoding all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
 has been working perfectly, see example below.
