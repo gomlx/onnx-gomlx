@@ -1878,11 +1878,9 @@ func onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint *Node) *Node {
 		bInt32 = Sub(bInt32, bZeroPointInt32)
 	}
 
-	// Apply ONNX implicit expansion for broadcasting before matmul
-	operands := onnxImplicitExpansion([]*Node{aInt32, bInt32})
-	aInt32, bInt32 = operands[0], operands[1]
-
 	// Perform matrix multiplication - result is int32
+	// Note: MatMul handles its own batch dimension broadcasting internally,
+	// so we don't use onnxImplicitExpansion here (that's for element-wise binary ops only)
 	return MatMul(aInt32, bInt32)
 }
 
