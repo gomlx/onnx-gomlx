@@ -383,6 +383,69 @@ func TestONNX_MatMulInteger(t *testing.T) {
 			{{16, 8}, {22, 11}},
 		},
 	}, -1)
+
+	// Test MatMulInteger with per-axis (1D) zero point for A
+	graphtest.RunTestGraphFn(t, "MatMulInteger-per-axis-a-zero-point", func(g *Graph) (inputs, outputs []*Node) {
+		// A: [3, 2] matrix
+		a := Const(g, [][]int8{{10, 20}, {30, 40}, {50, 60}})
+		// B: [2, 4] matrix
+		b := Const(g, [][]int8{{1, 2, 3, 4}, {5, 6, 7, 8}})
+		// Per-row zero point for A: [3] (one per row)
+		aZeroPoint := Const(g, []int8{5, 10, 15})
+		inputs = []*Node{a, b, aZeroPoint}
+		outputs = []*Node{onnxMatMulInteger(a, b, aZeroPoint, nil)}
+		return
+	}, []any{
+		// A-aZeroPoint = [[5, 15], [20, 30], [35, 45]]
+		// (A-aZeroPoint) @ B:
+		// Row 0: [5*1+15*5, 5*2+15*6, 5*3+15*7, 5*4+15*8] = [80, 100, 120, 140]
+		// Row 1: [20*1+30*5, 20*2+30*6, 20*3+30*7, 20*4+30*8] = [170, 220, 270, 320]
+		// Row 2: [35*1+45*5, 35*2+45*6, 35*3+45*7, 35*4+45*8] = [260, 340, 420, 500]
+		[][]int32{{80, 100, 120, 140}, {170, 220, 270, 320}, {260, 340, 420, 500}},
+	}, -1)
+
+	// Test MatMulInteger with per-axis (1D) zero point for B
+	graphtest.RunTestGraphFn(t, "MatMulInteger-per-axis-b-zero-point", func(g *Graph) (inputs, outputs []*Node) {
+		// A: [2, 3] matrix
+		a := Const(g, [][]int8{{1, 2, 3}, {4, 5, 6}})
+		// B: [3, 4] matrix
+		b := Const(g, [][]int8{{10, 20, 30, 40}, {50, 60, 70, 80}, {90, 100, 110, 120}})
+		// Per-column zero point for B: [4] (one per column)
+		bZeroPoint := Const(g, []int8{5, 10, 15, 20})
+		inputs = []*Node{a, b}
+		outputs = []*Node{onnxMatMulInteger(a, b, nil, bZeroPoint)}
+		return
+	}, []any{
+		// B-bZeroPoint = [[5, 10, 15, 20], [45, 50, 55, 60], [85, 90, 95, 100]]
+		// A @ (B-bZeroPoint):
+		// Row 0: [1*5+2*45+3*85, 1*10+2*50+3*90, 1*15+2*55+3*95, 1*20+2*60+3*100]
+		//      = [350, 380, 410, 440]
+		// Row 1: [4*5+5*45+6*85, 4*10+5*50+6*90, 4*15+5*55+6*95, 4*20+5*60+6*100]
+		//      = [755, 830, 905, 980]
+		[][]int32{{350, 380, 410, 440}, {755, 830, 905, 980}},
+	}, -1)
+
+	// Test MatMulInteger with both per-axis zero points
+	graphtest.RunTestGraphFn(t, "MatMulInteger-per-axis-both-zero-points", func(g *Graph) (inputs, outputs []*Node) {
+		// A: [2, 3] matrix
+		a := Const(g, [][]int8{{11, 12, 13}, {21, 22, 23}})
+		// B: [3, 2] matrix
+		b := Const(g, [][]int8{{31, 32}, {41, 42}, {51, 52}})
+		// Per-row zero point for A: [2]
+		aZeroPoint := Const(g, []int8{10, 20})
+		// Per-column zero point for B: [2]
+		bZeroPoint := Const(g, []int8{30, 40})
+		inputs = []*Node{a, b, aZeroPoint, bZeroPoint}
+		outputs = []*Node{onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint)}
+		return
+	}, []any{
+		// A-aZeroPoint = [[1, 2, 3], [1, 2, 3]]
+		// B-bZeroPoint = [[1, -8], [11, 2], [21, 12]]
+		// (A-aZeroPoint) @ (B-bZeroPoint):
+		// Row 0: [1*1+2*11+3*21, 1*(-8)+2*2+3*12] = [86, 32]
+		// Row 1: [1*1+2*11+3*21, 1*(-8)+2*2+3*12] = [86, 32]
+		[][]int32{{86, 32}, {86, 32}},
+	}, -1)
 }
 
 ////////////////////////////////////////////////////////////////////

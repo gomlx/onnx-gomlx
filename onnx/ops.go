@@ -1851,16 +1851,23 @@ func onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint *Node) *Node {
 	// Subtract zero points if provided
 	if aZeroPoint != nil {
 		aZeroPointInt32 := ConvertDType(aZeroPoint, dtypes.Int32)
-		// Handle scalar vs per-row/per-column zero points
-		// ONNX spec: a_zero_point can be scalar or 1D tensor
+		// Handle scalar vs per-axis zero points
+		// ONNX spec: a_zero_point aligns with the second-to-last dimension (M) of A
 		if !aZeroPointInt32.IsScalar() {
-			// For 1D zero point, we need to broadcast it correctly
-			// a_zero_point has shape matching the last dimension of A for per-column zero points
-			// or matching the first dimension for per-row zero points
-			// The ONNX spec says it should match the last axis of A
 			if aZeroPointInt32.Rank() == 1 {
-				// Expand to match A's rank for proper broadcasting
-				aZeroPointInt32 = ExpandLeftToRank(aZeroPointInt32, aInt32.Rank())
+				// Reshape to broadcast correctly: for matrix [M, K], reshape [M] to [M, 1]
+				// For higher rank tensors [..., M, K], reshape to [..., M, 1]
+				newShape := aInt32.Shape().Clone()
+				for axis := range newShape.Dimensions {
+					if axis != aInt32.Rank()-2 {
+						// Set all dimensions to 1 except the M dimension (second-to-last)
+						newShape.Dimensions[axis] = 1
+					} else if newShape.Dimensions[axis] != aZeroPointInt32.Shape().Dimensions[0] {
+						exceptions.Panicf("MatMulInteger: a_zero_point dimension must match the M dimension of A (axis %d), got a_zero_point shape=%s, A shape=%s",
+							axis, aZeroPointInt32.Shape(), aInt32.Shape())
+					}
+				}
+				aZeroPointInt32 = Reshape(aZeroPointInt32, newShape.Dimensions...)
 			}
 		}
 		aInt32 = Sub(aInt32, aZeroPointInt32)
@@ -1868,11 +1875,23 @@ func onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint *Node) *Node {
 
 	if bZeroPoint != nil {
 		bZeroPointInt32 := ConvertDType(bZeroPoint, dtypes.Int32)
-		// Handle scalar vs per-column zero points for B
+		// Handle scalar vs per-axis zero points
+		// ONNX spec: b_zero_point aligns with the last dimension (N) of B
 		if !bZeroPointInt32.IsScalar() {
 			if bZeroPointInt32.Rank() == 1 {
-				// Expand to match B's rank for proper broadcasting
-				bZeroPointInt32 = ExpandLeftToRank(bZeroPointInt32, bInt32.Rank())
+				// Reshape to broadcast correctly: for matrix [K, N], reshape [N] to [1, N]
+				// For higher rank tensors [..., K, N], reshape to [..., 1, N]
+				newShape := bInt32.Shape().Clone()
+				for axis := range newShape.Dimensions {
+					if axis != bInt32.Rank()-1 {
+						// Set all dimensions to 1 except the N dimension (last)
+						newShape.Dimensions[axis] = 1
+					} else if newShape.Dimensions[axis] != bZeroPointInt32.Shape().Dimensions[0] {
+						exceptions.Panicf("MatMulInteger: b_zero_point dimension must match the N dimension of B (axis %d), got b_zero_point shape=%s, B shape=%s",
+							axis, bZeroPointInt32.Shape(), bInt32.Shape())
+					}
+				}
+				bZeroPointInt32 = Reshape(bZeroPointInt32, newShape.Dimensions...)
 			}
 		}
 		bInt32 = Sub(bInt32, bZeroPointInt32)
