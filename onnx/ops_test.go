@@ -267,6 +267,124 @@ func TestONNX_DynamicQuantizeLinear(t *testing.T) {
 	}, 1e-3)
 }
 
+func TestONNX_MatMulInteger(t *testing.T) {
+	// Test basic MatMulInteger without zero points
+	graphtest.RunTestGraphFn(t, "MatMulInteger-no-zero-points", func(g *Graph) (inputs, outputs []*Node) {
+		// A: [2, 3] int8 matrix
+		a := Const(g, [][]int8{{1, 2, 3}, {4, 5, 6}})
+		// B: [3, 2] int8 matrix
+		b := Const(g, [][]int8{{1, 2}, {3, 4}, {5, 6}})
+		inputs = []*Node{a, b}
+		outputs = []*Node{onnxMatMulInteger(a, b, nil, nil)}
+		return
+	}, []any{
+		// Expected: A @ B
+		// [1*1+2*3+3*5, 1*2+2*4+3*6] = [22, 28]
+		// [4*1+5*3+6*5, 4*2+5*4+6*6] = [49, 64]
+		[][]int32{{22, 28}, {49, 64}},
+	}, -1)
+
+	// Test MatMulInteger with scalar zero points
+	graphtest.RunTestGraphFn(t, "MatMulInteger-scalar-zero-points", func(g *Graph) (inputs, outputs []*Node) {
+		// A: [2, 3] int8 matrix
+		a := Const(g, [][]int8{{1, 2, 3}, {4, 5, 6}})
+		// B: [3, 2] int8 matrix
+		b := Const(g, [][]int8{{1, 2}, {3, 4}, {5, 6}})
+		// Zero points
+		aZeroPoint := Const(g, int8(1))
+		bZeroPoint := Const(g, int8(1))
+		inputs = []*Node{a, b, aZeroPoint, bZeroPoint}
+		outputs = []*Node{onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint)}
+		return
+	}, []any{
+		// Expected: (A - 1) @ (B - 1)
+		// A-1 = [[0, 1, 2], [3, 4, 5]]
+		// B-1 = [[0, 1], [2, 3], [4, 5]]
+		// [0*0+1*2+2*4, 0*1+1*3+2*5] = [10, 13]
+		// [3*0+4*2+5*4, 3*1+4*3+5*5] = [28, 40]
+		[][]int32{{10, 13}, {28, 40}},
+	}, -1)
+
+	// Test MatMulInteger with uint8 inputs
+	graphtest.RunTestGraphFn(t, "MatMulInteger-uint8", func(g *Graph) (inputs, outputs []*Node) {
+		// A: [2, 2] uint8 matrix
+		a := Const(g, [][]uint8{{10, 20}, {30, 40}})
+		// B: [2, 2] uint8 matrix
+		b := Const(g, [][]uint8{{1, 2}, {3, 4}})
+		// Zero points
+		aZeroPoint := Const(g, uint8(5))
+		bZeroPoint := Const(g, uint8(1))
+		inputs = []*Node{a, b, aZeroPoint, bZeroPoint}
+		outputs = []*Node{onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint)}
+		return
+	}, []any{
+		// Expected: (A - 5) @ (B - 1)
+		// A-5 = [[5, 15], [25, 35]]
+		// B-1 = [[0, 1], [2, 3]]
+		// [5*0+15*2, 5*1+15*3] = [30, 50]
+		// [25*0+35*2, 25*1+35*3] = [70, 130]
+		[][]int32{{30, 50}, {70, 130}},
+	}, -1)
+
+	// Test MatMulInteger with only A zero point
+	graphtest.RunTestGraphFn(t, "MatMulInteger-a-zero-point-only", func(g *Graph) (inputs, outputs []*Node) {
+		a := Const(g, [][]int8{{2, 3}, {4, 5}})
+		b := Const(g, [][]int8{{1, 2}, {3, 4}})
+		aZeroPoint := Const(g, int8(1))
+		inputs = []*Node{a, b, aZeroPoint}
+		outputs = []*Node{onnxMatMulInteger(a, b, aZeroPoint, nil)}
+		return
+	}, []any{
+		// Expected: (A - 1) @ B
+		// A-1 = [[1, 2], [3, 4]]
+		// [1*1+2*3, 1*2+2*4] = [7, 10]
+		// [3*1+4*3, 3*2+4*4] = [15, 22]
+		[][]int32{{7, 10}, {15, 22}},
+	}, -1)
+
+	// Test MatMulInteger with only B zero point
+	graphtest.RunTestGraphFn(t, "MatMulInteger-b-zero-point-only", func(g *Graph) (inputs, outputs []*Node) {
+		a := Const(g, [][]int8{{1, 2}, {3, 4}})
+		b := Const(g, [][]int8{{2, 3}, {4, 5}})
+		bZeroPoint := Const(g, int8(1))
+		inputs = []*Node{a, b}
+		outputs = []*Node{onnxMatMulInteger(a, b, nil, bZeroPoint)}
+		return
+	}, []any{
+		// Expected: A @ (B - 1)
+		// B-1 = [[1, 2], [3, 4]]
+		// [1*1+2*3, 1*2+2*4] = [7, 10]
+		// [3*1+4*3, 3*2+4*4] = [15, 22]
+		[][]int32{{7, 10}, {15, 22}},
+	}, -1)
+
+	// Test 3D batch matrix multiplication
+	graphtest.RunTestGraphFn(t, "MatMulInteger-batch", func(g *Graph) (inputs, outputs []*Node) {
+		// A: [2, 2, 3] - batch of 2 matrices
+		a := Const(g, [][][]int8{
+			{{1, 2, 3}, {4, 5, 6}},
+			{{7, 8, 9}, {10, 11, 12}},
+		})
+		// B: [2, 3, 2] - batch of 2 matrices
+		b := Const(g, [][][]int8{
+			{{1, 2}, {3, 4}, {5, 6}},
+			{{1, 0}, {0, 1}, {1, 0}},
+		})
+		inputs = []*Node{a, b}
+		outputs = []*Node{onnxMatMulInteger(a, b, nil, nil)}
+		return
+	}, []any{
+		// Batch 0: [[1,2,3],[4,5,6]] @ [[1,2],[3,4],[5,6]]
+		//   = [[22, 28], [49, 64]]
+		// Batch 1: [[7,8,9],[10,11,12]] @ [[1,0],[0,1],[1,0]]
+		//   = [[7+0+9, 0+8+0], [10+0+12, 0+11+0]] = [[16, 8], [22, 11]]
+		[][][]int32{
+			{{22, 28}, {49, 64}},
+			{{16, 8}, {22, 11}},
+		},
+	}, -1)
+}
+
 ////////////////////////////////////////////////////////////////////
 //
 // Tests for new operators added in this branch

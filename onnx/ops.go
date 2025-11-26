@@ -1813,6 +1813,79 @@ func onnxDequantizeLinear(x, scale, xZeroPoint *Node, targetAxis int, outputDTyp
 	return x
 }
 
+// convertMatMulInteger converts the corresponding ONNX node to a GoMLX node.
+//
+// MatMulInteger performs integer matrix multiplication on quantized values.
+// The formula is: Y = (A - a_zero_point) * (B - b_zero_point)
+// where the result is accumulated in int32.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__MatMulInteger.html
+func convertMatMulInteger(nodeProto *protos.NodeProto, inputs []*Node) *Node {
+	if len(inputs) < 2 {
+		exceptions.Panicf("MatMulInteger: expected at least 2 inputs (A, B), got %d", len(inputs))
+	}
+
+	a := inputs[0]
+	b := inputs[1]
+
+	var aZeroPoint, bZeroPoint *Node
+	if len(inputs) > 2 && inputs[2] != nil {
+		aZeroPoint = inputs[2]
+	}
+	if len(inputs) > 3 && inputs[3] != nil {
+		bZeroPoint = inputs[3]
+	}
+
+	return onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint)
+}
+
+// onnxMatMulInteger implements the ONNX MatMulInteger operation.
+// It performs integer matrix multiplication: Y = (A - a_zero_point) * (B - b_zero_point)
+// with accumulation in int32.
+func onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint *Node) *Node {
+	// Convert inputs to int32 for the arithmetic operations
+	aInt32 := ConvertDType(a, dtypes.Int32)
+	bInt32 := ConvertDType(b, dtypes.Int32)
+
+	// Subtract zero points if provided
+	if aZeroPoint != nil {
+		aZeroPointInt32 := ConvertDType(aZeroPoint, dtypes.Int32)
+		// Handle scalar vs per-row/per-column zero points
+		// ONNX spec: a_zero_point can be scalar or 1D tensor
+		if !aZeroPointInt32.IsScalar() {
+			// For 1D zero point, we need to broadcast it correctly
+			// a_zero_point has shape matching the last dimension of A for per-column zero points
+			// or matching the first dimension for per-row zero points
+			// The ONNX spec says it should match the last axis of A
+			if aZeroPointInt32.Rank() == 1 {
+				// Expand to match A's rank for proper broadcasting
+				aZeroPointInt32 = ExpandLeftToRank(aZeroPointInt32, aInt32.Rank())
+			}
+		}
+		aInt32 = Sub(aInt32, aZeroPointInt32)
+	}
+
+	if bZeroPoint != nil {
+		bZeroPointInt32 := ConvertDType(bZeroPoint, dtypes.Int32)
+		// Handle scalar vs per-column zero points for B
+		if !bZeroPointInt32.IsScalar() {
+			if bZeroPointInt32.Rank() == 1 {
+				// Expand to match B's rank for proper broadcasting
+				bZeroPointInt32 = ExpandLeftToRank(bZeroPointInt32, bInt32.Rank())
+			}
+		}
+		bInt32 = Sub(bInt32, bZeroPointInt32)
+	}
+
+	// Apply ONNX implicit expansion for broadcasting before matmul
+	operands := onnxImplicitExpansion([]*Node{aInt32, bInt32})
+	aInt32, bInt32 = operands[0], operands[1]
+
+	// Perform matrix multiplication - result is int32
+	return MatMul(aInt32, bInt32)
+}
+
 // convertDynamicQuantizeLinear converts the corresponding ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:

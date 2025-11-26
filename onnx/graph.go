@@ -479,6 +479,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertFlatten(node, inputs)
 	case "DequantizeLinear":
 		result = convertDequantizeLinear(node, inputs)
+	case "MatMulInteger":
+		result = convertMatMulInteger(node, inputs)
 
 		// Ops that require constant sub-expression materialization:
 		// they take dynamic (graph) values in ONNX but only take static values in XLA
