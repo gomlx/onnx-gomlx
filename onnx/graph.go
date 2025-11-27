@@ -479,6 +479,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertFlatten(node, inputs)
 	case "DequantizeLinear":
 		result = convertDequantizeLinear(node, inputs)
+	case "QuantizeLinear":
+		result = convertQuantizeLinear(node, inputs)
 	case "MatMulInteger":
 		result = convertMatMulInteger(node, inputs)
 	case "QLinearMatMul":

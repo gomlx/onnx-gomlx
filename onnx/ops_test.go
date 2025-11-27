@@ -253,6 +253,58 @@ func TestONNXDequantizeLinear(t *testing.T) {
 	}, -1)
 }
 
+func TestONNXQuantizeLinear(t *testing.T) {
+	graphtest.RunTestGraphFn(t, "QuantizeLinear-scalar", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{-3, 0, 3}, {-6, 9, 12}})
+		scale := Const(g, float32(3))
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxQuantizeLinear(x, scale, nil, 1, dtypes.Int8),
+		}
+		return
+	}, []any{
+		[][]int8{{-1, 0, 1}, {-2, 3, 4}},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "QuantizeLinear-zero-point", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{-6, -3, 0}, {-9, 6, 9}})
+		scale := Const(g, float32(3))
+		zeroPoint := Const(g, int8(1))
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxQuantizeLinear(x, scale, zeroPoint, 1, dtypes.Int8),
+		}
+		return
+	}, []any{
+		[][]int8{{-1, 0, 1}, {-2, 3, 4}},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "QuantizeLinear-axis", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{-3, 0, 300}, {-6, 90, 1200}})
+		scale := Const(g, []float32{3, 30, 300})
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxQuantizeLinear(x, scale, nil, 1, dtypes.Int8),
+		}
+		return
+	}, []any{
+		[][]int8{{-1, 0, 1}, {-2, 3, 4}},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "QuantizeLinear-uint8", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{0, 127.5, 255}, {63.75, 191.25, 382.5}})
+		scale := Const(g, float32(1.5))
+		zeroPoint := Const(g, uint8(0))
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxQuantizeLinear(x, scale, zeroPoint, 1, dtypes.Uint8),
+		}
+		return
+	}, []any{
+		[][]uint8{{0, 85, 170}, {43, 128, 255}},
+	}, -1)
+}
+
 func TestONNX_DynamicQuantizeLinear(t *testing.T) {
 	graphtest.RunTestGraphFn(t, "DequantizeLinear-scalar", func(g *Graph) (inputs, outputs []*Node) {
 		x := Const(g, [][]float32{{-3, -0, 3}, {-6, 9, 12}})
