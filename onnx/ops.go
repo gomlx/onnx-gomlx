@@ -1781,7 +1781,7 @@ func convertDequantizeLinear(nodeProto *protos.NodeProto, inputs []*Node) *Node 
 	x := inputs[0]
 	scale := inputs[1]
 	var xZeroPoint *Node
-	if len(inputs) > 3 {
+	if len(inputs) > 2 {
 		xZeroPoint = inputs[2]
 	}
 	return onnxDequantizeLinear(x, scale, xZeroPoint, targetAxis, outputDType)
