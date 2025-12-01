@@ -303,6 +303,37 @@ func TestONNXQuantizeLinear(t *testing.T) {
 	}, []any{
 		[][]uint8{{0, 85, 170}, {43, 128, 255}},
 	}, -1)
+
+	// Test rounding behavior with .5 values
+	// GoMLX Round uses standard rounding (round-half-away-from-zero)
+	graphtest.RunTestGraphFn(t, "QuantizeLinear-rounding-half-values", func(g *Graph) (inputs, outputs []*Node) {
+		// Using scale=2.0, these values will yield .5 after division:
+		// 1.0/2.0=0.5 → 1, 3.0/2.0=1.5 → 2, 5.0/2.0=2.5 → 3,
+		// 7.0/2.0=3.5 → 4, 9.0/2.0=4.5 → 5
+		// -1.0/2.0=-0.5 → -1, -3.0/2.0=-1.5 → -2, -5.0/2.0=-2.5 → -3
+		x := Const(g, [][]float32{{1.0, 3.0, 5.0, 7.0}, {9.0, -1.0, -3.0, -5.0}})
+		scale := Const(g, float32(2.0))
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxQuantizeLinear(x, scale, nil, 1, dtypes.Int8),
+		}
+		return
+	}, []any{
+		[][]int8{{1, 2, 3, 4}, {5, -1, -2, -3}},
+	}, -1)
+
+	// Test negative axis support
+	graphtest.RunTestGraphFn(t, "QuantizeLinear-negative-axis", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{-3, 0, 300}, {-6, 90, 1200}})
+		scale := Const(g, []float32{3, 30, 300})
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxQuantizeLinear(x, scale, nil, -1, dtypes.Int8), // -1 should be equivalent to axis=1 for rank-2 tensor
+		}
+		return
+	}, []any{
+		[][]int8{{-1, 0, 1}, {-2, 3, 4}},
+	}, -1)
 }
 
 func TestONNX_DynamicQuantizeLinear(t *testing.T) {

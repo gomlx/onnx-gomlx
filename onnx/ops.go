@@ -1854,6 +1854,7 @@ func convertQuantizeLinear(nodeProto *protos.NodeProto, inputs []*Node) *Node {
 // Formula: y = saturate((x / y_scale) + y_zero_point)
 func onnxQuantizeLinear(x, yScale, yZeroPoint *Node, targetAxis int, outputDType dtypes.DType) *Node {
 	g := x.Graph()
+	targetAxis = AdjustAxisToOperandRank(x, targetAxis)
 
 	// Reshape scale to match input rank if it's 1-D
 	if !yScale.IsScalar() {
