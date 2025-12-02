@@ -253,6 +253,89 @@ func TestONNXDequantizeLinear(t *testing.T) {
 	}, -1)
 }
 
+func TestONNXQuantizeLinear(t *testing.T) {
+	graphtest.RunTestGraphFn(t, "QuantizeLinear-scalar", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{-3, 0, 3}, {-6, 9, 12}})
+		scale := Const(g, float32(3))
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxQuantizeLinear(x, scale, nil, 1, dtypes.Int8),
+		}
+		return
+	}, []any{
+		[][]int8{{-1, 0, 1}, {-2, 3, 4}},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "QuantizeLinear-zero-point", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{-6, -3, 0}, {-9, 6, 9}})
+		scale := Const(g, float32(3))
+		zeroPoint := Const(g, int8(1))
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxQuantizeLinear(x, scale, zeroPoint, 1, dtypes.Int8),
+		}
+		return
+	}, []any{
+		[][]int8{{-1, 0, 1}, {-2, 3, 4}},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "QuantizeLinear-axis", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{-3, 0, 300}, {-6, 90, 1200}})
+		scale := Const(g, []float32{3, 30, 300})
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxQuantizeLinear(x, scale, nil, 1, dtypes.Int8),
+		}
+		return
+	}, []any{
+		[][]int8{{-1, 0, 1}, {-2, 3, 4}},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "QuantizeLinear-uint8", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{0, 127.5, 255}, {63.75, 191.25, 382.5}})
+		scale := Const(g, float32(1.5))
+		zeroPoint := Const(g, uint8(0))
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxQuantizeLinear(x, scale, zeroPoint, 1, dtypes.Uint8),
+		}
+		return
+	}, []any{
+		[][]uint8{{0, 85, 170}, {43, 128, 255}},
+	}, -1)
+
+	// Test rounding behavior with .5 values
+	// GoMLX Round uses standard rounding (round-half-away-from-zero)
+	graphtest.RunTestGraphFn(t, "QuantizeLinear-rounding-half-values", func(g *Graph) (inputs, outputs []*Node) {
+		// Using scale=2.0, these values will yield .5 after division:
+		// 1.0/2.0=0.5 → 1, 3.0/2.0=1.5 → 2, 5.0/2.0=2.5 → 3,
+		// 7.0/2.0=3.5 → 4, 9.0/2.0=4.5 → 5
+		// -1.0/2.0=-0.5 → -1, -3.0/2.0=-1.5 → -2, -5.0/2.0=-2.5 → -3
+		x := Const(g, [][]float32{{1.0, 3.0, 5.0, 7.0}, {9.0, -1.0, -3.0, -5.0}})
+		scale := Const(g, float32(2.0))
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxQuantizeLinear(x, scale, nil, 1, dtypes.Int8),
+		}
+		return
+	}, []any{
+		[][]int8{{1, 2, 3, 4}, {5, -1, -2, -3}},
+	}, -1)
+
+	// Test negative axis support
+	graphtest.RunTestGraphFn(t, "QuantizeLinear-negative-axis", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{-3, 0, 300}, {-6, 90, 1200}})
+		scale := Const(g, []float32{3, 30, 300})
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			onnxQuantizeLinear(x, scale, nil, -1, dtypes.Int8), // -1 should be equivalent to axis=1 for rank-2 tensor
+		}
+		return
+	}, []any{
+		[][]int8{{-1, 0, 1}, {-2, 3, 4}},
+	}, -1)
+}
+
 func TestONNX_DynamicQuantizeLinear(t *testing.T) {
 	graphtest.RunTestGraphFn(t, "DequantizeLinear-scalar", func(g *Graph) (inputs, outputs []*Node) {
 		x := Const(g, [][]float32{{-3, -0, 3}, {-6, 9, 12}})
@@ -265,6 +348,187 @@ func TestONNX_DynamicQuantizeLinear(t *testing.T) {
 		float32(0.07058824),
 		uint8(85),
 	}, 1e-3)
+}
+
+func TestONNX_MatMulInteger(t *testing.T) {
+	// Test basic MatMulInteger without zero points
+	graphtest.RunTestGraphFn(t, "MatMulInteger-no-zero-points", func(g *Graph) (inputs, outputs []*Node) {
+		// A: [2, 3] int8 matrix
+		a := Const(g, [][]int8{{1, 2, 3}, {4, 5, 6}})
+		// B: [3, 2] int8 matrix
+		b := Const(g, [][]int8{{1, 2}, {3, 4}, {5, 6}})
+		inputs = []*Node{a, b}
+		outputs = []*Node{onnxMatMulInteger(a, b, nil, nil)}
+		return
+	}, []any{
+		// Expected: A @ B
+		// [1*1+2*3+3*5, 1*2+2*4+3*6] = [22, 28]
+		// [4*1+5*3+6*5, 4*2+5*4+6*6] = [49, 64]
+		[][]int32{{22, 28}, {49, 64}},
+	}, -1)
+
+	// Test MatMulInteger with scalar zero points
+	graphtest.RunTestGraphFn(t, "MatMulInteger-scalar-zero-points", func(g *Graph) (inputs, outputs []*Node) {
+		// A: [2, 3] int8 matrix
+		a := Const(g, [][]int8{{1, 2, 3}, {4, 5, 6}})
+		// B: [3, 2] int8 matrix
+		b := Const(g, [][]int8{{1, 2}, {3, 4}, {5, 6}})
+		// Zero points
+		aZeroPoint := Const(g, int8(1))
+		bZeroPoint := Const(g, int8(1))
+		inputs = []*Node{a, b, aZeroPoint, bZeroPoint}
+		outputs = []*Node{onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint)}
+		return
+	}, []any{
+		// Expected: (A - 1) @ (B - 1)
+		// A-1 = [[0, 1, 2], [3, 4, 5]]
+		// B-1 = [[0, 1], [2, 3], [4, 5]]
+		// [0*0+1*2+2*4, 0*1+1*3+2*5] = [10, 13]
+		// [3*0+4*2+5*4, 3*1+4*3+5*5] = [28, 40]
+		[][]int32{{10, 13}, {28, 40}},
+	}, -1)
+
+	// Test MatMulInteger with uint8 inputs
+	graphtest.RunTestGraphFn(t, "MatMulInteger-uint8", func(g *Graph) (inputs, outputs []*Node) {
+		// A: [2, 2] uint8 matrix
+		a := Const(g, [][]uint8{{10, 20}, {30, 40}})
+		// B: [2, 2] uint8 matrix
+		b := Const(g, [][]uint8{{1, 2}, {3, 4}})
+		// Zero points
+		aZeroPoint := Const(g, uint8(5))
+		bZeroPoint := Const(g, uint8(1))
+		inputs = []*Node{a, b, aZeroPoint, bZeroPoint}
+		outputs = []*Node{onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint)}
+		return
+	}, []any{
+		// Expected: (A - 5) @ (B - 1)
+		// A-5 = [[5, 15], [25, 35]]
+		// B-1 = [[0, 1], [2, 3]]
+		// [5*0+15*2, 5*1+15*3] = [30, 50]
+		// [25*0+35*2, 25*1+35*3] = [70, 130]
+		[][]int32{{30, 50}, {70, 130}},
+	}, -1)
+
+	// Test MatMulInteger with only A zero point
+	graphtest.RunTestGraphFn(t, "MatMulInteger-a-zero-point-only", func(g *Graph) (inputs, outputs []*Node) {
+		a := Const(g, [][]int8{{2, 3}, {4, 5}})
+		b := Const(g, [][]int8{{1, 2}, {3, 4}})
+		aZeroPoint := Const(g, int8(1))
+		inputs = []*Node{a, b, aZeroPoint}
+		outputs = []*Node{onnxMatMulInteger(a, b, aZeroPoint, nil)}
+		return
+	}, []any{
+		// Expected: (A - 1) @ B
+		// A-1 = [[1, 2], [3, 4]]
+		// [1*1+2*3, 1*2+2*4] = [7, 10]
+		// [3*1+4*3, 3*2+4*4] = [15, 22]
+		[][]int32{{7, 10}, {15, 22}},
+	}, -1)
+
+	// Test MatMulInteger with only B zero point
+	graphtest.RunTestGraphFn(t, "MatMulInteger-b-zero-point-only", func(g *Graph) (inputs, outputs []*Node) {
+		a := Const(g, [][]int8{{1, 2}, {3, 4}})
+		b := Const(g, [][]int8{{2, 3}, {4, 5}})
+		bZeroPoint := Const(g, int8(1))
+		inputs = []*Node{a, b}
+		outputs = []*Node{onnxMatMulInteger(a, b, nil, bZeroPoint)}
+		return
+	}, []any{
+		// Expected: A @ (B - 1)
+		// B-1 = [[1, 2], [3, 4]]
+		// [1*1+2*3, 1*2+2*4] = [7, 10]
+		// [3*1+4*3, 3*2+4*4] = [15, 22]
+		[][]int32{{7, 10}, {15, 22}},
+	}, -1)
+
+	// Test 3D batch matrix multiplication
+	graphtest.RunTestGraphFn(t, "MatMulInteger-batch", func(g *Graph) (inputs, outputs []*Node) {
+		// A: [2, 2, 3] - batch of 2 matrices
+		a := Const(g, [][][]int8{
+			{{1, 2, 3}, {4, 5, 6}},
+			{{7, 8, 9}, {10, 11, 12}},
+		})
+		// B: [2, 3, 2] - batch of 2 matrices
+		b := Const(g, [][][]int8{
+			{{1, 2}, {3, 4}, {5, 6}},
+			{{1, 0}, {0, 1}, {1, 0}},
+		})
+		inputs = []*Node{a, b}
+		outputs = []*Node{onnxMatMulInteger(a, b, nil, nil)}
+		return
+	}, []any{
+		// Batch 0: [[1,2,3],[4,5,6]] @ [[1,2],[3,4],[5,6]]
+		//   = [[22, 28], [49, 64]]
+		// Batch 1: [[7,8,9],[10,11,12]] @ [[1,0],[0,1],[1,0]]
+		//   = [[7+0+9, 0+8+0], [10+0+12, 0+11+0]] = [[16, 8], [22, 11]]
+		[][][]int32{
+			{{22, 28}, {49, 64}},
+			{{16, 8}, {22, 11}},
+		},
+	}, -1)
+
+	// Test MatMulInteger with per-axis (1D) zero point for A
+	graphtest.RunTestGraphFn(t, "MatMulInteger-per-axis-a-zero-point", func(g *Graph) (inputs, outputs []*Node) {
+		// A: [3, 2] matrix
+		a := Const(g, [][]int8{{10, 20}, {30, 40}, {50, 60}})
+		// B: [2, 4] matrix
+		b := Const(g, [][]int8{{1, 2, 3, 4}, {5, 6, 7, 8}})
+		// Per-row zero point for A: [3] (one per row)
+		aZeroPoint := Const(g, []int8{5, 10, 15})
+		inputs = []*Node{a, b, aZeroPoint}
+		outputs = []*Node{onnxMatMulInteger(a, b, aZeroPoint, nil)}
+		return
+	}, []any{
+		// A-aZeroPoint = [[5, 15], [20, 30], [35, 45]]
+		// (A-aZeroPoint) @ B:
+		// Row 0: [5*1+15*5, 5*2+15*6, 5*3+15*7, 5*4+15*8] = [80, 100, 120, 140]
+		// Row 1: [20*1+30*5, 20*2+30*6, 20*3+30*7, 20*4+30*8] = [170, 220, 270, 320]
+		// Row 2: [35*1+45*5, 35*2+45*6, 35*3+45*7, 35*4+45*8] = [260, 340, 420, 500]
+		[][]int32{{80, 100, 120, 140}, {170, 220, 270, 320}, {260, 340, 420, 500}},
+	}, -1)
+
+	// Test MatMulInteger with per-axis (1D) zero point for B
+	graphtest.RunTestGraphFn(t, "MatMulInteger-per-axis-b-zero-point", func(g *Graph) (inputs, outputs []*Node) {
+		// A: [2, 3] matrix
+		a := Const(g, [][]int8{{1, 2, 3}, {4, 5, 6}})
+		// B: [3, 4] matrix
+		b := Const(g, [][]int8{{10, 20, 30, 40}, {50, 60, 70, 80}, {90, 100, 110, 120}})
+		// Per-column zero point for B: [4] (one per column)
+		bZeroPoint := Const(g, []int8{5, 10, 15, 20})
+		inputs = []*Node{a, b}
+		outputs = []*Node{onnxMatMulInteger(a, b, nil, bZeroPoint)}
+		return
+	}, []any{
+		// B-bZeroPoint = [[5, 10, 15, 20], [45, 50, 55, 60], [85, 90, 95, 100]]
+		// A @ (B-bZeroPoint):
+		// Row 0: [1*5+2*45+3*85, 1*10+2*50+3*90, 1*15+2*55+3*95, 1*20+2*60+3*100]
+		//      = [350, 380, 410, 440]
+		// Row 1: [4*5+5*45+6*85, 4*10+5*50+6*90, 4*15+5*55+6*95, 4*20+5*60+6*100]
+		//      = [755, 830, 905, 980]
+		[][]int32{{350, 380, 410, 440}, {755, 830, 905, 980}},
+	}, -1)
+
+	// Test MatMulInteger with both per-axis zero points
+	graphtest.RunTestGraphFn(t, "MatMulInteger-per-axis-both-zero-points", func(g *Graph) (inputs, outputs []*Node) {
+		// A: [2, 3] matrix
+		a := Const(g, [][]int8{{11, 12, 13}, {21, 22, 23}})
+		// B: [3, 2] matrix
+		b := Const(g, [][]int8{{31, 32}, {41, 42}, {51, 52}})
+		// Per-row zero point for A: [2]
+		aZeroPoint := Const(g, []int8{10, 20})
+		// Per-column zero point for B: [2]
+		bZeroPoint := Const(g, []int8{30, 40})
+		inputs = []*Node{a, b, aZeroPoint, bZeroPoint}
+		outputs = []*Node{onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint)}
+		return
+	}, []any{
+		// A-aZeroPoint = [[1, 2, 3], [1, 2, 3]]
+		// B-bZeroPoint = [[1, -8], [11, 2], [21, 12]]
+		// (A-aZeroPoint) @ (B-bZeroPoint):
+		// Row 0: [1*1+2*11+3*21, 1*(-8)+2*2+3*12] = [86, 32]
+		// Row 1: [1*1+2*11+3*21, 1*(-8)+2*2+3*12] = [86, 32]
+		[][]int32{{86, 32}, {86, 32}},
+	}, -1)
 }
 
 ////////////////////////////////////////////////////////////////////

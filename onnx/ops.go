@@ -1781,7 +1781,7 @@ func convertDequantizeLinear(nodeProto *protos.NodeProto, inputs []*Node) *Node 
 	x := inputs[0]
 	scale := inputs[1]
 	var xZeroPoint *Node
-	if len(inputs) > 3 {
+	if len(inputs) > 2 {
 		xZeroPoint = inputs[2]
 	}
 	return onnxDequantizeLinear(x, scale, xZeroPoint, targetAxis, outputDType)
@@ -1811,6 +1811,234 @@ func onnxDequantizeLinear(x, scale, xZeroPoint *Node, targetAxis int, outputDTyp
 		x = ConvertDType(x, outputDType)
 	}
 	return x
+}
+
+// convertQuantizeLinear converts the corresponding ONNX node to a GoMLX node.
+//
+// Not yet supporting block quantization.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__QuantizeLinear.html
+func convertQuantizeLinear(nodeProto *protos.NodeProto, inputs []*Node) *Node {
+	// Attributes:
+	// - Axis (optional) on which to apply the multi-valued scale.
+	// - blockSize: optional, only active if != 0. Not yet implemented.
+	// - output_dtype: optional, specifies the output dtype.
+	// - saturate: optional, for float8 types only.
+	targetAxis := getIntAttrOr(nodeProto, "axis", 1)
+	blockSize := getIntAttrOr(nodeProto, "blockSize", 0)
+	if blockSize != 0 {
+		exceptions.Panicf("QuantizeLinear: support for attribute 'block_size' is not yet implemented")
+	}
+
+	x := inputs[0]
+	yScale := inputs[1]
+	var yZeroPoint *Node
+	if len(inputs) > 2 {
+		yZeroPoint = inputs[2]
+	}
+
+	// Determine output dtype
+	var outputDType dtypes.DType
+	if yZeroPoint != nil {
+		outputDType = yZeroPoint.DType()
+	} else {
+		// Default to int8 if no zero point provided
+		outputDType = getDTypeAttrOr(nodeProto, "output_dtype", dtypes.Int8)
+	}
+
+	return onnxQuantizeLinear(x, yScale, yZeroPoint, targetAxis, outputDType)
+}
+
+// onnxQuantizeLinear implements the ONNX QuantizeLinear operation.
+// Formula: y = saturate((x / y_scale) + y_zero_point)
+func onnxQuantizeLinear(x, yScale, yZeroPoint *Node, targetAxis int, outputDType dtypes.DType) *Node {
+	g := x.Graph()
+	targetAxis = AdjustAxisToOperandRank(x, targetAxis)
+
+	// Reshape scale to match input rank if it's 1-D
+	if !yScale.IsScalar() {
+		if yScale.Rank() != 1 {
+			exceptions.Panicf("QuantizeLinear: y_scale must be a scalar or 1D, got %s instead", yScale.Shape())
+		}
+		newScaleShape := x.Shape().Clone()
+		for axis := range newScaleShape.Dimensions {
+			if axis != targetAxis {
+				newScaleShape.Dimensions[axis] = 1
+			} else if newScaleShape.Dimensions[axis] != yScale.Shape().Dimensions[0] {
+				exceptions.Panicf("QuantizeLinear: y_scale must have same dimension as the input axis %d (input shape=%s), got %s instead", targetAxis, x.Shape(), yScale.Shape())
+			}
+		}
+		yScale = Reshape(yScale, newScaleShape.Dimensions...)
+	}
+
+	// Similarly reshape zero point if provided
+	if yZeroPoint != nil && !yZeroPoint.IsScalar() {
+		if yZeroPoint.Rank() != 1 {
+			exceptions.Panicf("QuantizeLinear: y_zero_point must be a scalar or 1D, got %s instead", yZeroPoint.Shape())
+		}
+		newZeroPointShape := x.Shape().Clone()
+		for axis := range newZeroPointShape.Dimensions {
+			if axis != targetAxis {
+				newZeroPointShape.Dimensions[axis] = 1
+			} else if newZeroPointShape.Dimensions[axis] != yZeroPoint.Shape().Dimensions[0] {
+				exceptions.Panicf("QuantizeLinear: y_zero_point must have same dimension as the input axis %d (input shape=%s), got %s instead", targetAxis, x.Shape(), yZeroPoint.Shape())
+			}
+		}
+		yZeroPoint = Reshape(yZeroPoint, newZeroPointShape.Dimensions...)
+	}
+
+	// Convert input to scale's dtype for division
+	x = ConvertDType(x, yScale.DType())
+
+	// Quantize: y = round(x / y_scale)
+	y := Round(Div(x, yScale))
+
+	// Add zero point if provided
+	if yZeroPoint != nil {
+		y = Add(y, ConvertDType(yZeroPoint, y.DType()))
+	}
+
+	// Saturate to output dtype range
+	var minVal, maxVal *Node
+	switch outputDType {
+	case dtypes.Int8:
+		minVal = Scalar(g, y.DType(), -128)
+		maxVal = Scalar(g, y.DType(), 127)
+	case dtypes.Uint8:
+		minVal = Scalar(g, y.DType(), 0)
+		maxVal = Scalar(g, y.DType(), 255)
+	case dtypes.Int16:
+		minVal = Scalar(g, y.DType(), -32768)
+		maxVal = Scalar(g, y.DType(), 32767)
+	case dtypes.Uint16:
+		minVal = Scalar(g, y.DType(), 0)
+		maxVal = Scalar(g, y.DType(), 65535)
+	case dtypes.Int32:
+		minVal = Scalar(g, y.DType(), -2147483648)
+		maxVal = Scalar(g, y.DType(), 2147483647)
+	default:
+		// For other types (float8, etc.), no saturation needed
+	}
+
+	if minVal != nil && maxVal != nil {
+		y = Clip(y, minVal, maxVal)
+	}
+
+	// Convert to output dtype
+	y = ConvertDType(y, outputDType)
+	return y
+}
+
+// convertMatMulInteger converts the corresponding ONNX node to a GoMLX node.
+//
+// MatMulInteger performs integer matrix multiplication on quantized values.
+// The formula is: Y = (A - a_zero_point) * (B - b_zero_point)
+// where the result is accumulated in int32.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__MatMulInteger.html
+func convertMatMulInteger(nodeProto *protos.NodeProto, inputs []*Node) *Node {
+	if len(inputs) < 2 {
+		exceptions.Panicf("MatMulInteger: expected at least 2 inputs (A, B), got %d", len(inputs))
+	}
+
+	a := inputs[0]
+	b := inputs[1]
+
+	var aZeroPoint, bZeroPoint *Node
+	if len(inputs) > 2 && inputs[2] != nil {
+		aZeroPoint = inputs[2]
+	}
+	if len(inputs) > 3 && inputs[3] != nil {
+		bZeroPoint = inputs[3]
+	}
+
+	return onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint)
+}
+
+// onnxMatMulInteger implements the ONNX MatMulInteger operation.
+// It performs integer matrix multiplication: Y = (A - a_zero_point) * (B - b_zero_point)
+// with accumulation in int32.
+//
+// Optimization: Keep inputs as int8/uint8 and let the backend handle int8×int8→int32
+// using SIMD instructions like ARM SMMLA for 4x throughput.
+func onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint *Node) *Node {
+	// Check if we have mixed int8/uint8 types - if so, convert to int32
+	// (goMLX backend doesn't support mixed int8/uint8 yet)
+	aDType := a.DType()
+	bDType := b.DType()
+	needsInt32Conversion := aDType != bDType &&
+		((aDType == dtypes.Int8 || aDType == dtypes.Uint8) &&
+		 (bDType == dtypes.Int8 || bDType == dtypes.Uint8))
+
+	var aWorking, bWorking *Node
+	if needsInt32Conversion {
+		// Mixed types: convert to int32
+		aWorking = ConvertDType(a, dtypes.Int32)
+		bWorking = ConvertDType(b, dtypes.Int32)
+	} else {
+		// Same type: keep as int8/uint8
+		aWorking = a
+		bWorking = b
+	}
+
+	// Subtract zero points if provided
+	if aZeroPoint != nil {
+		// Convert zero point to same dtype as working tensor
+		aZeroPointWorking := ConvertDType(aZeroPoint, aWorking.DType())
+		// Handle scalar vs per-axis zero points
+		// ONNX spec: a_zero_point aligns with the second-to-last dimension (M) of A
+		if !aZeroPointWorking.IsScalar() {
+			if aZeroPointWorking.Rank() == 1 {
+				// Reshape to broadcast correctly: for matrix [M, K], reshape [M] to [M, 1]
+				// For higher rank tensors [..., M, K], reshape to [..., M, 1]
+				newShape := aWorking.Shape().Clone()
+				for axis := range newShape.Dimensions {
+					if axis != aWorking.Rank()-2 {
+						// Set all dimensions to 1 except the M dimension (second-to-last)
+						newShape.Dimensions[axis] = 1
+					} else if newShape.Dimensions[axis] != aZeroPointWorking.Shape().Dimensions[0] {
+						exceptions.Panicf("MatMulInteger: a_zero_point dimension must match the M dimension of A (axis %d), got a_zero_point shape=%s, A shape=%s",
+							axis, aZeroPointWorking.Shape(), aWorking.Shape())
+					}
+				}
+				aZeroPointWorking = Reshape(aZeroPointWorking, newShape.Dimensions...)
+			}
+		}
+		aWorking = Sub(aWorking, aZeroPointWorking)
+	}
+
+	if bZeroPoint != nil {
+		bZeroPointWorking := ConvertDType(bZeroPoint, bWorking.DType())
+		// Handle scalar vs per-axis zero points
+		// ONNX spec: b_zero_point aligns with the last dimension (N) of B
+		if !bZeroPointWorking.IsScalar() {
+			if bZeroPointWorking.Rank() == 1 {
+				// Reshape to broadcast correctly: for matrix [K, N], reshape [N] to [1, N]
+				// For higher rank tensors [..., K, N], reshape to [..., 1, N]
+				newShape := bWorking.Shape().Clone()
+				for axis := range newShape.Dimensions {
+					if axis != bWorking.Rank()-1 {
+						// Set all dimensions to 1 except the N dimension (last)
+						newShape.Dimensions[axis] = 1
+					} else if newShape.Dimensions[axis] != bZeroPointWorking.Shape().Dimensions[0] {
+						exceptions.Panicf("MatMulInteger: b_zero_point dimension must match the N dimension of B (axis %d), got b_zero_point shape=%s, B shape=%s",
+							axis, bZeroPointWorking.Shape(), bWorking.Shape())
+					}
+				}
+				bZeroPointWorking = Reshape(bZeroPointWorking, newShape.Dimensions...)
+			}
+		}
+		bWorking = Sub(bWorking, bZeroPointWorking)
+	}
+
+	// Perform matrix multiplication
+	// - For int8×int8 or uint8×uint8: backend will handle with optimized SIMD (ARM SMMLA/UMMLA)
+	// - For mixed types: already converted to int32 above
+	// Note: MatMul handles its own batch dimension broadcasting internally,
+	// so we don't use onnxImplicitExpansion here (that's for element-wise binary ops only)
+	return MatMul(aWorking, bWorking)
 }
 
 // convertDynamicQuantizeLinear converts the corresponding ONNX node to a GoMLX node.
@@ -1853,6 +2081,103 @@ func onnxDynamicQuantizeLinear(x *Node) (y, yScale, yZeroPoint *Node) {
 	y = ConvertDType(y, quantizedDType)
 	yZeroPoint = ConvertDType(yZeroPoint, quantizedDType)
 	return
+}
+
+// convertQLinearMatMul converts the corresponding ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__QLinearMatMul.html
+func convertQLinearMatMul(node *protos.NodeProto, inputs []*Node) *Node {
+	if len(inputs) != 8 {
+		exceptions.Panicf("QLinearMatMul: expected 8 inputs (a, a_scale, a_zero_point, b, b_scale, b_zero_point, y_scale, y_zero_point), got %d", len(inputs))
+	}
+	a := inputs[0]
+	aScale := inputs[1]
+	aZeroPoint := inputs[2]
+	b := inputs[3]
+	bScale := inputs[4]
+	bZeroPoint := inputs[5]
+	yScale := inputs[6]
+	yZeroPoint := inputs[7]
+
+	return onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZeroPoint)
+}
+
+// onnxQLinearMatMul implements the ONNX QLinearMatMul operation.
+// It performs quantized matrix multiplication:
+// Y = quantize((dequantize(A) @ dequantize(B)), y_scale, y_zero_point)
+//
+// However, for efficiency, we avoid full dequantization by using the identity:
+// Y = quantize(((A - a_zp) * a_scale) @ ((B - b_zp) * b_scale) / y_scale + y_zp)
+// Y = ((A - a_zp) @ (B - b_zp)) * (a_scale * b_scale / y_scale) + y_zp
+func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZeroPoint *Node) *Node {
+	g := a.Graph()
+
+	// Convert quantized inputs to int32 for arithmetic
+	aInt32 := ConvertDType(a, dtypes.Int32)
+	bInt32 := ConvertDType(b, dtypes.Int32)
+
+	// Subtract zero points if provided
+	if aZeroPoint != nil && !aZeroPoint.IsScalar() || (aZeroPoint != nil && aZeroPoint.Shape().Size() > 0) {
+		aZeroPointInt32 := ConvertDType(aZeroPoint, dtypes.Int32)
+		aInt32 = Sub(aInt32, aZeroPointInt32)
+	} else if aZeroPoint != nil {
+		aZeroPointInt32 := ConvertDType(aZeroPoint, dtypes.Int32)
+		aInt32 = Sub(aInt32, aZeroPointInt32)
+	}
+
+	if bZeroPoint != nil && !bZeroPoint.IsScalar() || (bZeroPoint != nil && bZeroPoint.Shape().Size() > 0) {
+		bZeroPointInt32 := ConvertDType(bZeroPoint, dtypes.Int32)
+		bInt32 = Sub(bInt32, bZeroPointInt32)
+	} else if bZeroPoint != nil {
+		bZeroPointInt32 := ConvertDType(bZeroPoint, dtypes.Int32)
+		bInt32 = Sub(bInt32, bZeroPointInt32)
+	}
+
+	// Perform integer matrix multiplication in int32
+	// Result is int32: (A - a_zp) @ (B - b_zp)
+	matmulResult := MatMul(aInt32, bInt32)
+
+	// Convert to float for scaling: result * (a_scale * b_scale / y_scale)
+	scaleDType := aScale.DType()
+	matmulFloat := ConvertDType(matmulResult, scaleDType)
+
+	// Compute combined scale: (a_scale * b_scale) / y_scale
+	combinedScale := Div(Mul(aScale, bScale), yScale)
+
+	// Apply scale
+	scaledResult := Mul(matmulFloat, combinedScale)
+
+	// Add output zero point and convert back to quantized type
+	outputDType := yZeroPoint.DType()
+	if yZeroPoint != nil {
+		yZeroPointFloat := ConvertDType(yZeroPoint, scaleDType)
+		scaledResult = Add(scaledResult, yZeroPointFloat)
+	}
+
+	// Round and clip to valid quantized range
+	scaledResult = Round(scaledResult)
+
+	// Determine clipping range based on output dtype
+	var minVal, maxVal *Node
+	if outputDType == dtypes.Uint8 {
+		minVal = Scalar(g, scaleDType, 0.0)
+		maxVal = Scalar(g, scaleDType, 255.0)
+	} else if outputDType == dtypes.Int8 {
+		minVal = Scalar(g, scaleDType, -128.0)
+		maxVal = Scalar(g, scaleDType, 127.0)
+	} else {
+		// Default to int8 range
+		minVal = Scalar(g, scaleDType, -128.0)
+		maxVal = Scalar(g, scaleDType, 127.0)
+	}
+
+	scaledResult = Clip(scaledResult, minVal, maxVal)
+
+	// Convert to output quantized dtype
+	result := ConvertDType(scaledResult, outputDType)
+
+	return result
 }
 
 ////////////////////////////////////////////////////////////////////
