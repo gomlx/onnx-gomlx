@@ -160,17 +160,6 @@ func mustGetIntAttr(node *protos.NodeProto, attrName string) int {
 	return int(attr.I)
 }
 
-// mustGetIntsAttr gets a list of integers attribute for node.
-// It panics with an error message if the attribute is not present of if it is of the wrong type.
-func mustGetIntsAttr(node *protos.NodeProto, attrName string) []int {
-	attr := getNodeAttr(node, attrName, true)
-	if attr.Type == protos.AttributeProto_INT {
-		return []int{int(attr.I)}
-	}
-	assertNodeAttrType(node, attr, protos.AttributeProto_INTS)
-	return sliceMap(attr.Ints, func(i int64) int { return int(i) })
-}
-
 // getIntAttrOr gets an integer attribute for node if present or return the given defaultValue.
 // It panics with an error message if the attribute is present but is of the wrong type.
 func getIntAttrOr(node *protos.NodeProto, attrName string, defaultValue int) int {
@@ -316,7 +305,7 @@ func onnxGather(data, indices *Node, gatherAxis int) *Node {
 			axesPermutation[axis] = axis
 		}
 	}
-	transposedData := TransposeAllDims(data, axesPermutation...)
+	transposedData := TransposeAllAxes(data, axesPermutation...)
 	transposed := Gather(transposedData, expandedIndices)
 
 	// Now we have to transpose back the result.
@@ -336,7 +325,7 @@ func onnxGather(data, indices *Node, gatherAxis int) *Node {
 			axesPermutation[axis] = axis
 		}
 	}
-	return TransposeAllDims(transposed, axesPermutation...)
+	return TransposeAllAxes(transposed, axesPermutation...)
 }
 
 // convertGatherElements converts a ONNX node to a GoMLX node.
@@ -492,7 +481,7 @@ func convertTranspose(node *protos.NodeProto, inputs []*Node) *Node {
 	if len(permutations) != operand.Rank() {
 		exceptions.Panicf("Tranpose(data=%s, perm=%v) must have one permutation value per axis of the data: %s", operand.Shape(), permutations, nodeToString(node))
 	}
-	return TransposeAllDims(operand, permutations...)
+	return TransposeAllAxes(operand, permutations...)
 }
 
 // convertGemm converts a ONNX node to a GoMLX node.
@@ -584,11 +573,11 @@ func convertPow(m *Model, convertedOutputs map[string]*Node, node *protos.NodePr
 	case 0.5:
 		return Sqrt(inputs[0])
 	case -0.5:
-		return Inverse(Sqrt(inputs[0]))
+		return Reciprocal(Sqrt(inputs[0]))
 	case -1:
-		return Inverse(inputs[0])
+		return Reciprocal(inputs[0])
 	case -2:
-		return Inverse(Square(inputs[0]))
+		return Reciprocal(Square(inputs[0]))
 	default:
 		return defaultPow()
 	}
@@ -1033,12 +1022,6 @@ func convertRange(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	return output
 }
 
-// isUnsigned returns whether the dtype is unsigned.
-// TODO: after gopjrt > v.0.4.5 is released, used DType.IsUnsigned instead.
-func isUnsigned(dtype dtypes.DType) bool {
-	return dtype == dtypes.Uint8 || dtype == dtypes.Uint16 || dtype == dtypes.Uint32 || dtype == dtypes.Uint64
-}
-
 func rangeCount(backend backends.Backend, start, limit, delta *tensors.Tensor) int {
 	count := MustExecOnce(backend, func(start, limit, delta *Node) *Node {
 		amount := Sub(limit, start)
@@ -1047,15 +1030,14 @@ func rangeCount(backend backends.Backend, start, limit, delta *tensors.Tensor) i
 			// Float rounding up.
 			count = Ceil(Div(amount, delta))
 		} else {
-			// Int rounding up.
-			var roundUp *Node
-			if isUnsigned(delta.DType()) {
-				roundUp = AddScalar(delta, -1)
-			} else {
-				roundUp = Add(delta, Neg(Sign(delta))) // -1 if delta is positive, +1 if delta is negative.
-			}
-			amount = Add(amount, roundUp)
-			count = Div(amount, delta)
+			// Integer ceiling division: Ceil(amount / delta) = (amount + delta - sign(delta)) / delta
+			// For positive delta: (amount + delta - 1) / delta
+			// For negative delta: (amount + delta + 1) / delta
+			// But we need to handle the case where amount % delta == 0 specially
+			// Actually, simpler: convert to float, do ceiling division, convert back
+			amountFloat := ConvertDType(amount, dtypes.Float64)
+			deltaFloat := ConvertDType(delta, dtypes.Float64)
+			count = Ceil(Div(amountFloat, deltaFloat))
 		}
 		return ConvertDType(count, dtypes.Int64)
 	}, start, limit, delta)
@@ -1162,7 +1144,7 @@ func convertTrilu(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__ScatterND.html
-func convertScatterND(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func convertScatterND(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	// inputs
 	data := inputs[0]
 	indices := inputs[1]
@@ -1222,7 +1204,7 @@ func convertScatterND(m *Model, convertedOutputs map[string]*Node, node *protos.
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__LSTM.html
-func convertLSTM(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func convertLSTM(_ *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	// Inputs
 	{
 		newInputs := make([]*Node, 8)
@@ -1284,30 +1266,46 @@ func convertLSTM(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	// (Except if layout == 1).
 	switch layout {
 	case 0:
-		operand = TransposeAllDims(operand, 1, 0, 2)
+		operand = TransposeAllAxes(operand, 1, 0, 2)
 	case 1:
 		// [batchSize, numDirections, hiddenDim] -> [numDirections, batchSize, hiddenDim]
 		if initialHidden != nil {
-			initialHidden = TransposeAllDims(initialHidden, 1, 0, 2)
+			initialHidden = TransposeAllAxes(initialHidden, 1, 0, 2)
 		}
 		if initialCell != nil {
-			initialCell = TransposeAllDims(initialCell, 1, 0, 2)
+			initialCell = TransposeAllAxes(initialCell, 1, 0, 2)
 		}
 	default:
 		exceptions.Panicf("unsupported layout %d for LSTM: only values 0 or 1 are supported", layout)
 	}
 
-	lstmLayer := lstm.NewWithWeights(operand, inputsW, recurrentW, biasesW, peepholeW).
-		Ragged(operandLengths).Direction(direction)
+	lstmLayer := lstm.NewWithWeights(operand, inputsW, recurrentW, biasesW, peepholeW).Direction(direction)
+	if operandLengths != nil {
+		lstmLayer = lstmLayer.Ragged(operandLengths)
+	}
+	if initialHidden != nil || initialCell != nil {
+		lstmLayer = lstmLayer.InitialStates(initialHidden, initialCell)
+	}
 	allHiddenStates, lastHiddenState, lastCellState := lstmLayer.Done()
 
 	// Transpose according to requested layout.
+	// GoMLX LSTM returns:
+	//   - allHiddenStates: [seq, numDirections, batch, hidden]
+	//   - lastHiddenState, lastCellState: [numDirections, batch, hidden]
+	// ONNX layout=0 (default):
+	//   - Y: [seq_length, num_directions, batch_size, hidden_size]
+	//   - Y_h, Y_c: [num_directions, batch_size, hidden_size]
+	// ONNX layout=1 (batch first):
+	//   - Y: [batch_size, seq_length, num_directions, hidden_size]
+	//   - Y_h, Y_c: [batch_size, num_directions, hidden_size]
 	switch layout {
 	case 0:
-		lastHiddenState = TransposeAllDims(lastHiddenState, 1, 0, 2)
-		lastCellState = TransposeAllDims(lastCellState, 1, 0, 2)
+		// GoMLX format matches ONNX layout=0, no transpose needed
 	case 1:
-		allHiddenStates = TransposeAllDims(allHiddenStates, 2, 0, 1, 3)
+		// Transpose to batch-first format
+		allHiddenStates = TransposeAllAxes(allHiddenStates, 2, 0, 1, 3) // [seq, dir, batch, hidden] -> [batch, seq, dir, hidden]
+		lastHiddenState = TransposeAllAxes(lastHiddenState, 1, 0, 2)    // [dir, batch, hidden] -> [batch, dir, hidden]
+		lastCellState = TransposeAllAxes(lastCellState, 1, 0, 2)        // [dir, batch, hidden] -> [batch, dir, hidden]
 	}
 
 	if len(node.Output) >= 2 && node.Output[1] != "" {
@@ -1324,7 +1322,7 @@ func convertLSTM(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Conv.html
-func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func convertConv(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	autoPad := getStringAttrOr(node, "auto_pad", "NOTSET")
 	if autoPad != "NOTSET" {
 		exceptions.Panicf("Conv: support for attribute 'auto_pad' (%s) is not yet implemented", autoPad)
@@ -1380,16 +1378,16 @@ func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	}
 	conv := Convolve(x, w).AxesConfig(axes)
 	if len(strides) > 0 {
-		conv = conv.StridePerDim(strides...)
+		conv = conv.StridePerAxis(strides...)
 	}
 	if len(dilations) > 0 {
-		conv = conv.DilationPerDim(dilations...)
+		conv = conv.DilationPerAxis(dilations...)
 	}
 	if len(paddings) > 0 {
 		conv = conv.PaddingPerDim(paddings)
 	}
 	if groups > 1 {
-		conv = conv.FeatureGroupCount(groups)
+		conv = conv.ChannelGroupCount(groups)
 	}
 	out := conv.Done()
 	if b != nil {
@@ -1412,7 +1410,7 @@ func convertConv(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__AveragePool.html
-func convertAveragePool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func convertAveragePool(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	autoPad := getStringAttrOr(node, "auto_pad", "NOTSET")
 	if autoPad != "NOTSET" {
 		exceptions.Panicf("AveragePool: support for attribute 'auto_pad' (%s) is not yet implemented", autoPad)
@@ -1496,7 +1494,7 @@ func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodePr
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__MaxPool.html
-func convertMaxPool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func convertMaxPool(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	autoPad := getStringAttrOr(node, "auto_pad", "NOTSET")
 	if autoPad != "NOTSET" {
 		exceptions.Panicf("MaxPool: support for attribute 'auto_pad' (%s) is not yet implemented", autoPad)
@@ -1549,7 +1547,7 @@ func convertMaxPool(m *Model, convertedOutputs map[string]*Node, node *protos.No
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__GlobalAveragePool.html
-func convertGlobalAveragePool(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func convertGlobalAveragePool(_ *Model, _ map[string]*Node, _ *protos.NodeProto, inputs []*Node) *Node {
 	x := inputs[0]
 	spatialDims := x.Rank() - 2
 	window := make([]int, spatialDims)
@@ -1568,7 +1566,7 @@ func convertGlobalAveragePool(m *Model, convertedOutputs map[string]*Node, node 
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__BatchNormalization.html
-func convertBatchNormalization(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func convertBatchNormalization(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	// Inputs: [input, scale, bias, mean, var]
 	x := inputs[0]
 	scale := inputs[1]
@@ -1612,7 +1610,7 @@ func convertBatchNormalization(m *Model, convertedOutputs map[string]*Node, node
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__LayerNormalization.html
-func convertLayerNormalization(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func convertLayerNormalization(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	// Inputs: [X, Scale, B]
 	// X: input tensor
 	// Scale (gamma): scale parameter
@@ -1679,7 +1677,7 @@ func convertLayerNormalization(m *Model, convertedOutputs map[string]*Node, node
 	centered := Sub(x, mean)
 	variance := ReduceAndKeep(Square(centered), ReduceMean, axes...)
 
-	// Normalize: (X - mean) / sqrt(variance + epsilon)
+	// Normalize: (X - mean) / Sqrt(variance + epsilon)
 	normalized := Div(centered, Sqrt(Add(variance, Scalar(x.Graph(), x.DType(), epsilon))))
 
 	// Apply scale (gamma)
@@ -1891,7 +1889,7 @@ func onnxQuantizeLinear(x, yScale, yZeroPoint *Node, targetAxis int, outputDType
 	// Convert input to scale's dtype for division
 	x = ConvertDType(x, yScale.DType())
 
-	// Quantize: y = round(x / y_scale)
+	// Quantize: y = Round(Div(x, yScale))
 	y := Round(Div(x, yScale))
 
 	// Add zero point if provided
@@ -1938,7 +1936,7 @@ func onnxQuantizeLinear(x, yScale, yZeroPoint *Node, targetAxis int, outputDType
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__MatMulInteger.html
-func convertMatMulInteger(nodeProto *protos.NodeProto, inputs []*Node) *Node {
+func convertMatMulInteger(_ *protos.NodeProto, inputs []*Node) *Node {
 	if len(inputs) < 2 {
 		exceptions.Panicf("MatMulInteger: expected at least 2 inputs (A, B), got %d", len(inputs))
 	}
@@ -1959,34 +1957,16 @@ func convertMatMulInteger(nodeProto *protos.NodeProto, inputs []*Node) *Node {
 
 // onnxMatMulInteger implements the ONNX MatMulInteger operation.
 // It performs integer matrix multiplication: Y = (A - a_zero_point) * (B - b_zero_point)
-// with accumulation in int32.
-//
-// Optimization: Keep inputs as int8/uint8 and let the backend handle int8×int8→int32
-// using SIMD instructions like ARM SMMLA for 4x throughput.
+// with accumulation in int32 to prevent overflow.
 func onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint *Node) *Node {
-	// Check if we have mixed int8/uint8 types - if so, convert to int32
-	// (goMLX backend doesn't support mixed int8/uint8 yet)
-	aDType := a.DType()
-	bDType := b.DType()
-	needsInt32Conversion := aDType != bDType &&
-		((aDType == dtypes.Int8 || aDType == dtypes.Uint8) &&
-		 (bDType == dtypes.Int8 || bDType == dtypes.Uint8))
-
-	var aWorking, bWorking *Node
-	if needsInt32Conversion {
-		// Mixed types: convert to int32
-		aWorking = ConvertDType(a, dtypes.Int32)
-		bWorking = ConvertDType(b, dtypes.Int32)
-	} else {
-		// Same type: keep as int8/uint8
-		aWorking = a
-		bWorking = b
-	}
+	// Convert inputs to int32 to prevent overflow during matrix multiplication
+	aWorking := ConvertDType(a, dtypes.Int32)
+	bWorking := ConvertDType(b, dtypes.Int32)
 
 	// Subtract zero points if provided
 	if aZeroPoint != nil {
-		// Convert zero point to same dtype as working tensor
-		aZeroPointWorking := ConvertDType(aZeroPoint, aWorking.DType())
+		// Convert zero point to int32
+		aZeroPointWorking := ConvertDType(aZeroPoint, dtypes.Int32)
 		// Handle scalar vs per-axis zero points
 		// ONNX spec: a_zero_point aligns with the second-to-last dimension (M) of A
 		if !aZeroPointWorking.IsScalar() {
@@ -2010,7 +1990,7 @@ func onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint *Node) *Node {
 	}
 
 	if bZeroPoint != nil {
-		bZeroPointWorking := ConvertDType(bZeroPoint, bWorking.DType())
+		bZeroPointWorking := ConvertDType(bZeroPoint, dtypes.Int32)
 		// Handle scalar vs per-axis zero points
 		// ONNX spec: b_zero_point aligns with the last dimension (N) of B
 		if !bZeroPointWorking.IsScalar() {
@@ -2033,11 +2013,7 @@ func onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint *Node) *Node {
 		bWorking = Sub(bWorking, bZeroPointWorking)
 	}
 
-	// Perform matrix multiplication
-	// - For int8×int8 or uint8×uint8: backend will handle with optimized SIMD (ARM SMMLA/UMMLA)
-	// - For mixed types: already converted to int32 above
-	// Note: MatMul handles its own batch dimension broadcasting internally,
-	// so we don't use onnxImplicitExpansion here (that's for element-wise binary ops only)
+	// Perform matrix multiplication in int32
 	return MatMul(aWorking, bWorking)
 }
 
@@ -2087,7 +2063,7 @@ func onnxDynamicQuantizeLinear(x *Node) (y, yScale, yZeroPoint *Node) {
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__QLinearMatMul.html
-func convertQLinearMatMul(node *protos.NodeProto, inputs []*Node) *Node {
+func convertQLinearMatMul(_ *protos.NodeProto, inputs []*Node) *Node {
 	if len(inputs) != 8 {
 		exceptions.Panicf("QLinearMatMul: expected 8 inputs (a, a_scale, a_zero_point, b, b_scale, b_zero_point, y_scale, y_zero_point), got %d", len(inputs))
 	}
@@ -2160,13 +2136,14 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 
 	// Determine clipping range based on output dtype
 	var minVal, maxVal *Node
-	if outputDType == dtypes.Uint8 {
+	switch outputDType {
+	case dtypes.Uint8:
 		minVal = Scalar(g, scaleDType, 0.0)
 		maxVal = Scalar(g, scaleDType, 255.0)
-	} else if outputDType == dtypes.Int8 {
+	case dtypes.Int8:
 		minVal = Scalar(g, scaleDType, -128.0)
 		maxVal = Scalar(g, scaleDType, 127.0)
-	} else {
+	default:
 		// Default to int8 range
 		minVal = Scalar(g, scaleDType, -128.0)
 		maxVal = Scalar(g, scaleDType, 127.0)

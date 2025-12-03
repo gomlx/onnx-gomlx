@@ -301,16 +301,18 @@ func TestONNXQuantizeLinear(t *testing.T) {
 		}
 		return
 	}, []any{
-		[][]uint8{{0, 85, 170}, {43, 128, 255}},
+		// 63.75/1.5 = 42.5, rounds to 42 (round-half-to-even, 42 is even)
+		[][]uint8{{0, 85, 170}, {42, 128, 255}},
 	}, -1)
 
 	// Test rounding behavior with .5 values
-	// GoMLX Round uses standard rounding (round-half-away-from-zero)
+	// GoMLX Round uses round-half-to-even (banker's rounding)
 	graphtest.RunTestGraphFn(t, "QuantizeLinear-rounding-half-values", func(g *Graph) (inputs, outputs []*Node) {
 		// Using scale=2.0, these values will yield .5 after division:
-		// 1.0/2.0=0.5 → 1, 3.0/2.0=1.5 → 2, 5.0/2.0=2.5 → 3,
-		// 7.0/2.0=3.5 → 4, 9.0/2.0=4.5 → 5
-		// -1.0/2.0=-0.5 → -1, -3.0/2.0=-1.5 → -2, -5.0/2.0=-2.5 → -3
+		// Round-half-to-even: 0.5→0 (even), 1.5→2 (even), 2.5→2 (even), 3.5→4 (even), 4.5→4 (even), -0.5→0 (even), -1.5→-2 (even), -2.5→-2 (even)
+		// 1.0/2.0=0.5 → 0, 3.0/2.0=1.5 → 2, 5.0/2.0=2.5 → 2,
+		// 7.0/2.0=3.5 → 4, 9.0/2.0=4.5 → 4
+		// -1.0/2.0=-0.5 → 0, -3.0/2.0=-1.5 → -2, -5.0/2.0=-2.5 → -2
 		x := Const(g, [][]float32{{1.0, 3.0, 5.0, 7.0}, {9.0, -1.0, -3.0, -5.0}})
 		scale := Const(g, float32(2.0))
 		inputs = []*Node{x, scale}
@@ -319,7 +321,7 @@ func TestONNXQuantizeLinear(t *testing.T) {
 		}
 		return
 	}, []any{
-		[][]int8{{1, 2, 3, 4}, {5, -1, -2, -3}},
+		[][]int8{{0, 2, 2, 4}, {4, 0, -2, -2}},
 	}, -1)
 
 	// Test negative axis support

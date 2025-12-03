@@ -2,12 +2,13 @@ package onnx
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
+
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
-	"strconv"
-	"strings"
 )
 
 // DynamicShape represents a shape for which some of the axes have unknown dimensions.

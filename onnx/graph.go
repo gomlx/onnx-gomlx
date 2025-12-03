@@ -112,7 +112,7 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 	// Convert variables: create the GoMLX nodes corresponding to the ONNX model variables.
 	if len(m.Proto.Graph.Initializer) > 0 && ctx == nil {
 		exceptions.Panicf("onnx.CallGraph(): model has variables, but a nil context was give")
-		panic(nil) // for lint benefit.
+		return
 	}
 
 	// Convert all nodes recursively, which will implicitly yield a topological order.
@@ -131,7 +131,7 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 	}
 
 	// Makes sure all the temporarily allocated on-device tensors are freed.
-	for _ = range 3 {
+	for range 3 {
 		runtime.GC()
 	}
 	return outputs
@@ -151,14 +151,14 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 	if _, found := m.variableNameToValue[nodeOutputName]; found {
 		if ctx == nil {
 			exceptions.Panicf("onnx.CallGraph(): model has variables, but a nil context was given")
-			panic(nil) // for lint benefit.
+			return
 		}
 		varName := SafeVarName(nodeOutputName)
 		v := ctx.GetVariable(varName)
 		if v == nil {
 			exceptions.Panicf("variable %q (named %q in ONNX) has not been uploaded yet to context -- did you forget to call onnx.Model.VariablesToContext?",
 				varName, nodeOutputName)
-			panic(nil) // for lint benefit.
+			return
 		}
 		convertedOutputs[nodeOutputName] = v.ValueGraph(g)
 		return
@@ -442,7 +442,7 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "Cos":
 		result = Cos(inputs[0])
 
-		// Ops with equivalents:
+	// Ops with equivalents:
 	case "MatMul":
 		result = MatMul(inputs[0], inputs[1])
 
@@ -456,7 +456,7 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "Max":
 		result = convertMax(inputs)
 
-		// Ops with attributes:
+	// Ops with attributes:
 	case "Constant":
 		result = convertConstant(m, node, g)
 	case "Gather":
@@ -486,8 +486,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "QLinearMatMul":
 		result = convertQLinearMatMul(node, inputs)
 
-		// Ops that require constant sub-expression materialization:
-		// they take dynamic (graph) values in ONNX but only take static values in XLA
+	// Ops that require constant sub-expression materialization:
+	// they take dynamic (graph) values in ONNX but only take static values in XLA
 	case "Squeeze":
 		result = convertSqueeze(m, convertedOutputs, node, inputs)
 	case "Unsqueeze":
