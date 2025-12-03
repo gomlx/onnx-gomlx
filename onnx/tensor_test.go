@@ -134,6 +134,17 @@ func TestTensorToGoMLX(t *testing.T) {
 		require.Contains(t, err.Error(), "nil")
 	})
 
+	t.Run("NoDataFieldsProvided", func(t *testing.T) {
+		// Proto has no data fields set - tests the nil return path in checkAndCreateTensorFromProto
+		proto := &protos.TensorProto{
+			Dims:     []int64{2, 2},
+			DataType: int32(protos.TensorProto_FLOAT),
+		}
+		_, err := tensorToGoMLX(backend, proto)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no supported format of data")
+	})
+
 	t.Run("FloatData_Float32", func(t *testing.T) {
 		proto := &protos.TensorProto{
 			Dims:      []int64{2, 2},
@@ -279,19 +290,6 @@ func TestTensorToGoMLX(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "size")
 	})
-
-	t.Run("NoDataFieldsProvided", func(t *testing.T) {
-		// Proto has no data fields set - tests the nil return path in checkAndCreateTensorFromProto
-		// All checkAndCreateTensorFromProto calls will return (nil, nil) and fall through
-		proto := &protos.TensorProto{
-			Dims:     []int64{2, 2},
-			DataType: int32(protos.TensorProto_FLOAT),
-			// No FloatData, DoubleData, Int32Data, Int64Data, Uint64Data, or RawData
-		}
-		_, err := tensorToGoMLX(backend, proto)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "no supported format of data")
-	})
 }
 
 // TestTensorValueToONNX tests the TensorValueToONNX() function for GoMLX→ONNX conversion
@@ -376,8 +374,8 @@ func TestTensorValueToONNX(t *testing.T) {
 
 		proto := &protos.TensorProto{
 			Dims:      []int64{2, 2},
-			DataType:  int32(protos.TensorProto_INT32), // Proto dtype is int32
-			FloatData: make([]float32, 4),              // But storage is float32 - triggers conversion
+			DataType:  int32(protos.TensorProto_INT32),
+			FloatData: make([]float32, 4), // Storage type differs from proto dtype
 		}
 
 		err := TensorValueToONNX(gomlxTensor, proto)
