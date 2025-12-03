@@ -4,8 +4,7 @@ import (
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/backends"
 	"github.com/gomlx/gomlx/backends/simplego"
-	_ "github.com/gomlx/gomlx/backends/simplego"
-	"github.com/gomlx/gomlx/pkg/core/graph"
+	. "github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gopjrt/dtypes"
@@ -76,8 +75,8 @@ func checkAndCreateTensorFromProto[T interface {
 	// It uses GoMLX SimpleGo backend.
 	var converted *tensors.Tensor
 	err := exceptions.TryCatch[error](func() {
-		converted = graph.MustExecOnce(backend, func(x *graph.Node) *graph.Node {
-			return graph.ConvertDType(x, shape.DType)
+		converted = MustExecOnce(backend, func(x *Node) *Node {
+			return ConvertDType(x, shape.DType)
 		}, onnxDataTensor)
 		converted.ToLocal() // Detach from the conversion backend.
 	})
@@ -158,12 +157,18 @@ func checkAndCopyTensorToProto[T interface {
 			return err
 		}
 		defer backend.Finalize()
+
 		err = exceptions.TryCatch[error](func() {
-			converted = graph.MustExecOnce(backend, func(x *graph.Node) *graph.Node {
-				return graph.ConvertDType(x, shape.DType)
+			converted = MustExecOnce(backend, func(x *Node) *Node {
+				return ConvertDType(x, shape.DType)
 			}, t.OnDeviceClone(backend))
 			converted.ToLocal() // Detach from the temporarily created backend.
 		})
+		if err != nil {
+			return err
+		}
+		defer converted.FinalizeAll() // Help the GC.
+
 		t = converted
 	}
 
