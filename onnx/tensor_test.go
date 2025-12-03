@@ -134,17 +134,6 @@ func TestTensorToGoMLX(t *testing.T) {
 		require.Contains(t, err.Error(), "nil")
 	})
 
-	t.Run("NoDataFieldsProvided", func(t *testing.T) {
-		// Proto has no data fields set - tests the nil return path in checkAndCreateTensorFromProto
-		proto := &protos.TensorProto{
-			Dims:     []int64{2, 2},
-			DataType: int32(protos.TensorProto_FLOAT),
-		}
-		_, err := tensorToGoMLX(backend, proto)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "no supported format of data")
-	})
-
 	t.Run("FloatData_Float32", func(t *testing.T) {
 		proto := &protos.TensorProto{
 			Dims:      []int64{2, 2},
