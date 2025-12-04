@@ -4,8 +4,7 @@ import (
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/backends"
 	"github.com/gomlx/gomlx/backends/simplego"
-	_ "github.com/gomlx/gomlx/backends/simplego"
-	"github.com/gomlx/gomlx/pkg/core/graph"
+	. "github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gopjrt/dtypes"
@@ -65,7 +64,7 @@ func checkAndCreateTensorFromProto[T interface {
 			proto.Name, shape, shape.Size(), len(onnxData))
 	}
 
-	onnxDataTensor := tensors.FromFlatDataAndDimensions[T](onnxData, shape.Dimensions...)
+	onnxDataTensor := tensors.FromFlatDataAndDimensions(onnxData, shape.Dimensions...)
 	if shape.DType == dtypes.FromGenericsType[T]() {
 		// The provided ONNX tensor is exactly what we want:
 		return onnxDataTensor, nil
@@ -76,8 +75,8 @@ func checkAndCreateTensorFromProto[T interface {
 	// It uses GoMLX SimpleGo backend.
 	var converted *tensors.Tensor
 	err := exceptions.TryCatch[error](func() {
-		converted = graph.MustExecOnce(backend, func(x *graph.Node) *graph.Node {
-			return graph.ConvertDType(x, shape.DType)
+		converted = MustExecOnce(backend, func(x *Node) *Node {
+			return ConvertDType(x, shape.DType)
 		}, onnxDataTensor)
 		converted.ToLocal() // Detach from the conversion backend.
 	})
@@ -86,6 +85,10 @@ func checkAndCreateTensorFromProto[T interface {
 
 // tensorToGoMLX converts a protos.TensorProto object to a tensors.Tensor object, handling errors and different data types.
 func tensorToGoMLX(backend backends.Backend, proto *protos.TensorProto) (t *tensors.Tensor, err error) {
+	if proto == nil {
+		return nil, errors.New("ONNX TensorProto is nil")
+	}
+
 	var shape shapes.Shape
 	shape, err = Shape(proto)
 	if err != nil {
@@ -158,12 +161,18 @@ func checkAndCopyTensorToProto[T interface {
 			return err
 		}
 		defer backend.Finalize()
+
 		err = exceptions.TryCatch[error](func() {
-			converted = graph.MustExecOnce(backend, func(x *graph.Node) *graph.Node {
-				return graph.ConvertDType(x, shape.DType)
+			converted = MustExecOnce(backend, func(x *Node) *Node {
+				return ConvertDType(x, dtypes.FromGenericsType[T]())
 			}, t.OnDeviceClone(backend))
 			converted.ToLocal() // Detach from the temporarily created backend.
 		})
+		if err != nil {
+			return err
+		}
+		defer converted.FinalizeAll() // Help the GC.
+
 		t = converted
 	}
 

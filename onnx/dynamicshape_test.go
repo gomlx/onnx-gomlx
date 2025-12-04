@@ -1,22 +1,23 @@
 package onnx
 
 import (
+	"testing"
+
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 func TestValidateInputs(t *testing.T) {
 	m := &Model{
 		InputsNames: []string{"i0", "i1"},
 		InputsShapes: []DynamicShape{
-			DynamicShape{
+			{
 				DType:      dtypes.Float32,
 				Dimensions: []int{-1, -1},
 				Names:      []string{"batch_size", "feature_dim"},
 			},
-			DynamicShape{
+			{
 				DType:      dtypes.Int32,
 				Dimensions: []int{-1, 3},
 				Names:      []string{"batch_size", "other"},

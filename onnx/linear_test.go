@@ -4,15 +4,15 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/gomlx/gomlx/pkg/core/graph"
+	. "github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/stretchr/testify/require"
-)
 
-import _ "github.com/gomlx/gomlx/backends/default"
+	_ "github.com/gomlx/gomlx/backends/default"
+)
 
 // TestEndToEnd based on the `linear_test.onnx` minimalistic model.
 // Only a couple of ops tested, but from end-to-end, including if changes can be saved
@@ -47,11 +47,11 @@ func TestEndToEnd(t *testing.T) {
 
 	// Check conversion.
 	backend := graphtest.BuildTestBackend()
-	y := context.MustExecOnce(backend, ctx, func(ctx *context.Context, x *graph.Node) *graph.Node {
+	y := context.MustExecOnce(backend, ctx, func(ctx *context.Context, x *Node) *Node {
 		g := x.Graph()
-		outputs := model.CallGraph(ctx, g, map[string]*graph.Node{"X": x})
+		outputs := model.CallGraph(ctx, g, map[string]*Node{"X": x})
 		vB = ctx.In(ModelScope).GetVariable("B")
-		vB.SetValueGraph(graph.OnePlus(vB.ValueGraph(g)))
+		vB.SetValueGraph(OnePlus(vB.ValueGraph(g)))
 		return outputs[0]
 	}, [][]float32{{1, 2, 3, 4, 5}}) // BatchSize = 1
 	require.NoError(t, y.Shape().Check(dtypes.Float32, 1))

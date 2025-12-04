@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/gomlx/exceptions"
-	. "github.com/gomlx/gomlx/pkg/core/graph"
+	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -44,7 +44,7 @@ func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.
 	node := m.nodeOutputToNode[name]
 	if node == nil {
 		exceptions.Panicf("nonConstantDepedencies given an unknown node output name %q", name)
-		panic(nil) // lint.
+		return nil, nil, nil
 	}
 	if opRequiresContext(node.OpType) {
 		contextNodes = append(contextNodes, node)
@@ -71,10 +71,10 @@ func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.
 func (m *Model) isVariableConstant(varName string) bool {
 	sizeLimit := 100 // Max size to be accepted as constant.
 	lowerName := strings.ToLower(varName)
-	if strings.Index(lowerName, "constant") >= 0 {
+	if strings.Contains(lowerName, "constant") {
 		// If there is "constant" in the name, we assume constant at a higher size.
 		sizeLimit = 10_000
-	} else if strings.Index(lowerName, "const") >= 0 {
+	} else if strings.Contains(lowerName, "const") {
 		// With less confidence...
 		sizeLimit = 1_000
 	}
@@ -121,7 +121,7 @@ func (m *Model) materializeConstantExpression(nodeOutputName string, convertedOu
 			nodeOutputName, nonConstInputs, strings.Join(varDesc, ", "), strings.Join(opsDesc, ", "))
 	}
 
-	// Evaluate constant sub-expression in a newly created sub-graph.
+	// Evaluate constant sub-expression in a newly created sub-
 	backend := node.Graph().Backend()
 	var result *tensors.Tensor
 	err := exceptions.TryCatch[error](func() {
@@ -146,7 +146,7 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 	}
 
 	// Check in the original graph being converted if this node was converted as a constant (for instance, for nodes like "Shape"),
-	// in which case we take the constant value and inject it directly in the new constant expression graph.
+	// in which case we take the constant value and inject it directly in the new constant expression
 	if originalNode, found := originalConvertedOutput[nodeOutputName]; found {
 		if originalNode.Type() == NodeTypeConstant {
 			// Duplicate the constant in the new graph.
