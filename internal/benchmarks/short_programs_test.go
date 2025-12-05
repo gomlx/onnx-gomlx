@@ -36,6 +36,8 @@ func init() {
 }
 
 var (
+	DefaultDeviceNum = backends.DeviceNum(0)
+
 	TestShapes = []shapes.Shape{
 		//shapes.Make(dtypes.Float32, 1, 1),
 		//shapes.Make(dtypes.Float32, 10, 10),
@@ -97,7 +99,7 @@ func parallelizeGoVectorFunc(fn goVectorFunc) goVectorFunc {
 		chunkSize := numInputs / numCPU
 		var wg sync.WaitGroup
 		wg.Add(numCPU)
-		for i := 0; i < numCPU; i++ {
+		for i := range numCPU {
 			start := i * chunkSize
 			end := (i + 1) * chunkSize
 			if i == numCPU-1 {
@@ -150,14 +152,13 @@ func BenchmarkSmallXLAExec(b *testing.B) {
 						}
 					})
 
-					// WarmUp:
 					for range 10 {
 						tmpOutput := exec.MustExec1(x)
 						tmpOutput.FinalizeAll()
 					}
-					b.ResetTimer()
 
-					for range b.N {
+					b.ResetTimer()
+					for b.Loop() {
 						tmpOutput := exec.MustExec1(x)
 						tmpOutput.FinalizeAll()
 					}
@@ -201,22 +202,23 @@ func BenchmarkSmallXLADirect(b *testing.B) {
 							flat[ii] = float32(shapeIdx*numPrograms + progIdx + 1)
 						}
 					})
-					xBuf := x.Buffer(backend)
+					xBuf, err := x.Buffer(backend, DefaultDeviceNum)
+					if err != nil {
+						klog.Errorf("Failed to get buffer from tensor: %+v", err)
+						b.FailNow()
+					}
 					g := graphPerShapePerProgram[shapeIdx][progIdx]
 
 					// WarmUp:
 					for range 10 {
-						tmpOutput := g.RunWithBuffers(
-							[]backends.Buffer{xBuf},
-							[]bool{false})[0]
+						tmpOutput := g.RunWithBuffers([]backends.Buffer{xBuf}, []bool{false}, DefaultDeviceNum)[0]
 						tmpOutput.FinalizeAll()
 					}
-					b.ResetTimer()
 
-					for range b.N {
-						tmpOutput := g.RunWithBuffers(
-							[]backends.Buffer{xBuf},
-							[]bool{false})[0]
+					// Run test:
+					b.ResetTimer()
+					for b.Loop() {
+						tmpOutput := g.RunWithBuffers([]backends.Buffer{xBuf}, []bool{false}, DefaultDeviceNum)[0]
 						tmpOutput.FinalizeAll()
 					}
 				})
@@ -278,9 +280,9 @@ func BenchmarkSmallORT(b *testing.B) {
 					for range 10 {
 						must.M(session.Run())
 					}
-					b.ResetTimer()
 
-					for range b.N {
+					b.ResetTimer()
+					for b.Loop() {
 						must.M(session.Run())
 					}
 				})
@@ -324,7 +326,7 @@ func BenchmarkPureGo(b *testing.B) {
 
 					// Benchmark
 					b.ResetTimer()
-					for range b.N {
+					for b.Loop() {
 						tensors.ConstFlatData[float32](x, func(inputs []float32) {
 							tensors.MutableFlatData[float32](y, func(outputs []float32) {
 								testProgram(inputs, outputs)

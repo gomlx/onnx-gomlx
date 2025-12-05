@@ -385,8 +385,8 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 		fmt.Printf("\tSaving reference embeddings to %q - shape=%s, embedding[0, 0, 0]=%.3f, token[0, 0]=%d\n",
 			robSentencesEmbeddingsFileName,
 			output.Shape(),
-			tensors.CopyFlatData[float32](output)[0],
-			tensors.CopyFlatData[int64](inputTensors[0])[0])
+			tensors.MustCopyFlatData[float32](output)[0],
+			tensors.MustCopyFlatData[int64](inputTensors[0])[0])
 		err := output.Save(robSentencesEmbeddingsFileName)
 		if err != nil {
 			panic(err)
