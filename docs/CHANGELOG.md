@@ -1,3 +1,7 @@
+# v0.3.3: (release candidate) Updated for GoMLX 0.25.0
+
+- Updates for GoMLX 0.25.0
+
 # v0.3.2: New ops (2025/11/18) 
 
 - Thanks to @timakey11 for this release the contribution!
