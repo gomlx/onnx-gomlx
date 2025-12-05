@@ -18,8 +18,8 @@ func requireSameTensorsFloat32(t *testing.T, want, got *tensors.Tensor, delta fl
 	// Make sure shapes are the same.
 	require.True(t, got.Shape().Equal(want.Shape()))
 	flatIdx := 0
-	gotFlat := tensors.CopyFlatData[float32](got)
-	wantFlat := tensors.CopyFlatData[float32](want)
+	gotFlat := tensors.MustCopyFlatData[float32](got)
+	wantFlat := tensors.MustCopyFlatData[float32](want)
 	var mismatches int
 	for indices := range got.Shape().Iter() {
 		gotValue := gotFlat[flatIdx]

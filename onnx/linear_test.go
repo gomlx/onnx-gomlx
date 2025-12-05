@@ -33,17 +33,23 @@ func TestEndToEnd(t *testing.T) {
 	ctx := context.New()
 	require.NoError(t, model.VariablesToContext(ctx))
 	for v := range ctx.IterVariables() {
-		fmt.Printf("\tVariable %q: %s\n", v.ScopeAndName(), v.Value())
+		value, err := v.Value()
+		require.NoError(t, err)
+		fmt.Printf("\tVariable %q: %s\n", v.ScopeAndName(), value)
 	}
 	vA := ctx.In(ModelScope).GetVariable("A")
 	require.NotNil(t, vA)
 	require.Equal(t, 1, vA.Shape().Rank())
 	require.Equal(t, 5, vA.Shape().Dim(0))
-	require.Equal(t, []float32{100, 10, 1, 0.1, 0.01}, tensors.CopyFlatData[float32](vA.Value()))
+	vAValue, err := vA.Value()
+	require.NoError(t, err)
+	require.Equal(t, []float32{100, 10, 1, 0.1, 0.01}, tensors.MustCopyFlatData[float32](vAValue))
 	vB := ctx.In(ModelScope).GetVariable("B")
 	require.NotNil(t, vB)
 	require.Equal(t, 0, vB.Shape().Rank())
-	require.Equal(t, float32(7000), tensors.ToScalar[float32](vB.Value()))
+	vBValue, err := vB.Value()
+	require.NoError(t, err)
+	require.Equal(t, float32(7000), tensors.ToScalar[float32](vBValue))
 
 	// Check conversion.
 	backend := graphtest.BuildTestBackend()
@@ -55,7 +61,7 @@ func TestEndToEnd(t *testing.T) {
 		return outputs[0]
 	}, [][]float32{{1, 2, 3, 4, 5}}) // BatchSize = 1
 	require.NoError(t, y.Shape().Check(dtypes.Float32, 1))
-	require.InDeltaSlice(t, []float32{7123.45}, tensors.CopyFlatData[float32](y), 0.1)
+	require.InDeltaSlice(t, []float32{7123.45}, tensors.MustCopyFlatData[float32](y), 0.1)
 
 	// Save change of variable "B" to the ONNX model.
 	require.NoError(t, model.ContextToONNX(ctx))

@@ -147,7 +147,7 @@ func TestTensorToGoMLX(t *testing.T) {
 
 		require.Equal(t, dtypes.Float32, tensor.Shape().DType)
 		require.Equal(t, []int{2, 2}, tensor.Shape().Dimensions)
-		data := tensors.CopyFlatData[float32](tensor)
+		data := tensors.MustCopyFlatData[float32](tensor)
 		require.Equal(t, []float32{1.0, 2.0, 3.0, 4.0}, data)
 	})
 
@@ -164,7 +164,7 @@ func TestTensorToGoMLX(t *testing.T) {
 
 		require.Equal(t, dtypes.Int32, tensor.Shape().DType)
 		require.Equal(t, []int{3}, tensor.Shape().Dimensions)
-		data := tensors.CopyFlatData[int32](tensor)
+		data := tensors.MustCopyFlatData[int32](tensor)
 		require.Equal(t, []int32{10, 20, 30}, data)
 	})
 
@@ -180,7 +180,7 @@ func TestTensorToGoMLX(t *testing.T) {
 		defer tensor.FinalizeAll()
 
 		require.Equal(t, dtypes.Int64, tensor.Shape().DType)
-		data := tensors.CopyFlatData[int64](tensor)
+		data := tensors.MustCopyFlatData[int64](tensor)
 		require.Equal(t, []int64{100, 200}, data)
 	})
 
@@ -197,7 +197,7 @@ func TestTensorToGoMLX(t *testing.T) {
 		defer tensor.FinalizeAll()
 
 		require.Equal(t, dtypes.Int32, tensor.Shape().DType)
-		data := tensors.CopyFlatData[int32](tensor)
+		data := tensors.MustCopyFlatData[int32](tensor)
 		require.Equal(t, []int32{5, 10}, data)
 	})
 
@@ -224,7 +224,7 @@ func TestTensorToGoMLX(t *testing.T) {
 		defer tensor.FinalizeAll()
 
 		require.Equal(t, dtypes.Float32, tensor.Shape().DType)
-		result := tensors.CopyFlatData[float32](tensor)
+		result := tensors.MustCopyFlatData[float32](tensor)
 		require.InDeltaSlice(t, data, result, 0.0001)
 	})
 
@@ -241,7 +241,7 @@ func TestTensorToGoMLX(t *testing.T) {
 		defer tensor.FinalizeAll()
 
 		require.Equal(t, dtypes.Int8, tensor.Shape().DType)
-		result := tensors.CopyFlatData[int8](tensor)
+		result := tensors.MustCopyFlatData[int8](tensor)
 		require.Equal(t, []int8{-128, -1, 0, 127}, result)
 	})
 
@@ -497,16 +497,16 @@ func TestRoundTripConversion(t *testing.T) {
 			// Verify data matches based on dtype
 			switch tt.onnxDType {
 			case protos.TensorProto_FLOAT:
-				originalData := tensors.CopyFlatData[float32](tt.original)
-				recoveredData := tensors.CopyFlatData[float32](recovered)
+				originalData := tensors.MustCopyFlatData[float32](tt.original)
+				recoveredData := tensors.MustCopyFlatData[float32](recovered)
 				require.Equal(t, originalData, recoveredData)
 			case protos.TensorProto_INT32:
-				originalData := tensors.CopyFlatData[int32](tt.original)
-				recoveredData := tensors.CopyFlatData[int32](recovered)
+				originalData := tensors.MustCopyFlatData[int32](tt.original)
+				recoveredData := tensors.MustCopyFlatData[int32](recovered)
 				require.Equal(t, originalData, recoveredData)
 			case protos.TensorProto_INT64:
-				originalData := tensors.CopyFlatData[int64](tt.original)
-				recoveredData := tensors.CopyFlatData[int64](recovered)
+				originalData := tensors.MustCopyFlatData[int64](tt.original)
+				recoveredData := tensors.MustCopyFlatData[int64](recovered)
 				require.Equal(t, originalData, recoveredData)
 			}
 		})

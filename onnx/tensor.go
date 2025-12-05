@@ -12,6 +12,10 @@ import (
 	"github.com/pkg/errors"
 )
 
+// DefaultDeviceNum is the device number used in local graph operations
+// (like converting tensors for different types).
+var DefaultDeviceNum = backends.DeviceNum(0)
+
 // Shape converts an ONNX data type and shape to GoMLX shapes.Shape (it includes the dtype).
 func Shape(proto *protos.TensorProto) (shape shapes.Shape, err error) {
 	if proto == nil {
@@ -152,34 +156,49 @@ func checkAndCopyTensorToProto[T interface {
 	}
 
 	// If the dtype of the tensor doesn't match the dtype of the proto storing it:
+	var converted *tensors.Tensor
 	if shape.DType != dtypes.FromGenericsType[T]() {
 		// Convert from GoMLX tensor to the ONNX proto data type.
 		// It uses GoMLX SimpleGo backend.
-		var converted *tensors.Tensor
 		backend, err := simplego.New("")
 		if err != nil {
 			return err
 		}
 		defer backend.Finalize()
-
-		err = exceptions.TryCatch[error](func() {
-			converted = MustExecOnce(backend, func(x *Node) *Node {
-				return ConvertDType(x, dtypes.FromGenericsType[T]())
-			}, t.OnDeviceClone(backend))
-			converted.ToLocal() // Detach from the temporarily created backend.
-		})
+		cloned, err := t.OnDeviceClone(backend, DefaultDeviceNum)
 		if err != nil {
 			return err
 		}
-		defer converted.FinalizeAll() // Help the GC.
-
+		converted, err = ExecOnce(backend, func(x *Node) *Node {
+			return ConvertDType(x, dtypes.FromGenericsType[T]())
+		}, cloned)
+		if err != nil {
+			return err
+		}
+		err = converted.ToLocal() // Detach from the temporarily created backend.
+		if err != nil {
+			return err
+		}
 		t = converted
+		defer func() {
+			// Notice this only gets used if there was another error, so we ignore this one, if one
+			// happens here.
+			_ = converted.FinalizeAll()
+		}()
 	}
 
 	// Copy GoMLX value (potentially converted) to the ONNX proto.
-	tensors.ConstFlatData(t, func(tensorData []T) {
+	err := tensors.ConstFlatData(t, func(tensorData []T) {
 		copy(onnxData, tensorData) // Copy data to ONNX proto.
 	})
+	if err != nil {
+		return err
+	}
+	if converted != nil {
+		// Return the error of the FinalizeAll -- it will be called again by the deferred fucntion again,
+		// but it is fine.
+		return converted.FinalizeAll()
+	}
 	return nil
 }
 

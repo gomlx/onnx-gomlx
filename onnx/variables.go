@@ -64,11 +64,14 @@ func (m *Model) ContextToONNX(ctx *context.Context) error {
 				" maybe you used a different scope when Model.VariablesToContext() was used ?",
 				tensorName, ctx.Scope())
 		}
-		err := TensorValueToONNX(gomlxVar.Value(), tensorProto)
+		gomlxValue, err := gomlxVar.Value()
+		if err != nil {
+			return errors.WithMessagef(err, "Model.ContextToONNX() getting value of variable %q", tensorName)
+		}
+		err = TensorValueToONNX(gomlxValue, tensorProto)
 		if err != nil {
 			return errors.WithMessagef(err, "Model.ContextToONNX() converting tensor %q", tensorName)
 		}
 	}
 	return nil
-
 }

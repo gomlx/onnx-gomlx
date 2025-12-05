@@ -9,8 +9,8 @@ require (
 	github.com/daulet/tokenizers v1.23.0
 	github.com/gomlx/exceptions v0.0.3
 	github.com/gomlx/go-huggingface v0.3.1
-	github.com/gomlx/gomlx v0.24.1
-	github.com/gomlx/gopjrt v0.9.1
+	github.com/gomlx/gomlx v0.25.0
+	github.com/gomlx/gopjrt v0.10.0
 	github.com/janpfeifer/go-benchmarks v0.1.1
 	github.com/janpfeifer/must v0.2.0
 	github.com/parquet-go/parquet-go v0.24.0
@@ -27,10 +27,9 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect
-	github.com/gomlx/stablehlo v0.1.0 // indirect
+	github.com/gomlx/stablehlo v0.2.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
-	github.com/kr/pretty v0.3.1 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/olekukonko/tablewriter v0.0.5 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
