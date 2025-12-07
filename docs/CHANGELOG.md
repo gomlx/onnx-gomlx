@@ -1,6 +1,9 @@
-# v0.3.3: (release candidate) Updated for GoMLX 0.25.0
+# v0.3.3: Basic Quantization support (@ajroetker); Updated for GoMLX 0.25.0
 
 - Updates for GoMLX 0.25.0
+- MatMulInteger quantization operation for integer matrix multiplication on quantized values. (by @ajroetker)
+  - Y = (A - a_zero_point) * (B - b_zero_point)
+- Clean ups (by @siherrmann)
 
 # v0.3.2: New ops (2025/11/18) 
 
