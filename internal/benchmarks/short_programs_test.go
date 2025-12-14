@@ -19,12 +19,12 @@ import (
 
 	"github.com/chewxy/math32"
 	"github.com/gomlx/exceptions"
+	"github.com/gomlx/go-xla/pkg/types/dtypes"
 	"github.com/gomlx/gomlx/backends"
 	"github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
-	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/janpfeifer/must"
 	ort "github.com/yalue/onnxruntime_go"

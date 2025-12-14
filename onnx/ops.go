@@ -6,13 +6,13 @@ import (
 	"slices"
 
 	"github.com/gomlx/exceptions"
+	"github.com/gomlx/go-xla/pkg/types/dtypes"
 	"github.com/gomlx/gomlx/backends"
 	. "github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	timage "github.com/gomlx/gomlx/pkg/core/tensors/images"
 	"github.com/gomlx/gomlx/pkg/ml/layers/lstm"
-	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
 )

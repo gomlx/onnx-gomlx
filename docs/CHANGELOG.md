@@ -1,3 +1,8 @@
+# v0.3.4: Updated for GoMLX 0.26.0
+
+- Using new github.com/gomlx/go-xla library.
+- GoMLX now auto-installs XLA PJRT plugins (it can be disabled)
+
 # v0.3.3: Basic Quantization support (@ajroetker); Updated for GoMLX 0.25.0
 
 - Updates for GoMLX 0.25.0
