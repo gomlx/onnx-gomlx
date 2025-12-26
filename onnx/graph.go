@@ -464,7 +464,7 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "GatherElements":
 		result = convertGatherElements(node, inputs)
 	case "Shape":
-		result = convertShape(node, inputs)
+		result = convertShape(m, node, inputs)
 	case "Concat":
 		result = convertConcat(node, inputs)
 	case "Softmax":
@@ -498,6 +498,12 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertReshape(m, convertedOutputs, node, inputs)
 	case "ReduceMean":
 		result = convertReduceMean(m, convertedOutputs, node, inputs)
+	case "ReduceMax":
+		result = convertReduceMax(m, convertedOutputs, node, inputs)
+	case "ReduceSum":
+		result = convertReduceSum(m, convertedOutputs, node, inputs)
+	case "ReduceProd":
+		result = convertReduceProd(m, convertedOutputs, node, inputs)
 	case "ConstantOfShape":
 		result = convertConstantOfShape(m, convertedOutputs, node, inputs)
 	case "Expand":
@@ -536,10 +542,19 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertTrilu(m, convertedOutputs, node, inputs)
 	case "ScatterND":
 		result = convertScatterND(m, convertedOutputs, node, inputs)
+	case "ScatterElements":
+		result = convertScatterElements(m, convertedOutputs, node, inputs)
+	case "TopK":
+		result = convertTopK(m, convertedOutputs, node, inputs)
+	case "NonZero":
+		result = convertNonZero(m, convertedOutputs, node, inputs)
 
 	// Control flow ops:
 	case "If":
 		result = convertIf(m, convertedOutputs, node, inputs)
+
+	case "Einsum":
+		result = convertEinsum(node, inputs)
 
 		// Ops not implemented:
 	default:
