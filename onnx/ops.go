@@ -140,7 +140,47 @@ func onnxBroadcastToCommonShape(operands []*Node) []*Node {
 
 // onnxDynamicBroadcast broadcasts operand to maxDims using dynamic shape extraction.
 // It extracts symbolic dimensions from the appropriate source operands.
+// If all dimensions are concrete, it uses static BroadcastInDim for efficiency.
 func onnxDynamicBroadcast(operand *Node, allOperands []*Node, maxDims []int, symbolSources []int) *Node {
+	// Calculate broadcast dimensions (axes in output that correspond to axes in input)
+	// For ONNX broadcasting, the input axes align with the rightmost axes of the output
+	outputRank := len(maxDims)
+	inputRank := operand.Rank()
+	broadcastDimensions := make([]int, inputRank)
+	for i := range inputRank {
+		broadcastDimensions[i] = outputRank - inputRank + i
+	}
+
+	// Check if all dimensions are concrete - if so, use static BroadcastInDim
+	allConcrete := true
+	for _, dim := range maxDims {
+		if dim < 0 {
+			allConcrete = false
+			break
+		}
+	}
+
+	if allConcrete {
+		// All dimensions are concrete - use static broadcast
+		// First, expand operand to add prefix dimensions (ONNX broadcasts align from the right)
+		prefixDims := outputRank - inputRank
+		if prefixDims > 0 {
+			// Add 1s for prefix dimensions, then broadcast
+			expandedDims := make([]int, outputRank)
+			for i := 0; i < prefixDims; i++ {
+				expandedDims[i] = 1
+			}
+			for i := 0; i < inputRank; i++ {
+				expandedDims[prefixDims+i] = operand.Shape().Dimensions[i]
+			}
+			operand = Reshape(operand, expandedDims...)
+		}
+		// Now broadcast to target shape
+		targetShape := shapes.Make(operand.DType(), maxDims...)
+		return BroadcastToShape(operand, targetShape)
+	}
+
+	// Some dimensions are symbolic - need to use dynamic broadcast
 	g := operand.Graph()
 	shapeParts := make([]*Node, len(maxDims))
 
@@ -186,15 +226,6 @@ func onnxDynamicBroadcast(operand *Node, allOperands []*Node, maxDims []int, sym
 
 	// Stack all shape parts into a single 1D tensor
 	shapeTensor := Concatenate(shapeParts, 0)
-
-	// Calculate broadcast dimensions (axes in output that correspond to axes in input)
-	// For ONNX broadcasting, the input axes align with the rightmost axes of the output
-	outputRank := len(maxDims)
-	inputRank := operand.Rank()
-	broadcastDimensions := make([]int, inputRank)
-	for i := range inputRank {
-		broadcastDimensions[i] = outputRank - inputRank + i
-	}
 
 	return DynamicBroadcastInDim(operand, shapeTensor, broadcastDimensions)
 }
@@ -771,15 +802,6 @@ func convertShape(m *Model, node *protos.NodeProto, inputs []*Node) *Node {
 		end = shape.Rank() + end
 	}
 
-	// CRITICAL: Check if the input is a parameter or variable.
-	// For intermediate tensors, we MUST use the dynamic path because the compile-time
-	// shape may have symbolic dimension bounds that don't match runtime values.
-	inputName := node.Input[0]
-	isParameter := m != nil && m.inputsNameSet.Has(inputName)
-	isVariable := m != nil && m.variableNameToValue[inputName] != nil
-	isIntermediate := !isParameter && !isVariable
-
-	// For dynamic shapes OR intermediate tensors, use GetDimensionSize to get runtime shape
 	// Check if any dimension is symbolic (negative)
 	hasSymbolic := false
 	for i := start; i < end; i++ {
@@ -789,10 +811,10 @@ func convertShape(m *Model, node *protos.NodeProto, inputs []*Node) *Node {
 		}
 	}
 
-	// Use dynamic path if:
-	// 1. Any dimension is symbolic (negative), OR
-	// 2. Input is an intermediate tensor (not a parameter or variable)
-	if hasSymbolic || isIntermediate {
+	// Use dynamic path only if any dimension is actually symbolic.
+	// If all dimensions are concrete, we can use the static path even for intermediate tensors,
+	// because by the time CallGraph is called, all tensor shapes are known.
+	if hasSymbolic {
 		// Build a shape tensor using GetDimensionSize for each dimension
 		dimNodes := make([]*Node, 0, end-start)
 		for i := start; i < end; i++ {
@@ -1474,6 +1496,7 @@ func convertReshape(m *Model, convertedOutputs map[string]*Node, node *protos.No
 		if shapeNode.DType() != dtypes.Int32 {
 			shapeNode = ConvertDType(shapeNode, dtypes.Int32)
 		}
+
 		// TODO: handle allowZero for dynamic reshape
 		return DynamicReshape(operand, shapeNode)
 	}

@@ -84,7 +84,22 @@ func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.
 			// If we couldn't determine it's materializable, fall through to recurse
 		} else if m.inputsNameSet.Has(node.Input[0]) {
 			// Check if the input to Shape is a Parameter with all concrete dimensions.
-			// Find the input shape
+			// First, check the actual converted node shape (which has concrete dims at CallGraph time)
+			if inputNode, found := convertedOutputs[node.Input[0]]; found {
+				actualShape := inputNode.Shape()
+				allConcrete := true
+				for _, dim := range actualShape.Dimensions {
+					if dim < 0 {
+						allConcrete = false
+						break
+					}
+				}
+				if allConcrete {
+					// Shape of a Parameter with concrete dimensions is materializable
+					return nonConstInputs, variables, contextNodes
+				}
+			}
+			// Fall back to model's declared shape (for cases where node isn't in convertedOutputs yet)
 			for idx, inputName := range m.InputsNames {
 				if inputName == node.Input[0] {
 					// Check if all dimensions are concrete (non-negative)
@@ -119,6 +134,10 @@ func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.
 					return nonConstInputs, variables, contextNodes
 				}
 			}
+		} else if _, found := convertedOutputs[node.Input[0]]; found {
+			// Input to Shape is an intermediate tensor.
+			// DON'T mark as materializable: ONNX models often extract shapes from one tensor
+			// and use them to reshape a different tensor. This relies on DynamicReshape.
 		}
 		// If we couldn't determine it's materializable, fall through to recurse
 	}
@@ -254,9 +273,10 @@ func (m *Model) materializeConstantExpression(nodeOutputName string, convertedOu
 	// 		nodeOutputName, nonConstInputs, strings.Join(varDesc, ", "), strings.Join(opsDesc, ", "))
 	// }
 
-	// Evaluate constant sub-expression in a newly created sub-
+	// Evaluate constant sub-expression in a newly created sub-graph.
 	backend := node.Graph().Backend()
 	var result *tensors.Tensor
+
 	err := exceptions.TryCatch[error](func() {
 		result = MustExecOnce(backend, func(g *Graph) *Node {
 			constConvertedOutputs := make(map[string]*Node)
@@ -267,6 +287,7 @@ func (m *Model) materializeConstantExpression(nodeOutputName string, convertedOu
 	if err != nil {
 		return nil, errors.WithMessage(err, "while evaluating constant sub-expression")
 	}
+
 	return result, nil
 }
 
@@ -338,13 +359,29 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 
 		// Check if input is a Parameter (model input)
 		if m.inputsNameSet.Has(onnxNode.Input[0]) {
-			// Check if input is a Parameter
-			// Find the input shape
-			for idx, inputName := range m.InputsNames {
-				if inputName == onnxNode.Input[0] {
-					dimensions = m.InputsShapes[idx].Dimensions
+			// First, check the actual converted node shape (which has concrete dims at CallGraph time)
+			if inputNode, found := originalConvertedOutput[onnxNode.Input[0]]; found {
+				actualShape := inputNode.Shape()
+				allConcrete := true
+				for _, dim := range actualShape.Dimensions {
+					if dim < 0 {
+						allConcrete = false
+						break
+					}
+				}
+				if allConcrete {
+					dimensions = actualShape.Dimensions
 					hasShape = true
-					break
+				}
+			}
+			// Fall back to model's declared shape
+			if !hasShape {
+				for idx, inputName := range m.InputsNames {
+					if inputName == onnxNode.Input[0] {
+						dimensions = m.InputsShapes[idx].Dimensions
+						hasShape = true
+						break
+					}
 				}
 			}
 		} else if varTensorProto, found := m.variableNameToValue[onnxNode.Input[0]]; found {
@@ -354,17 +391,21 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 				dimensions = varShape.Dimensions
 				hasShape = true
 			}
-		} else {
-			// Input is an intermediate tensor - cannot materialize as constant
-			// because the compile-time shape may have symbolic bounds that differ from runtime dimensions
-			exceptions.Panicf("cannot materialize Shape operation %q as constant: input %q is an intermediate tensor, not a model input or variable. Intermediate tensors may have symbolic dimensions with bounds that don't match runtime values.",
+		} else if _, found := originalConvertedOutput[onnxNode.Input[0]]; found {
+			// Input is an intermediate tensor from the original graph.
+			// DON'T materialize: ONNX models often extract shapes from one tensor and use them
+			// to reshape a different tensor. This only works with DynamicReshape which handles
+			// size mismatches. Materializing would force static Reshape which validates sizes.
+		}
+
+		if !hasShape {
+			// Input is an intermediate tensor that either:
+			// 1. Hasn't been converted yet, or
+			// 2. Has symbolic dimensions
+			exceptions.Panicf("cannot materialize Shape operation %q as constant: input %q is an intermediate tensor that hasn't been converted or has symbolic dims.",
 				onnxNode.GetName(), onnxNode.Input[0])
 		}
 
-		// DO NOT fall back to using shapes from intermediate converted nodes!
-		// Intermediate tensors may have different runtime shapes than their compile-time shapes
-		// (e.g., due to bucketing, padding, or data-dependent operations).
-		// If we couldn't materialize from parameter/variable, we must re-evaluate the Shape op.
 
 		if hasShape {
 			// Check if all dimensions are concrete
