@@ -4645,7 +4645,10 @@ func convertNonZero(m *Model, convertedOutputs map[string]*Node, node *protos.No
 
 	// Handle symbolic dimensions
 	if input.Shape().HasSymbolicDim() {
-		return convertNonZeroDynamic(input)
+		// Use shape provenance system to infer bounds instead of hardcoded values
+		bounds := m.inferNonZeroBounds(node, convertedOutputs)
+		maxNonZeros := bounds[1] // bounds is [rank, maxNonZeros]
+		return convertNonZeroDynamic(input, maxNonZeros)
 	}
 
 	// Maximum possible non-zeros is the total number of elements
@@ -4703,20 +4706,16 @@ func convertNonZero(m *Model, convertedOutputs map[string]*Node, node *protos.No
 
 // convertNonZeroDynamic handles NonZero with symbolic dimensions using bounded dynamic shapes.
 // For symbolic dimensions, we use a bounded approach:
-// 1. Use upper bounds for tensor creation (e.g., 2048 per dimension)
+// 1. Use upper bounds for tensor creation (inferred from shape provenance system)
 // 2. Compute actual sizes dynamically using GetDimensionSize
 // 3. Use DynamicReshape to handle the size differences
-func convertNonZeroDynamic(input *Node) *Node {
+//
+// maxTotalNonZeros is the upper bound for total number of non-zero elements,
+// inferred from the input shape by the shape provenance system.
+func convertNonZeroDynamic(input *Node, maxTotalNonZeros int) *Node {
 	g := input.Graph()
 	rank := input.Rank()
 	inputDims := input.Shape().Dimensions
-
-	// Use bounded upper sizes for symbolic dimensions
-	// NonZero's output size is [rank, total_elements] where total_elements is the product
-	// of all input dimensions. We need to bound this carefully.
-	// For a 2D boolean mask, we expect sparse results, so we use a reasonable max count.
-	// The GLiNER model seems to expect around 128 non-zero elements based on downstream operations.
-	const maxTotalNonZeros = 128 // Upper bound for total number of non-zero elements
 
 	// Compute concrete upper bound shape for input
 	// We'll just use maxTotalNonZeros as the flattened size, and create a "fake" multi-dim shape
