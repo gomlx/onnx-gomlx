@@ -1497,6 +1497,15 @@ func convertReshape(m *Model, convertedOutputs map[string]*Node, node *protos.No
 			shapeNode = ConvertDType(shapeNode, dtypes.Int32)
 		}
 
+		// Analyze shape provenance to determine if we need bounds
+		shapeInfo := m.analyzeShapeProvenance(node.Input[1], convertedOutputs)
+		if shapeInfo.IsDataDependent() && len(shapeInfo.Bounds) > 0 {
+			// Use DynamicReshapeWithBounds for data-dependent shapes
+			// This provides bounds to XLA for buffer allocation
+			return DynamicReshapeWithBounds(operand, shapeNode, shapeInfo.Bounds)
+		}
+
+		// Fallback to regular DynamicReshape
 		// TODO: handle allowZero for dynamic reshape
 		return DynamicReshape(operand, shapeNode)
 	}
