@@ -338,19 +338,6 @@ func TestONNXQuantizeLinear(t *testing.T) {
 	}, -1)
 }
 
-func TestONNX_DynamicQuantizeLinear(t *testing.T) {
-	graphtest.RunTestGraphFn(t, "DequantizeLinear-scalar", func(g *Graph) (inputs, outputs []*Node) {
-		x := Const(g, [][]float32{{-3, -0, 3}, {-6, 9, 12}})
-		inputs = []*Node{x}
-		y, yScale, yZeroPoint := onnxDynamicQuantizeLinear(x)
-		outputs = []*Node{y, yScale, yZeroPoint}
-		return
-	}, []any{
-		[][]uint8{{43, 85, 127}, {0, 212, 255}},
-		float32(0.07058824),
-		uint8(85),
-	}, 1e-3)
-}
 
 func TestONNX_MatMulInteger(t *testing.T) {
 	// Test basic MatMulInteger without zero points

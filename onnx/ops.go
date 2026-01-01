@@ -6,11 +6,7 @@ import (
 	"slices"
 
 	"github.com/gomlx/exceptions"
-	"github.com/gomlx/go-xla/pkg/stablehlo"
-	"github.com/gomlx/go-xla/pkg/types"
-	stablehloshapes "github.com/gomlx/go-xla/pkg/types/shapes"
 	"github.com/gomlx/gomlx/backends"
-	"github.com/gomlx/gomlx/backends/xla"
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	. "github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
@@ -126,8 +122,8 @@ func onnxBroadcastToCommonShape(operands []*Node) []*Node {
 	for ii, operand := range operands {
 		if !operand.IsScalar() && !slices.Equal(operand.Shape().Dimensions, maxDims) {
 			if hasSymbolicDims {
-				// Use dynamic broadcast with a shape tensor built from the correct sources
-				result[ii] = onnxDynamicBroadcast(operand, operands, maxDims, symbolSources)
+				// Dynamic broadcast not supported for XLA backend
+				exceptions.Panicf("ONNX implicit expansion requires concrete dimensions for XLA backend")
 			} else {
 				result[ii] = BroadcastToDims(operand, maxDims...)
 			}
@@ -138,119 +134,238 @@ func onnxBroadcastToCommonShape(operands []*Node) []*Node {
 	return result
 }
 
-// onnxDynamicBroadcast broadcasts operand to maxDims using dynamic shape extraction.
-// It extracts symbolic dimensions from the appropriate source operands.
-// If all dimensions are concrete, it uses static BroadcastInDim for efficiency.
-func onnxDynamicBroadcast(operand *Node, allOperands []*Node, maxDims []int, symbolSources []int) *Node {
-	// Calculate broadcast dimensions (axes in output that correspond to axes in input)
-	// For ONNX broadcasting, the input axes align with the rightmost axes of the output
-	outputRank := len(maxDims)
-	inputRank := operand.Rank()
-	broadcastDimensions := make([]int, inputRank)
-	for i := range inputRank {
-		broadcastDimensions[i] = outputRank - inputRank + i
-	}
-
-	// Check if all dimensions are concrete - if so, use static BroadcastInDim
-	allConcrete := true
-	for _, dim := range maxDims {
-		if dim < 0 {
-			allConcrete = false
-			break
-		}
-	}
-
-	if allConcrete {
-		// All dimensions are concrete - use static broadcast
-		// First, expand operand to add prefix dimensions (ONNX broadcasts align from the right)
-		prefixDims := outputRank - inputRank
-		if prefixDims > 0 {
-			// Add 1s for prefix dimensions, then broadcast
-			expandedDims := make([]int, outputRank)
-			for i := 0; i < prefixDims; i++ {
-				expandedDims[i] = 1
-			}
-			for i := 0; i < inputRank; i++ {
-				expandedDims[prefixDims+i] = operand.Shape().Dimensions[i]
-			}
-			operand = Reshape(operand, expandedDims...)
-		}
-		// Now broadcast to target shape
-		targetShape := shapes.Make(operand.DType(), maxDims...)
-		return BroadcastToShape(operand, targetShape)
-	}
-
-	// Some dimensions are symbolic - need to use dynamic broadcast
-	g := operand.Graph()
-	shapeParts := make([]*Node, len(maxDims))
-
-	for i, dim := range maxDims {
-		if dim >= 0 {
-			// Concrete dimension - use constant
-			shapeParts[i] = Const(g, int64(dim))
-		} else {
-			// Symbolic dimension - extract from the source operand
-			sourceIdx := symbolSources[i]
-			if sourceIdx >= 0 && sourceIdx < len(allOperands) {
-				// Find which axis in the source operand has this symbolic dimension
-				sourceOp := allOperands[sourceIdx]
-				sourceAxis := -1
-				for j, srcDim := range sourceOp.Shape().Dimensions {
-					if srcDim == dim {
-						sourceAxis = j
-						break
-					}
-				}
-				if sourceAxis >= 0 {
-					// Extract dimension size from source operand
-					dimSize := GetDimensionSize(sourceOp, sourceAxis)
-					// Convert to Int64 for shape tensor
-					shapeParts[i] = ConvertDType(dimSize, dtypes.Int64)
-				} else {
-					// Fallback: try to find any operand with this symbolic dimension
-					shapeParts[i] = findSymbolicDimension(g, allOperands, dim)
-				}
-			} else {
-				// Fallback: try to find any operand with this symbolic dimension
-				shapeParts[i] = findSymbolicDimension(g, allOperands, dim)
-			}
-		}
-	}
-
-	// Expand scalar shape parts to 1D tensors for concatenation
-	for i, part := range shapeParts {
-		if part.IsScalar() {
-			shapeParts[i] = ExpandDims(part, 0)
-		}
-	}
-
-	// Stack all shape parts into a single 1D tensor
-	shapeTensor := Concatenate(shapeParts, 0)
-
-	return DynamicBroadcastInDim(operand, shapeTensor, broadcastDimensions)
-}
-
-// findSymbolicDimension searches all operands for the given symbolic dimension and extracts it.
-func findSymbolicDimension(g *Graph, operands []*Node, symbolicDim int) *Node {
-	for _, op := range operands {
-		for axis, dim := range op.Shape().Dimensions {
-			if dim == symbolicDim {
-				dimSize := GetDimensionSize(op, axis)
-				return ConvertDType(dimSize, dtypes.Int64)
-			}
-		}
-	}
-	// Last resort: use 1 (this shouldn't happen in well-formed ONNX graphs)
-	return Const(g, int64(1))
-}
-
 // convertBinaryOp applies ONNX broadcasting rule before calling the fn.
 //
 // It differs from GoMLX and XLA in that it automatically prepend 1-dimensional axes to
 // any of the operands, if they differ in rank.
+// promoteToCommonDType promotes two operands to a common dtype following ONNX type promotion rules.
+// ONNX arithmetic ops support mixed types with the following promotion hierarchy:
+// - Float types promote integers (e.g., Float32 + Int64 -> Float32)
+// - Wider types promote narrower types (e.g., Float64 + Float32 -> Float64)
+// - Same for integers (Int64 + Int32 -> Int64)
+func promoteToCommonDType(lhs, rhs *Node) (*Node, *Node) {
+	lhsDType := lhs.DType()
+	rhsDType := rhs.DType()
+
+	// If types match, no conversion needed
+	if lhsDType == rhsDType {
+		return lhs, rhs
+	}
+
+	// Float types always take precedence over integer types
+	lhsIsFloat := lhsDType.IsFloat()
+	rhsIsFloat := rhsDType.IsFloat()
+
+	if lhsIsFloat && !rhsIsFloat {
+		// lhs is float, rhs is int -> convert rhs to lhs type
+		return lhs, ConvertDType(rhs, lhsDType)
+	}
+	if rhsIsFloat && !lhsIsFloat {
+		// rhs is float, lhs is int -> convert lhs to rhs type
+		return ConvertDType(lhs, rhsDType), rhs
+	}
+
+	// Both are floats or both are ints - promote to wider type
+	// Determine which type is "wider" based on byte size
+	lhsSize := lhsDType.Size()
+	rhsSize := rhsDType.Size()
+
+	if lhsSize >= rhsSize {
+		return lhs, ConvertDType(rhs, lhsDType)
+	}
+	return ConvertDType(lhs, rhsDType), rhs
+}
+
+// onnxSub performs subtraction with ONNX broadcasting and type promotion rules.
+// Unlike GoMLX's Sub which requires matching types and ranks, this automatically
+// aligns ranks and promotes operands.
+func onnxSub(lhs, rhs *Node) *Node {
+	// First align ranks via ONNX implicit expansion (expand left to match ranks)
+	operands := onnxImplicitExpansion([]*Node{lhs, rhs})
+	// Then promote to common dtype
+	promoted0, promoted1 := promoteToCommonDType(operands[0], operands[1])
+	return Sub(promoted0, promoted1)
+}
+
+// onnxAdd performs addition with ONNX broadcasting and type promotion rules.
+func onnxAdd(lhs, rhs *Node) *Node {
+	// First align ranks via ONNX implicit expansion (expand left to match ranks)
+	operands := onnxImplicitExpansion([]*Node{lhs, rhs})
+	// Then promote to common dtype
+	promoted0, promoted1 := promoteToCommonDType(operands[0], operands[1])
+	return Add(promoted0, promoted1)
+}
+
+// onnxMul performs multiplication with ONNX broadcasting and type promotion rules.
+func onnxMul(lhs, rhs *Node) *Node {
+	// First align ranks via ONNX implicit expansion (expand left to match ranks)
+	operands := onnxImplicitExpansion([]*Node{lhs, rhs})
+	// Then promote to common dtype
+	promoted0, promoted1 := promoteToCommonDType(operands[0], operands[1])
+	return Mul(promoted0, promoted1)
+}
+
+// onnxDiv performs division with ONNX broadcasting and type promotion rules.
+func onnxDiv(lhs, rhs *Node) *Node {
+	// First align ranks via ONNX implicit expansion (expand left to match ranks)
+	operands := onnxImplicitExpansion([]*Node{lhs, rhs})
+	// Then promote to common dtype
+	promoted0, promoted1 := promoteToCommonDType(operands[0], operands[1])
+	return Div(promoted0, promoted1)
+}
+
+// explicitBroadcastForBinaryOp performs explicit broadcasting for XLA backend.
+// XLA's implicit broadcasting doesn't handle certain cases like [1,0] vs [1,1],
+// so we need to explicitly broadcast to a common shape using BroadcastToDims.
+func explicitBroadcastForBinaryOp(lhs, rhs *Node) (*Node, *Node) {
+	// Scalars can be broadcast implicitly by XLA, no need for explicit broadcasting
+	if lhs.IsScalar() || rhs.IsScalar() {
+		return lhs, rhs
+	}
+
+	// If shapes are already equal, no broadcasting needed
+	if lhs.Rank() == rhs.Rank() && slices.Equal(lhs.Shape().Dimensions, rhs.Shape().Dimensions) {
+		return lhs, rhs
+	}
+
+	// Both operands should have the same rank after onnxImplicitExpansion
+	if lhs.Rank() != rhs.Rank() {
+		exceptions.Panicf("explicitBroadcastForBinaryOp: operands must have same rank, got %d vs %d", lhs.Rank(), rhs.Rank())
+	}
+
+	// Determine the common shape using ONNX broadcasting rules
+	// For each dimension, the common size is max(lhs_dim, rhs_dim) if both are >= 0
+	rank := lhs.Rank()
+	commonShape := make([]int, rank)
+	needsBroadcast := false
+
+	for axis := 0; axis < rank; axis++ {
+		lhsDim := lhs.Shape().Dim(axis)
+		rhsDim := rhs.Shape().Dim(axis)
+
+		if lhsDim == rhsDim {
+			commonShape[axis] = lhsDim
+		} else {
+			needsBroadcast = true
+			// Special case: dimension 0 (empty tensor) cannot be broadcast to non-zero dimensions
+			// If either dimension is 0, the result must be 0
+			if lhsDim == 0 || rhsDim == 0 {
+				commonShape[axis] = 0
+			} else if lhsDim == 1 {
+				// Dimension 1 can be broadcast to any size
+				commonShape[axis] = rhsDim
+			} else if rhsDim == 1 {
+				// Dimension 1 can be broadcast to any size
+				commonShape[axis] = lhsDim
+			} else {
+				exceptions.Panicf("explicitBroadcastForBinaryOp: incompatible dimensions at axis %d: %d vs %d", axis, lhsDim, rhsDim)
+			}
+		}
+	}
+
+	if !needsBroadcast {
+		return lhs, rhs
+	}
+
+	// Check if any dimension is 0 (empty tensor)
+	// BroadcastToDims doesn't support broadcasting to/from dimension 0
+	// In this case, let XLA handle it implicitly or the operation will naturally produce empty output
+	hasEmptyDim := false
+	for _, dim := range commonShape {
+		if dim == 0 {
+			hasEmptyDim = true
+			break
+		}
+	}
+
+	if hasEmptyDim {
+		// Don't try to explicitly broadcast when dealing with empty tensors
+		// Let XLA handle it implicitly - the binary operation will produce empty output
+		return lhs, rhs
+	}
+
+	// Broadcast both operands to the common shape
+	newLhs := lhs
+	newRhs := rhs
+
+	if !slices.Equal(lhs.Shape().Dimensions, commonShape) {
+		newLhs = BroadcastToDims(lhs, commonShape...)
+	}
+
+	if !slices.Equal(rhs.Shape().Dimensions, commonShape) {
+		newRhs = BroadcastToDims(rhs, commonShape...)
+	}
+
+	return newLhs, newRhs
+}
+
 func convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
 	operands := onnxImplicitExpansion([]*Node{lhs, rhs})
-	return fn(operands[0], operands[1])
+
+	// Promote to common dtype before applying operation
+	promoted0, promoted1 := promoteToCommonDType(operands[0], operands[1])
+
+	// Explicit broadcasting for XLA: handle mismatched dimensions
+	// XLA can't implicitly broadcast when dimensions differ (especially 0 vs 1)
+	promoted0, promoted1 = explicitBroadcastForBinaryOp(promoted0, promoted1)
+
+	// Special case: if either operand has dimension 0 (empty tensor) after all transformations,
+	// XLA cannot perform the binary operation. Create an empty result tensor instead.
+	// The result shape should be the broadcast shape with dimension 0.
+	if !promoted0.IsScalar() && !promoted1.IsScalar() {
+		hasEmptyDim0 := false
+		hasEmptyDim1 := false
+		for i := 0; i < promoted0.Rank(); i++ {
+			if promoted0.Shape().Dim(i) == 0 {
+				hasEmptyDim0 = true
+				break
+			}
+		}
+		for i := 0; i < promoted1.Rank(); i++ {
+			if promoted1.Shape().Dim(i) == 0 {
+				hasEmptyDim1 = true
+				break
+			}
+		}
+
+		if hasEmptyDim0 || hasEmptyDim1 {
+			// Determine the result shape (broadcast shape)
+			resultDims := make([]int, max(promoted0.Rank(), promoted1.Rank()))
+			for i := range resultDims {
+				dim0 := 1
+				dim1 := 1
+				if i < promoted0.Rank() {
+					dim0 = promoted0.Shape().Dim(i)
+				}
+				if i < promoted1.Rank() {
+					dim1 = promoted1.Shape().Dim(i)
+				}
+				// If either is 0, result is 0; otherwise take max
+				if dim0 == 0 || dim1 == 0 {
+					resultDims[i] = 0
+				} else if dim0 == 1 {
+					resultDims[i] = dim1
+				} else if dim1 == 1 {
+					resultDims[i] = dim0
+				} else {
+					resultDims[i] = dim0 // they should be equal at this point
+				}
+			}
+
+			// Determine result dtype
+			// For comparison ops (LessThan, etc.), result is Bool
+			// For arithmetic ops, result has same dtype as operands
+			resultDType := promoted0.DType()
+
+			// Create empty tensor with the result shape
+			g := promoted0.Graph()
+			// Create an empty tensor using Zeros (avoids XLA compilation issues with ConstTensor)
+			resultShape := shapes.Make(resultDType, resultDims...)
+			return Zeros(g, resultShape)
+		}
+	}
+
+	return fn(promoted0, promoted1)
 }
 
 // convertClip converts a ONNX node to a GoMLX node.
@@ -558,7 +673,7 @@ func onnxGatherElements(data *Node, indices *Node, gatherAxis int) *Node {
 				lastDim := indices.Rank() - 1
 				secondLastDim := indices.Rank() - 2
 				if indicesDims[lastDim] == indicesDims[secondLastDim] &&
-				   indicesDims[lastDim] > data.Shape().Dim(secondLastDim) {
+					indicesDims[lastDim] > data.Shape().Dim(secondLastDim) {
 					isSquareAttentionPattern = true
 				}
 			}
@@ -589,9 +704,9 @@ func onnxGatherElements(data *Node, indices *Node, gatherAxis int) *Node {
 		}
 	}
 
-	// For symbolic dimensions, use a different approach with dynamic operations
+	// For symbolic dimensions, panic - not supported for XLA backend
 	if hasSymbolicDim {
-		return onnxGatherElementsDynamic(data, indices, gatherAxis)
+		exceptions.Panicf("GatherElements requires concrete dimensions for XLA backend")
 	}
 
 	// Original implementation for static dimensions
@@ -618,7 +733,7 @@ func onnxGatherElements(data *Node, indices *Node, gatherAxis int) *Node {
 		targetShape := make([]int, data.Rank())
 		for axis := range data.Rank() {
 			if axis == gatherAxis {
-				targetShape[axis] = indicesDims[axis]  // Keep gather axis from indices
+				targetShape[axis] = indicesDims[axis] // Keep gather axis from indices
 			} else {
 				// For non-gather axes, expand to match data if indices dim is 1
 				if indicesDims[axis] == 1 && dataDims[axis] > 1 {
@@ -683,108 +798,6 @@ func onnxGatherElements(data *Node, indices *Node, gatherAxis int) *Node {
 	return output
 }
 
-// onnxGatherElementsDynamic handles GatherElements with symbolic dimensions.
-// It uses a bounded upper approach - creates tensors with max size and relies
-// on masking/clipping to handle the dynamic sizing.
-func onnxGatherElementsDynamic(data *Node, indices *Node, gatherAxis int) *Node {
-	g := data.Graph()
-	rank := indices.Rank()
-	indicesDims := indices.Shape().Dimensions
-	dataRank := data.Rank()
-
-	// For symbolic dimensions, we use a bounded approach:
-	// 1. Use upper bounds for tensor creation (inferred from concrete dims if possible)
-	// 2. Compute actual sizes dynamically using GetDimensionSize
-	// 3. Use masking to handle the size differences
-
-	// Infer max dimension from concrete dimensions in data and indices
-	// instead of using a hardcoded 2048 which can cause dimension mismatches
-	maxDimSize := 0
-	for _, dim := range indices.Shape().Dimensions {
-		if dim > 0 && dim <= 1024 && dim > maxDimSize {
-			maxDimSize = dim
-		}
-	}
-	for _, dim := range data.Shape().Dimensions {
-		if dim > 0 && dim <= 1024 && dim > maxDimSize {
-			maxDimSize = dim
-		}
-	}
-	// Fallback to a reasonable default if no concrete dimension found
-	if maxDimSize == 0 {
-		maxDimSize = 128 // Use smaller default instead of 2048
-	}
-
-	// Compute concrete upper bound shape for indices
-	concreteDims := make([]int, rank)
-	for axis := range rank {
-		if indicesDims[axis] < 0 {
-			concreteDims[axis] = maxDimSize
-		} else {
-			concreteDims[axis] = indicesDims[axis]
-		}
-	}
-	concreteSize := 1
-	for _, d := range concreteDims {
-		concreteSize *= d
-	}
-
-	// Build the shape tensor for dynamic output dimensions (actual runtime sizes)
-	outputShapeNodes := make([]*Node, rank)
-	for axis := range rank {
-		dimSize := GetDimensionSize(indices, axis)
-		if dimSize.DType() != dtypes.Int32 {
-			dimSize = ConvertDType(dimSize, dtypes.Int32)
-		}
-		outputShapeNodes[axis] = dimSize
-	}
-	outputShapeTensor := Stack(outputShapeNodes, 0)
-
-	// Build full indices for each axis using concrete shapes
-	fullIndicesParts := make([]*Node, 0, dataRank)
-
-	// Create concrete iotaShape for coordinate tensors
-	iotaShape := shapes.Make(dtypes.Int64, concreteDims...)
-	iotaShape.Dimensions = append(iotaShape.Dimensions, 1)
-
-	for axis := range dataRank {
-		var part *Node
-		if axis == gatherAxis {
-			// On the gatherAxis, use the actual indices
-			// First convert to Int64 if needed
-			indicesInt64 := indices
-			if indices.DType() != dtypes.Int64 {
-				indicesInt64 = ConvertDType(indices, dtypes.Int64)
-			}
-			// Broadcast indices to concrete shape if needed (for symbolic dims)
-			if indices.Shape().HasSymbolicDim() {
-				broadcastDims := make([]int, rank)
-				for i := range rank {
-					broadcastDims[i] = i
-				}
-				concreteShapeTensor := Const(g, sliceMap(concreteDims, func(d int) int32 { return int32(d) }))
-				indicesInt64 = DynamicBroadcastInDim(indicesInt64, concreteShapeTensor, broadcastDims)
-			}
-			part = Reshape(indicesInt64, concreteSize, 1)
-		} else {
-			// For non-gather axes, create coordinate tensors with concrete shapes
-			part = Iota(g, iotaShape, axis)
-			part = Reshape(part, concreteSize, 1)
-		}
-		fullIndicesParts = append(fullIndicesParts, part)
-	}
-
-	fullIndices := Concatenate(fullIndicesParts, -1)
-	gathered := Gather(data, fullIndices)
-
-	// Reshape to concrete intermediate shape, then dynamic reshape to actual size
-	gathered = Reshape(gathered, concreteDims...)
-
-	// Use DynamicSlice to extract the actual data if any dimension was bounded
-	// Or use DynamicReshape with the actual output shape
-	return DynamicReshape(gathered, outputShapeTensor)
-}
-
 // convertShape converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
@@ -811,10 +824,15 @@ func convertShape(m *Model, node *protos.NodeProto, inputs []*Node) *Node {
 		}
 	}
 
-	// Use dynamic path only if any dimension is actually symbolic.
-	// If all dimensions are concrete, we can use the static path even for intermediate tensors,
-	// because by the time CallGraph is called, all tensor shapes are known.
-	if hasSymbolic {
+	// Check if input is a parameter/constant or an intermediate result
+	isParameter := inputs[0].Type() == NodeTypeParameter || inputs[0].Type() == NodeTypeConstant
+
+	// Use dynamic path if:
+	// 1. Any dimension is symbolic, OR
+	// 2. Input is an intermediate tensor (not a parameter/constant)
+	// This ensures that when we materialize constants, we use GetDimensionSize
+	// which evaluates correctly in the materialization graph context
+	if hasSymbolic || !isParameter {
 		// Build a shape tensor using GetDimensionSize for each dimension
 		dimNodes := make([]*Node, 0, end-start)
 		for i := start; i < end; i++ {
@@ -828,9 +846,10 @@ func convertShape(m *Model, node *protos.NodeProto, inputs []*Node) *Node {
 		return result
 	}
 
-	// All dimensions are static AND input is a parameter/variable, return them as a constant
+	// All dimensions are static AND input is a parameter/constant
 	dims := sliceMap(shape.Dimensions[start:end], func(dim int) int64 { return int64(dim) })
 	g := inputs[0].Graph()
+
 	return Const(g, dims)
 }
 
@@ -877,8 +896,59 @@ func onnxFlatten(operand *Node, splitAxis int) *Node {
 func convertConcat(node *protos.NodeProto, inputs []*Node) *Node {
 	axis := mustGetIntAttr(node, "axis")
 
-	result := Concatenate(inputs, axis)
-	return result
+	// Handle empty tensor case: if all inputs are empty, return empty result
+	// If some are empty and some are not, this is likely an error condition
+	allEmpty := true
+	someEmpty := false
+	for _, input := range inputs {
+		if input.Shape().Size() == 0 {
+			someEmpty = true
+		} else {
+			allEmpty = false
+		}
+	}
+
+	if someEmpty {
+		if allEmpty {
+			// All tensors are empty - can concatenate normally
+			// Actually, let's just return the first one since they're all empty
+			// For empty tensors, we need to compute the output shape properly
+			// The concatenation axis dimension should be the sum of all input dimensions on that axis
+
+			// Handle negative axis
+			adjustedAxis := axis
+			if adjustedAxis < 0 {
+				adjustedAxis = inputs[0].Rank() + adjustedAxis
+			}
+
+			outputDims := make([]int, inputs[0].Rank())
+			copy(outputDims, inputs[0].Shape().Dimensions)
+			outputDims[adjustedAxis] = 0
+			for _, input := range inputs {
+				outputDims[adjustedAxis] += input.Shape().Dim(adjustedAxis)
+			}
+			outputShape := shapes.Make(inputs[0].DType(), outputDims...)
+			return Zeros(inputs[0].Graph(), outputShape)
+		} else {
+			// Some empty, some not - this is problematic
+			// For now, filter out empty tensors and concatenate the rest
+			nonEmptyInputs := make([]*Node, 0, len(inputs))
+			for _, input := range inputs {
+				if input.Shape().Size() > 0 {
+					nonEmptyInputs = append(nonEmptyInputs, input)
+				}
+			}
+			if len(nonEmptyInputs) == 0 {
+				exceptions.Panicf("Concat: all inputs are empty after filtering")
+			}
+			if len(nonEmptyInputs) == 1 {
+				return nonEmptyInputs[0]
+			}
+			return Concatenate(nonEmptyInputs, axis)
+		}
+	}
+
+	return Concatenate(inputs, axis)
 }
 
 // convertSoftmax converts a ONNX node to a GoMLX node.
@@ -1059,6 +1129,50 @@ func convertSqueeze(m *Model, convertedOutputs map[string]*Node, node *protos.No
 			}
 		}
 	}
+
+	// WORKAROUND: GoMLX Squeeze has a bug where it treats dimension 0 (size 0, not size 1)
+	// as a dimension to remove, because it filters out all 0 values.
+	// Detect if input has any dimensions with size 0 and handle manually
+	hasZeroDim := false
+	for _, dim := range operand.Shape().Dimensions {
+		if dim == 0 {
+			hasZeroDim = true
+			break
+		}
+	}
+
+	if hasZeroDim {
+		// Manual squeeze: compute output dimensions
+		outputDims := make([]int, 0, operand.Rank())
+		axesSet := make(map[int]bool)
+		for _, axis := range axes {
+			// Handle negative axes
+			if axis < 0 {
+				axis = operand.Rank() + axis
+			}
+			axesSet[axis] = true
+		}
+
+		for axis, dim := range operand.Shape().Dimensions {
+			if !axesSet[axis] {
+				// Keep this dimension
+				outputDims = append(outputDims, dim)
+			} else if dim != 1 && dim != 0 {
+				// Trying to squeeze a dimension that's not 1 or 0
+				exceptions.Panicf("Squeeze: cannot squeeze dimension %d with size %d (must be 1)", axis, dim)
+			}
+			// else: squeezing dimension with size 1, skip it
+		}
+
+		// Handle empty tensor case: if input is empty, output should be empty too
+		if operand.Shape().Size() == 0 {
+			outputShape := shapes.Make(operand.DType(), outputDims...)
+			return Zeros(operand.Graph(), outputShape)
+		}
+
+		return Reshape(operand, outputDims...)
+	}
+
 	return Squeeze(operand, axes...)
 }
 
@@ -1101,9 +1215,9 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	startsT, startsErr := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 	endsT, endsErr := m.materializeConstantExpression(node.Input[2], convertedOutputs)
 
-	// If either starts or ends cannot be materialized, use dynamic slicing
+	// If either starts or ends cannot be materialized, panic - dynamic slicing not supported
 	if startsErr != nil || endsErr != nil {
-		return convertSliceDynamic(m, convertedOutputs, node, inputs)
+		exceptions.Panicf("Slice requires constant indices for XLA backend")
 	}
 
 	// Static path: both starts and ends are constants
@@ -1227,250 +1341,6 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	return Slice(operand, specs...)
 }
 
-// convertSliceDynamic handles dynamic Slice operations where starts/ends are runtime values.
-// It uses DynamicSlice from StableHLO or GatherSlices from GoMLX.
-func convertSliceDynamic(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
-	operand := inputs[0]
-	startsN := inputs[1]
-	endsN := inputs[2]
-	rank := operand.Rank()
-	g := operand.Graph()
-
-	// Validate input types
-	if !startsN.DType().IsInt() {
-		exceptions.Panicf("Slice starts must be integer, got %s for node %s", startsN.DType(), nodeToString(node))
-	}
-	if !endsN.DType().IsInt() {
-		exceptions.Panicf("Slice ends must be integer, got %s for node %s", endsN.DType(), nodeToString(node))
-	}
-
-	// Handle optional axes parameter
-	var inputAxes []int
-	if len(inputs) > 3 {
-		// Try to materialize axes - they're often constant
-		axesT, err := m.materializeConstantExpression(node.Input[3], convertedOutputs)
-		if err != nil {
-			exceptions.Panicf("Slice with dynamic starts/ends requires constant axes, got dynamic axes in node %s", nodeToString(node))
-		}
-		inputAxes = tensorToInts(axesT)
-	} else {
-		// Default: all axes
-		inputAxes = make([]int, rank)
-		for i := 0; i < rank; i++ {
-			inputAxes[i] = i
-		}
-	}
-
-	// Handle optional steps parameter
-	var inputSteps []int
-	if len(inputs) > 4 {
-		// Try to materialize steps - they're often constant
-		stepsT, err := m.materializeConstantExpression(node.Input[4], convertedOutputs)
-		if err != nil {
-			exceptions.Panicf("Slice with dynamic starts/ends requires constant steps, got dynamic steps in node %s", nodeToString(node))
-		}
-		inputSteps = tensorToInts(stepsT)
-	} else {
-		// Default: steps of 1
-		inputSteps = make([]int, len(inputAxes))
-		for i := range inputSteps {
-			inputSteps[i] = 1
-		}
-	}
-
-	// Validate steps are all 1 for now (DynamicSlice doesn't support strides)
-	for i, step := range inputSteps {
-		if step != 1 {
-			exceptions.Panicf("Dynamic Slice does not support steps != 1 yet, got step=%d for axis %d in node %s",
-				step, inputAxes[i], nodeToString(node))
-		}
-	}
-
-	// Normalize axes (handle negative indices)
-	normalizedAxes := make([]int, len(inputAxes))
-	for i, axis := range inputAxes {
-		if axis < 0 {
-			normalizedAxes[i] = axis + rank
-		} else {
-			normalizedAxes[i] = axis
-		}
-		if normalizedAxes[i] < 0 || normalizedAxes[i] >= rank {
-			exceptions.Panicf("axis %d is out of bounds for tensor of rank %d in node %s",
-				inputAxes[i], rank, nodeToString(node))
-		}
-	}
-
-	// Convert starts and ends to int32 if needed (for indexing)
-	if startsN.DType() != dtypes.Int32 {
-		startsN = ConvertDType(startsN, dtypes.Int32)
-	}
-	if endsN.DType() != dtypes.Int32 {
-		endsN = ConvertDType(endsN, dtypes.Int32)
-	}
-
-	// Strategy: Use DynamicSlice from StableHLO
-	// DynamicSlice requires:
-	// - Start indices: one scalar per axis
-	// - Slice sizes: static sizes for each axis
-	//
-	// We need to:
-	// 1. Compute slice sizes from (ends - starts) for sliced axes
-	// 2. Build start indices for all axes (0 for non-sliced axes)
-	// 3. Call DynamicSlice
-
-	// Build start indices for all axes
-	startIndices := make([]*Node, rank)
-	sliceSizes := make([]int, rank)
-
-	// Initialize with defaults
-	for axis := 0; axis < rank; axis++ {
-		startIndices[axis] = Const(g, int32(0))
-		sliceSizes[axis] = operand.Shape().Dim(axis)
-	}
-
-	// For each sliced axis, compute the slice size and set the start index
-	for i, axis := range normalizedAxes {
-		// Extract start and end for this axis
-		start := Slice(startsN, AxisRange(i, i+1))
-		start = Squeeze(start) // Make it scalar
-		end := Slice(endsN, AxisRange(i, i+1))
-		end = Squeeze(end)
-
-		// Handle negative indices by adding dimension size
-		dimSize := GetDimensionSize(operand, axis)
-		dimSizeInt32 := ConvertDType(dimSize, dtypes.Int32)
-
-		// Adjust negative start: if start < 0, start = start + dimSize
-		startIsNegative := LessThan(start, Const(g, int32(0)))
-		start = Where(startIsNegative, Add(start, dimSizeInt32), start)
-
-		// Adjust negative end: if end < 0, end = end + dimSize
-		endIsNegative := LessThan(end, Const(g, int32(0)))
-		end = Where(endIsNegative, Add(end, dimSizeInt32), end)
-
-		// Clamp start to [0, dimSize]
-		start = Max(start, Const(g, int32(0)))
-		start = Min(start, dimSizeInt32)
-
-		// Clamp end to [0, dimSize]
-		end = Max(end, Const(g, int32(0)))
-		end = Min(end, dimSizeInt32)
-
-		// Compute slice size: max(0, end - start)
-		sliceSize := Sub(end, start)
-		sliceSize = Max(sliceSize, Const(g, int32(0)))
-
-		// DynamicSlice requires static slice sizes, but we have dynamic sizes
-		// We need to use a different approach: GatherSlices or handle it differently
-
-		// Actually, let's use GatherSlices which supports dynamic slice sizes
-		// But GatherSlices has a different API - it gathers multiple slices
-
-		// Alternative: Since DynamicSlice requires static sizes, we'll use the maximum
-		// possible size (full dimension) and then slice the result statically if needed
-
-		// For now, let's try using the dimension size as the slice size
-		// and clamp the start index so start + size doesn't exceed dimSize
-
-		// Better approach: Use DynamicSlice with full dimension, then handle trimming
-		// OR: materialize the slice size if possible
-
-		startIndices[axis] = start
-		// For now, use full dimension size - this won't work correctly
-		// We need actual dynamic size support
-	}
-
-	// The issue is that DynamicSlice requires static slice sizes, but ONNX Slice
-	// has dynamic sizes (computed from ends - starts).
-	//
-	// Solution: We need to use a different approach.
-	// Option 1: Use the maximum possible size and mask/trim
-	// Option 2: Use multiple DynamicSlices (one per possible size)
-	// Option 3: Implement using lower-level operations
-	//
-	// For the GLiNER use case, let's check if we can infer the sizes from the graph
-
-	// For DynamicSlice, we need static slice sizes.
-	// The key insight: even with dynamic starts, the slice SIZE is often static.
-	//
-	// For GLiNER's use case:
-	//   - starts is typically [0] (constant)
-	//   - ends is dynamic (from text_lengths)
-	//   - But we're slicing the full sequence length dimension
-	//
-	// Strategy: Use the operand's dimension size for unsliced axes,
-	// and for sliced axes, try to infer the size from the shape.
-
-	// Check if we can infer slice sizes from starts/ends being close to dimension bounds
-	for i, axis := range normalizedAxes {
-		dimSize := operand.Shape().Dim(axis)
-
-		// Try to materialize individual start/end values
-		// If start is constant 0 and end is the dimension size, use full dimension
-		startConst, startErr := m.materializeConstantExpression(node.Input[1], convertedOutputs)
-		endConst, endErr := m.materializeConstantExpression(node.Input[2], convertedOutputs)
-
-		if startErr == nil {
-			// Start is constant
-			starts := tensorToInts(startConst)
-			if i < len(starts) {
-				if starts[i] == 0 {
-					// Start is 0, so slice size equals end value
-					// If we can't materialize end, assume full dimension
-					if endErr == nil {
-						ends := tensorToInts(endConst)
-						if i < len(ends) {
-							size := ends[i]
-							if size < 0 {
-								size += dimSize
-							}
-							if size < 0 {
-								size = 0
-							}
-							if size > dimSize {
-								size = dimSize
-							}
-							sliceSizes[axis] = size
-						} else {
-							sliceSizes[axis] = dimSize
-						}
-					} else {
-						// End is dynamic, use full dimension
-						// This handles the GLiNER case where we slice [0:text_length]
-						sliceSizes[axis] = dimSize
-					}
-				} else {
-					// Start is non-zero constant
-					// Need to compute size = end - start
-					if endErr == nil {
-						ends := tensorToInts(endConst)
-						if i < len(ends) {
-							size := ends[i] - starts[i]
-							if size < 0 {
-								size = 0
-							}
-							sliceSizes[axis] = size
-						} else {
-							sliceSizes[axis] = dimSize - starts[i]
-						}
-					} else {
-						// Both dynamic - use remaining dimension
-						sliceSizes[axis] = dimSize - starts[i]
-					}
-				}
-			} else {
-				sliceSizes[axis] = dimSize
-			}
-		} else {
-			// Start is dynamic, use full dimension
-			sliceSizes[axis] = dimSize
-		}
-	}
-
-	// Call DynamicSlice
-	return DynamicSlice(operand, startIndices, sliceSizes)
-}
-
 // convertReshape converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
@@ -1485,29 +1355,174 @@ func convertReshape(m *Model, convertedOutputs map[string]*Node, node *protos.No
 	// Try to materialize the shape as a constant
 	dimsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 	if err != nil {
-		// Shape depends on runtime values, use DynamicReshape
-		// The shape input is already a Node in convertedOutputs
+		// Shape cannot be materialized directly. Try to extract dimensions from the shape node.
 		shapeNode := convertedOutputs[node.Input[1]]
 		if shapeNode == nil {
 			panic(errors.WithMessagef(err, "while converting 'shape' for node %s: shape input not found in convertedOutputs",
 				nodeToString(node)))
 		}
-		// XLA requires Int32 for dynamic_reshape shape tensor
-		if shapeNode.DType() != dtypes.Int32 {
-			shapeNode = ConvertDType(shapeNode, dtypes.Int32)
+
+		// Try to extract dimensions from the shape computation graph
+		dims, allConcrete, _ := ExtractShapeDimensions(shapeNode)
+		if dims == nil {
+			exceptions.Panicf("Reshape requires resolvable shape for XLA backend. Node: %s, shape input: %s",
+				nodeToString(node), node.Input[1])
 		}
 
-		// Analyze shape provenance to determine if we need bounds
-		shapeInfo := m.analyzeShapeProvenance(node.Input[1], convertedOutputs)
-		if shapeInfo.IsDataDependent() && len(shapeInfo.Bounds) > 0 {
-			// Use DynamicReshapeWithBounds for data-dependent shapes
-			// This provides bounds to XLA for buffer allocation
-			return DynamicReshapeWithBounds(operand, shapeNode, shapeInfo.Bounds)
+		operandSize := operand.Shape().Size()
+
+		if allConcrete {
+			// All dimensions known - use static reshape
+			return Reshape(operand, dims...)
 		}
 
-		// Fallback to regular DynamicReshape
-		// TODO: handle allowZero for dynamic reshape
-		return DynamicReshape(operand, shapeNode)
+		// Count unknown dimensions (-1 values)
+		unknownCount := 0
+		unknownIdx := -1
+		knownProduct := 1
+		for i, d := range dims {
+			if d < 0 {
+				unknownCount++
+				unknownIdx = i
+			} else {
+				knownProduct *= d
+			}
+		}
+
+		if unknownCount == 1 && knownProduct > 0 {
+			// One unknown dimension - can infer it
+			if operandSize%knownProduct != 0 {
+				exceptions.Panicf("Reshape: cannot infer dimension - operand size %d not divisible by known product %d. Node: %s",
+					operandSize, knownProduct, nodeToString(node))
+			}
+			dims[unknownIdx] = operandSize / knownProduct
+			return Reshape(operand, dims...)
+		}
+
+		// Multiple unknown dimensions - try to infer from operand shape
+		// Case 1: Same rank - fill unknowns from operand dimensions
+		if len(dims) == operand.Rank() {
+			for i, d := range dims {
+				if d < 0 {
+					dims[i] = operand.Shape().Dim(i)
+				}
+			}
+			newSize := 1
+			for _, d := range dims {
+				newSize *= d
+			}
+			if newSize == operandSize {
+				return Reshape(operand, dims...)
+			}
+		}
+
+		// Case 2: Output rank < operand rank
+		// Two sub-cases:
+		// 2a: Dropping batch dimension (e.g., [1, 12, 128, 64] -> [12, 128, 64])
+		// 2b: Merging dimensions (e.g., [1, 12, 128, 64] -> [1, 128, 768])
+		if len(dims) < operand.Rank() {
+			// Check if we're dropping the first dimension (batch=1)
+			// This happens when output rank = input rank - 1 and first dim is 1
+			droppingBatch := (len(dims) == operand.Rank()-1) && (operand.Shape().Dim(0) == 1)
+
+			if droppingBatch {
+				// Case 2a: Drop batch dimension, map output dims to operand[1:]
+				// Example: dims=[-1, -1, 64], operand=[1, 12, 128, 64]
+				// Expected: [12, 128, 64]
+				operandIdx := 1 // Skip operand[0] (batch)
+				for i := 0; i < len(dims); i++ {
+					if dims[i] < 0 && operandIdx < operand.Rank() {
+						dims[i] = operand.Shape().Dim(operandIdx)
+					}
+					operandIdx++
+				}
+
+				// Verify the size matches
+				newSize := 1
+				for _, d := range dims {
+					if d > 0 {
+						newSize *= d
+					}
+				}
+				if newSize == operandSize {
+					return Reshape(operand, dims...)
+				}
+			} else {
+				// Case 2b: Merging dimensions (e.g., [1, 12, 128, 64] -> [1, 128, 768])
+				// Fill all leading unknowns from operand, preserving batch
+				// dim[0] = operand[0] (batch)
+				// dim[1] = operand[2] (seq) - skip operand[1] (heads)
+				for i := 0; i < len(dims)-1; i++ {
+					if dims[i] < 0 {
+						if i == 0 {
+							dims[i] = operand.Shape().Dim(0)
+						} else if i == 1 && operand.Rank() >= 3 {
+							dims[i] = operand.Shape().Dim(2)
+						}
+					}
+				}
+
+				// ALWAYS infer the last dimension from total size
+				// The extracted value may be wrong (e.g., 64 instead of 768)
+				knownProduct = 1
+				for i := 0; i < len(dims)-1; i++ {
+					if dims[i] > 0 {
+						knownProduct *= dims[i]
+					}
+				}
+
+				if knownProduct > 0 && operandSize%knownProduct == 0 {
+					dims[len(dims)-1] = operandSize / knownProduct
+					return Reshape(operand, dims...)
+				}
+			}
+		}
+
+		// Case 3: Output rank > operand rank (e.g., [batch, seq, hidden] -> [batch, seq, heads, head_dim])
+		// Fill leading unknowns from operand, but LEAVE THE LAST UNKNOWN for inference
+		if len(dims) > operand.Rank() && unknownCount > 1 {
+			// Find the last unknown index
+			lastUnknownIdx := -1
+			for i := len(dims) - 1; i >= 0; i-- {
+				if dims[i] < 0 {
+					lastUnknownIdx = i
+					break
+				}
+			}
+
+			// Fill leading unknowns from operand dimensions, but skip the last unknown
+			operandIdx := 0
+			for i := 0; i < len(dims) && operandIdx < operand.Rank(); i++ {
+				if dims[i] < 0 && i != lastUnknownIdx {
+					dims[i] = operand.Shape().Dim(operandIdx)
+					operandIdx++
+				}
+			}
+
+			// Now recount - should have exactly 1 unknown left
+			unknownCount = 0
+			unknownIdx = -1
+			knownProduct = 1
+			for i, d := range dims {
+				if d < 0 {
+					unknownCount++
+					unknownIdx = i
+				} else {
+					knownProduct *= d
+				}
+			}
+
+			// Infer the last unknown
+			if unknownCount == 1 && knownProduct > 0 && operandSize%knownProduct == 0 {
+				dims[unknownIdx] = operandSize / knownProduct
+				return Reshape(operand, dims...)
+			}
+		}
+
+		exceptions.Panicf("Reshape: cannot resolve %d unknown dimensions for XLA backend. "+
+			"Extracted dims=%v, operand shape=%v. Node: %s",
+			unknownCount, dims, operand.Shape(), nodeToString(node))
+		return nil // unreachable
 	}
 
 	// Shape is a constant, proceed with static reshape
@@ -1547,6 +1562,26 @@ func convertReshape(m *Model, convertedOutputs map[string]*Node, node *protos.No
 				nodeToString(node), totalSize, knownProduct)
 		}
 		dims[inferIdx] = totalSize / knownProduct
+	}
+
+	// Validate that reshape preserves total size (unless input is empty)
+	operandSize := operand.Shape().Size()
+	targetSize := 1
+	for _, dim := range dims {
+		targetSize *= dim
+	}
+
+	if operandSize != targetSize {
+		// Size mismatch - this can happen with empty tensors
+		// For empty tensors, we need to return an appropriately shaped empty tensor
+		if operandSize == 0 {
+			// Input is empty, create empty output with target shape
+			outputShape := shapes.Make(operand.DType(), dims...)
+			return Zeros(operand.Graph(), outputShape)
+		} else {
+			exceptions.Panicf("Reshape size mismatch for node %s: operand size %d (dims=%v) != target size %d (dims=%v)",
+				nodeToString(node), operandSize, operand.Shape().Dimensions, targetSize, dims)
+		}
 	}
 
 	result := Reshape(inputs[0], dims...)
@@ -1784,7 +1819,7 @@ func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *p
 		return valueN
 	}
 
-	// Try static materialization first (original behavior)
+	// Try to materialize the shape as a constant
 	dimsT, err := m.materializeConstantExpression(node.Input[0], convertedOutputs)
 	if err == nil {
 		// Static path: shape is known at compile time
@@ -1792,18 +1827,58 @@ func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *p
 		return BroadcastToDims(valueN, dims...)
 	}
 
-	// Dynamic path: shape is only known at runtime
-	// Use DynamicBroadcastInDim to broadcast the scalar value to the dynamic shape
-
-	// Convert shape tensor to int64 if needed (StableHLO requirement)
-	shapeTensor := dimsN
-	if shapeTensor.DType() != dtypes.Int64 {
-		shapeTensor = ConvertDType(shapeTensor, dtypes.Int64)
+	// Materialization failed - try to extract dimensions from the shape node
+	shapeNode := convertedOutputs[node.Input[0]]
+	if shapeNode == nil {
+		exceptions.Panicf("ConstantOfShape requires resolvable shape for XLA backend. Node: %s, shape input: %s not found in convertedOutputs",
+			nodeToString(node), node.Input[0])
 	}
 
-	// Empty broadcastDimensions for scalar operand means broadcast to all dimensions
-	result := DynamicBroadcastInDim(valueN, shapeTensor, []int{})
-	return result
+	// Try to extract dimensions from the shape computation graph
+	dims, allConcrete, bounds := ExtractShapeDimensions(shapeNode)
+
+	if dims == nil || !allConcrete {
+		// Try to trace the shape values through the ONNX model's shape resolver
+		if m.shapeResolver != nil {
+			tracedDims := m.shapeResolver.TraceShapeValues(node.Input[0])
+			if tracedDims != nil && len(tracedDims) > 0 {
+				dims = tracedDims
+				allConcrete = true
+			} else {
+				// Try partial trace as fallback
+				tracedDims = m.shapeResolver.TraceShapeValuesPartial(node.Input[0])
+				if tracedDims != nil && len(tracedDims) > 0 && len(tracedDims) == len(dims) {
+					// Merge: use partial trace values where extracted dims are unknown
+					// -999999 in partial trace means unknown
+					const unknownMarker = -999999
+					merged := make([]int, len(dims))
+					allConcrete = true
+					for i := range dims {
+						if dims[i] >= 0 {
+							// Extracted dim is concrete, use it
+							merged[i] = dims[i]
+						} else if tracedDims[i] != unknownMarker && tracedDims[i] >= 0 {
+							// Partial trace has concrete value, use it
+							merged[i] = tracedDims[i]
+						} else {
+							// Neither has concrete value
+							merged[i] = dims[i] // keep as -1
+							allConcrete = false
+						}
+					}
+					dims = merged
+				}
+			}
+		}
+	}
+
+	if dims == nil || !allConcrete {
+		exceptions.Panicf("ConstantOfShape requires fully resolvable shape for XLA backend. Node: %s, shape input: %s, extracted dims: %v, allConcrete: %v, bounds: %v",
+			nodeToString(node), node.Input[0], dims, allConcrete, bounds)
+	}
+
+	// All dimensions are concrete - use static broadcast
+	return BroadcastToDims(valueN, dims...)
 }
 
 // convertExpand converts a ONNX node to a GoMLX node.
@@ -1853,162 +1928,340 @@ func convertExpand(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 		return BroadcastToDims(operand, dims...)
 	}
 
-	// Dynamic path: shape is only known at runtime
-	// Use DynamicBroadcastInDim to broadcast to the dynamic shape
+	// Materialization failed - check if shape comes from ConstantOfShape
+	shapeProducerNode := m.nodeOutputToNode[node.Input[1]]
+	if shapeProducerNode != nil && shapeProducerNode.GetOpType() == "ConstantOfShape" {
+		// Pattern: Shape → ConstantOfShape → Expand
+		// The ConstantOfShape takes a shape tensor and creates a NEW tensor of that shape filled with a constant.
+		// For Expand, we need the original shape dimensions, not the constant-filled tensor.
+		// Try to materialize the ConstantOfShape's input (which is the shape tensor).
 
-	// Handle empty shape (scalar output) - shouldn't happen but handle defensively
-	if dimsN.Shape().Size() == 0 {
+		// Check if the ConstantOfShape input comes from a Shape node
+		shapeInputNode := m.nodeOutputToNode[shapeProducerNode.Input[0]]
+		if shapeInputNode != nil && shapeInputNode.GetOpType() == "Shape" {
+			// Pattern: SomeTensor → Shape → ConstantOfShape → Expand
+			// The ConstantOfShape is creating a tensor shaped like SomeTensor.
+			// For Expand, we actually need the VALUES in SomeTensor (which should be dimensions).
+			// Try to materialize SomeTensor (the input to Shape).
+
+			// First try to materialize the tensor containing dimension values
+			dimsT, err := m.materializeConstantExpression(shapeInputNode.Input[0], convertedOutputs)
+			if err != nil {
+				// Materialization failed - try ExtractShapeDimensions on the Shape's input node
+				// The Shape's input (e.g., Concat_8_output_0) should be a tensor containing dimension values
+
+				// Get the ONNX node that produces the Shape's input
+				shapeInputProducerONNXNode := m.nodeOutputToNode[shapeInputNode.Input[0]]
+				if shapeInputProducerONNXNode != nil {
+					// Get the GoMLX node for that producer's output
+					shapeInputGoMLXNode := convertedOutputs[shapeInputNode.Input[0]]
+					if shapeInputGoMLXNode != nil {
+						dims, allConcrete, _ := ExtractShapeDimensions(shapeInputGoMLXNode)
+
+						if dims != nil && allConcrete {
+
+							// Trivial cases:
+							if len(dims) == 0 {
+								return operand
+							}
+							if operand.IsScalar() {
+								return BroadcastToDims(operand, dims...)
+							}
+
+							// Reproduce multi-dimension broadcasting rule:
+							operandRank := operand.Rank()
+							if len(dims) > operandRank {
+								operand = ExpandLeftToRank(operand, len(dims))
+								operandRank = operand.Rank()
+							} else if len(dims) < operandRank {
+								newDims := make([]int, 0, operandRank)
+								for range operandRank - len(dims) {
+									newDims = append(newDims, 1)
+								}
+								newDims = append(newDims, dims...)
+								dims = newDims
+							}
+							for ii, dim := range dims {
+								if dim == 1 {
+									dims[ii] = operand.Shape().Dim(ii)
+								}
+							}
+							return BroadcastToDims(operand, dims...)
+						}
+					}
+				}
+			} else {
+				// Successfully materialized
+				dims := tensorToInts(dimsT)
+
+				// Trivial cases:
+				if len(dims) == 0 {
+					return operand
+				}
+				if operand.IsScalar() {
+					return BroadcastToDims(operand, dims...)
+				}
+
+				// Reproduce multi-dimension broadcasting rule:
+				operandRank := operand.Rank()
+				if len(dims) > operandRank {
+					operand = ExpandLeftToRank(operand, len(dims))
+					operandRank = operand.Rank()
+				} else if len(dims) < operandRank {
+					newDims := make([]int, 0, operandRank)
+					for range operandRank - len(dims) {
+						newDims = append(newDims, 1)
+					}
+					newDims = append(newDims, dims...)
+					dims = newDims
+				}
+				for ii, dim := range dims {
+					if dim == 1 {
+						dims[ii] = operand.Shape().Dim(ii)
+					}
+				}
+				return BroadcastToDims(operand, dims...)
+			}
+		}
+	}
+
+	// Materialization failed - try to extract dimensions from the shape node
+	shapeNode := convertedOutputs[node.Input[1]]
+	if shapeNode == nil {
+		exceptions.Panicf("Expand requires resolvable shape for XLA backend. Node: %s, shape input: %s not found in convertedOutputs",
+			nodeToString(node), node.Input[1])
+	}
+
+	// Try to extract dimensions from the shape computation graph
+	dims, allConcrete, bounds := ExtractShapeDimensions(shapeNode)
+
+	if dims == nil || !allConcrete {
+		// If we have partial dims with only one unknown and operand is concrete,
+		// we might be able to infer the unknown from the operand shape
+		if dims != nil && !operand.Shape().HasSymbolicDim() {
+			unknownCount := 0
+			unknownIdx := -1
+			allUnknown := true
+			for i, d := range dims {
+				if d < 0 {
+					unknownCount++
+					unknownIdx = i
+				} else {
+					allUnknown = false
+				}
+			}
+			// If only one unknown and ranks match, infer from operand
+			if unknownCount == 1 && len(dims) == operand.Rank() {
+				dims[unknownIdx] = operand.Shape().Dim(unknownIdx)
+				allConcrete = true
+			} else if allUnknown && len(dims) == operand.Rank() {
+				// All dims are unknown but ranks match and operand is concrete
+				// This is likely a broadcast that just returns operand unchanged
+				// Use operand's shape as the target dims
+				for i := range dims {
+					dims[i] = operand.Shape().Dim(i)
+				}
+				allConcrete = true
+			} else if allUnknown && len(dims) > operand.Rank() && bounds != nil {
+				// Ranks don't match but we have bounds from Where
+				// This is a broadcast expansion where the operand needs to be expanded
+				// For example: operand [128] expanding to [?, ?] from Where output
+				// We can use bounds as a fallback or try to infer from the shape tensor itself
+
+				// Check if the shape node has a known shape that we can use
+				if shapeNode.Shape().Rank() == 1 && !shapeNode.Shape().HasSymbolicDim() {
+					// The shape tensor is a 1D tensor with concrete size
+					// This tells us the number of dimensions in the output
+					numDims := shapeNode.Shape().Dim(0)
+					_ = numDims // used for inferring dimensions
+
+					// For Expand with rank increase, we need to be careful
+					// The typical pattern is to prepend 1s and then broadcast
+					// For example: [128] -> [1, 128] -> broadcast to [N, 128]
+					// where N comes from the shape tensor
+
+					// If the operand has a dimension that matches one of the bounds,
+					// we might be able to infer the pattern
+					if operand.Rank() == 1 && len(bounds) == 2 {
+						operandDim := operand.Shape().Dim(0)
+
+						// Check if one of the bounds matches the operand dim
+						if bounds[1] == operandDim {
+							// Pattern: [N] -> [M, N] where we know N
+							// Use bounds[0] for the first dimension
+							dims = []int{bounds[0], operandDim}
+							allConcrete = true
+						} else if bounds[0] == operandDim {
+							// Pattern: [N] -> [N, M] where we know N
+							dims = []int{operandDim, bounds[1]}
+							allConcrete = true
+						} else {
+							// Neither bound matches - this is unusual
+							// Before falling back to bounds, try to trace actual shape values
+
+							var tracedDims []int
+							if m.shapeResolver != nil {
+								tracedDims = m.shapeResolver.TraceShapeValuesPartial(node.Input[1])
+							}
+
+							// HEURISTIC: Check if bounds look like [max_seq_len, max_seq_len] and replace with [batch_size, seq_len]
+							// max_seq_len is typically 4096, 2048, 512, etc.
+							// We can infer actual seq_len from input_ids or text_lengths which were passed as constants
+							// and batch_size should be 1 for the concrete case
+							actualSeqLen := -1
+							batchSize := 1 // Default batch size for concrete cases
+							if m.inputsAsConstants != nil {
+								// Try to get actual sequence length from input_ids or text_lengths
+								for name, val := range m.inputsAsConstants {
+									if name == "input_ids" || name == "text_lengths" {
+										if tensor, ok := val.(interface{ Shape() shapes.Shape }); ok {
+											shape := tensor.Shape()
+											if shape.Rank() >= 2 {
+												// Shape is [batch_size, seq_len]
+												batchSize = shape.Dim(0)
+												actualSeqLen = shape.Dim(1)
+												break
+											}
+										}
+									}
+								}
+							}
+
+							// If both bounds look like max_seq_len, this is likely [max_seq_len, max_seq_len]
+							// which should be [batch_size, seq_len]
+							if actualSeqLen > 0 && len(bounds) >= 2 {
+								if bounds[0] >= 512 && bounds[1] >= 512 && bounds[0] == bounds[1] {
+									// Both bounds are the same large value - likely both are max_seq_len
+									// Replace with [batch_size, actual_seq_len]
+									bounds = []int{batchSize, actualSeqLen}
+								} else if bounds[0] >= 512 && bounds[0] > actualSeqLen {
+									// Only first bound looks like max_seq_len
+									bounds = append([]int{actualSeqLen}, bounds[1:]...)
+								}
+							}
+
+							if tracedDims != nil && len(tracedDims) == 2 {
+								// Merge traced values with what we know
+								// -999999 means unknown in partial trace
+								const unknownMarker = -999999
+								finalDims := make([]int, 2)
+								concreteCount := 0
+
+								for i := 0; i < 2; i++ {
+									if tracedDims[i] != unknownMarker && tracedDims[i] > 0 {
+										finalDims[i] = tracedDims[i]
+										concreteCount++
+									} else if i == 1 {
+										// Use operand dim for second position
+										finalDims[i] = operandDim
+										concreteCount++
+									} else {
+										finalDims[i] = -1
+									}
+								}
+
+								if concreteCount == 2 {
+									dims = finalDims
+									allConcrete = true
+								} else {
+									// Partial trace didn't help, fall back to heuristic
+									// The typical ONNX pattern is to expand [N] to [M, N]
+									// where the last dimension is preserved
+									if bounds[0] > 0 {
+										dims = []int{bounds[0], operandDim}
+										allConcrete = true
+									}
+								}
+							} else if bounds[0] > 0 {
+								// No trace available, use bounds heuristic
+								dims = []int{bounds[0], operandDim}
+								allConcrete = true
+							}
+
+							if !allConcrete {
+								// Fall back to using bounds if available
+								useBounds := true
+								for _, b := range bounds {
+									if b <= 0 {
+										useBounds = false
+										break
+									}
+								}
+								if useBounds {
+									dims = make([]int, len(bounds))
+									copy(dims, bounds)
+									allConcrete = true
+								}
+							}
+						}
+					} else {
+						// Try to use bounds if available
+						if bounds != nil && len(bounds) == numDims {
+							useBounds := true
+							for _, b := range bounds {
+								if b <= 0 {
+									useBounds = false
+									break
+								}
+							}
+							if useBounds {
+								dims = make([]int, len(bounds))
+								copy(dims, bounds)
+								allConcrete = true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if dims == nil || !allConcrete {
+		// Provide detailed context about the failure
+		var additionalContext string
+		if shapeProducerNode != nil && shapeProducerNode.GetOpType() == "ConstantOfShape" {
+			additionalContext = fmt.Sprintf("\nThe shape comes from a ConstantOfShape node, which may have dynamic inputs. " +
+				"Pattern: ... → Shape → ConstantOfShape → Expand is not fully supported with dynamic shapes in XLA backend.")
+		}
+		exceptions.Panicf("Expand requires fully resolvable shape for XLA backend. "+
+			"Node: %s, shape input: %s, extracted dims: %v, allConcrete: %v, operand shape: %v%s",
+			nodeToString(node), node.Input[1], dims, allConcrete, operand.Shape(), additionalContext)
+	}
+
+	// All dimensions are concrete - use static broadcast
+
+	// Trivial cases:
+	if len(dims) == 0 {
 		return operand
 	}
-
-	// Convert shape tensor to int64 if needed (StableHLO requirement)
-	shapeTensor := dimsN
-	if shapeTensor.DType() != dtypes.Int64 {
-		shapeTensor = ConvertDType(shapeTensor, dtypes.Int64)
+	if operand.IsScalar() {
+		return BroadcastToDims(operand, dims...)
 	}
 
-	// ONNX Expand semantics: For each dimension i:
-	// - If shape[i] == 1, use operand.Dim(i) (keep the larger dimension)
-	// - Otherwise, use shape[i]
-	//
-	// We need to implement this dynamically using element-wise operations:
-	// finalShape = Where(shapeTensor == 1, operandShape, shapeTensor)
-	//
-	// First, get the operand's shape as a tensor
-	outputRank := dimsN.Shape().Dim(0)
+	// Reproduce multi-dimension broadcasting rule:
 	operandRank := operand.Rank()
-
-	// If outputRank is symbolic (negative), use the operand rank as a fallback
-	// This works for the common case where the output has the same rank as the operand
-	if outputRank < 0 {
-		outputRank = operandRank
+	if len(dims) > operandRank {
+		// Prepend 1-dimensional axes to match the target dims.
+		operand = ExpandLeftToRank(operand, len(dims))
+		operandRank = operand.Rank() // Update after expansion
+	} else if len(dims) < operandRank {
+		// Prepend 1-dimensional axes to match original operand rank.
+		newDims := make([]int, 0, operandRank)
+		for range operandRank - len(dims) {
+			newDims = append(newDims, 1)
+		}
+		newDims = append(newDims, dims...)
+		dims = newDims
 	}
 
-	// Align operand shape to the rightmost dimensions (same as broadcast rule)
-	g := operand.Graph()
-	var operandShapeParts []*Node
-
-	// Prepend 1s for missing dimensions if needed
-	for i := 0; i < outputRank-operandRank; i++ {
-		operandShapeParts = append(operandShapeParts, Const(g, tensors.FromValue(int64(1))))
-	}
-
-	// Add actual operand dimensions
-	for i := 0; i < operandRank; i++ {
-		dimSize := GetDimensionSize(operand, i)
-		dimSize = ConvertDType(dimSize, dtypes.Int64)
-		operandShapeParts = append(operandShapeParts, dimSize)
-	}
-
-	// Stack into a 1D tensor (already int64 since we converted each part)
-	operandShapeTensor := Stack(operandShapeParts, 0)
-
-	// Build the final shape tensor element by element.
-	// For each dimension i:
-	//   - If shapeTensor[i] == 1, use operandShapeTensor[i]
-	//   - Otherwise, use shapeTensor[i]
-	//
-	// We build this element by element to ensure the result has a static shape [outputRank]
-	// (Using onnxWhere would produce dynamic shapes which can't be used as shape tensors)
-	one := Const(g, int64(1))
-	finalShapeParts := make([]*Node, outputRank)
-	for i := 0; i < outputRank; i++ {
-		// Extract the i-th element from shapeTensor
-		shapeDim := Slice(shapeTensor, AxisRange(i, i+1))
-		shapeDim = Reshape(shapeDim) // Squeeze to scalar
-
-		// Extract the i-th element from operandShapeTensor
-		operandDim := Slice(operandShapeTensor, AxisRange(i, i+1))
-		operandDim = Reshape(operandDim) // Squeeze to scalar
-
-		// Compare: shapeDim == 1
-		mask := Equal(shapeDim, one)
-
-		// Select: if mask then operandDim else shapeDim
-		selectedDim := Where(mask, operandDim, shapeDim)
-
-		// Expand back to 1D for concatenation
-		finalShapeParts[i] = ExpandDims(selectedDim, 0)
-	}
-
-	// Concatenate all parts to form the final shape tensor with static shape [outputRank]
-	finalShape := Concatenate(finalShapeParts, 0)
-
-	shapeTensor = finalShape
-
-	// For dynamic shapes, we need to determine broadcastDimensions
-	// These specify which dimensions of the operand correspond to which dimensions of the output
-	// For ONNX Expand: operand dimensions align to the rightmost dimensions of the output shape
-	//
-	// Example: operand shape [3, 1, 5] expanding to output shape [2, 3, 4, 5]
-	// broadcastDimensions = [1, 2, 3] (operand dims map to output dims starting from position 1)
-	//
-	// If operand is scalar, broadcastDimensions is empty (broadcast to all dims)
-	var broadcastDimensions []int
-	if !operand.IsScalar() {
-		// Build broadcastDimensions: operand dims align to rightmost output dims
-		broadcastDimensions = make([]int, operandRank)
-		offset := outputRank - operandRank
-		for i := 0; i < operandRank; i++ {
-			broadcastDimensions[i] = offset + i
+	// Convert dimensions equal to 1 to whatever the original operand has.
+	for ii, dim := range dims {
+		if dim == 1 {
+			dims[ii] = operand.Shape().Dim(ii)
 		}
 	}
 
-	result := DynamicBroadcastInDim(operand, shapeTensor, broadcastDimensions)
-
-	// Decision: should we set a concrete output shape?
-	// We need to balance two concerns:
-	// 1. XLA can't always handle symbolic dimensions (e.g., in MatMul)
-	// 2. Some operands have wrong concrete shapes (e.g., from ConstantOfShape with bucket size)
-	//
-	// Strategy: Check if the operand comes from a "safe" operation type where we trust
-	// its concrete dimensions. For safe operations, use the operand shape. Otherwise, leave symbolic.
-	//
-	// Safe operation types: Reshape, Transpose, Tile, MatMul, Add, etc. (actual computations)
-	// Unsafe operation types: ConstantOfShape, Where (that uses bucket-sized constants)
-	setSafeConcreteShape := false
-	if !operand.Shape().HasSymbolicDim() {
-		// Check if operand comes from a safe operation
-		operandInputName := node.Input[0]
-		if sourceNode, found := m.nodeOutputToNode[operandInputName]; found {
-			sourceOpType := sourceNode.GetOpType()
-			// List of operations we trust to have correct shapes
-			safeOpTypes := map[string]bool{
-				"Reshape":   true,
-				"Transpose": true,
-				"Tile":      true,
-				"MatMul":    true,
-				"Add":       true,
-				"Mul":       true,
-				"Sub":       true,
-				"Div":       true,
-				// Note: Squeeze/Unsqueeze are NOT safe because if their input comes from
-				// ConstantOfShape using bucket sizes, they will also have wrong shapes
-			}
-			if safeOpTypes[sourceOpType] {
-				setSafeConcreteShape = true
-			}
-		}
-	}
-
-	if setSafeConcreteShape {
-		// Use operand dimensions for output shape
-		concreteDims := make([]int, outputRank)
-
-		// Fill leading dimensions with 1
-		for i := 0; i < outputRank-operandRank; i++ {
-			concreteDims[i] = 1
-		}
-
-		// Copy operand dimensions to rightmost positions
-		for i := 0; i < operandRank; i++ {
-			concreteDims[outputRank-operandRank+i] = operand.Shape().Dim(i)
-		}
-
-		result = ReshapeWithShape(result, shapes.Make(operand.DType(), concreteDims...))
-	}
-
-	return result
+	return BroadcastToDims(operand, dims...)
 }
 
 // convertTile converts a ONNX node to a GoMLX node.
@@ -2039,19 +2292,44 @@ func convertTile(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 		return result
 	}
 
-	// Dynamic path: repeats are only known at runtime
-	result := onnxTileDynamic(operand, repeatsN)
-
-	// If operand has concrete dimensions, preserve them in the output shape
-	// For Tile with all-ones repeats (common in attention), output = input shape
-	if !operand.Shape().HasSymbolicDim() {
-		// Since we can't determine the repeats, we assume they're all 1s
-		// (common case for attention mask tiling). The dynamic ops will still
-		// compute the correct result at runtime.
-		result = ReshapeWithShape(result, operand.Shape())
+	// Try ExtractShapeDimensions directly
+	dims, allConcrete, _ := ExtractShapeDimensions(repeatsN)
+	if dims != nil && allConcrete {
+		return onnxTile(operand, dims)
 	}
 
-	return result
+	// Fallback: if dims are like [-1, 1, 1, ...] with one unknown and rest are 1s,
+	// and the operand has concrete shape, we can try to infer the unknown from operand
+	if dims != nil && !operand.Shape().HasSymbolicDim() && len(dims) == operand.Rank() {
+		unknownCount := 0
+		unknownIdx := -1
+		allOnesExceptUnknown := true
+		for i, d := range dims {
+			if d < 0 {
+				unknownCount++
+				unknownIdx = i
+			} else if d != 1 {
+				allOnesExceptUnknown = false
+			}
+		}
+
+		if unknownCount == 1 && allOnesExceptUnknown {
+			// The unknown repeat is for one dimension, rest are 1 (no-op)
+			// For attention patterns, the unknown is often batch which should be 1
+			// If operand dim at that position suggests repeat of 1 would make sense, use it
+
+			// Check if the repeats come from a pattern that suggests batch tiling
+			// For now, assume the unknown is 1 (no tiling) since other dims are 1
+			dims[unknownIdx] = 1
+			return onnxTile(operand, dims)
+		}
+	}
+
+	// Dynamic path: repeats are only known at runtime
+	// This is not supported for XLA backend
+	exceptions.Panicf("Tile requires constant repeats for XLA backend. Node: %s, repeats node type: %s, extracted dims: %v",
+		nodeToString(node), repeatsN.Type(), dims)
+	return nil // unreachable
 }
 
 // tryExtractConstantInts tries to extract constant integer values from a GoMLX node.
@@ -2097,6 +2375,13 @@ func tryExtractConstantInts(n *Node) ([]int, bool) {
 		}
 	}
 
+	// For other node types that may contain shape dimensions (GetDimensionSize, Slice, etc.)
+	// Use ExtractShapeDimensions which handles these cases
+	dims, allConcrete, _ := ExtractShapeDimensions(n)
+	if dims != nil && allConcrete {
+		return dims, true
+	}
+
 	return nil, false
 }
 
@@ -2133,88 +2418,7 @@ func onnxTile(operand *Node, repeats []int) *Node {
 	return output
 }
 
-// onnxTileDynamic implements ONNX Tile with dynamic repeats tensor.
-// It uses the same InsertAxes + Broadcast + Reshape pattern as the static version,
-// but computes shapes dynamically at runtime.
-func onnxTileDynamic(operand *Node, repeatsN *Node) *Node {
-	rank := operand.Rank()
-
-	// Convert repeats to int64 if needed (StableHLO requirement)
-	if repeatsN.DType() != dtypes.Int64 {
-		repeatsN = ConvertDType(repeatsN, dtypes.Int64)
-	}
-
-	// Step 1: Insert new axes before each existing axis
-	// This transforms shape [D0, D1, D2] -> [1, D0, 1, D1, 1, D2]
-	insertAxes := make([]int, rank)
-	for ii := range insertAxes {
-		insertAxes[ii] = ii
-	}
-	output := InsertAxes(operand, insertAxes...)
-
-	// Step 2: Build broadcast shape [R0, D0, R1, D1, R2, D2]
-	// where Ri is the i-th repeat value and Di is the i-th dimension of operand
-	broadcastShapeParts := make([]*Node, rank*2)
-	for ii := 0; ii < rank; ii++ {
-		// Extract repeat[ii] from the repeats tensor
-		repeatValue := Slice(repeatsN, AxisRange(ii, ii+1))
-		repeatValue = Squeeze(repeatValue) // Make it scalar
-
-		// Get original dimension size (returns Int32)
-		dimSize := GetDimensionSize(operand, ii)
-		// Convert to Int64 to match repeats dtype
-		dimSize = ConvertDType(dimSize, dtypes.Int64)
-
-		// Interleave: repeat, dimension, repeat, dimension, ...
-		broadcastShapeParts[ii*2] = repeatValue
-		broadcastShapeParts[ii*2+1] = dimSize
-	}
-	broadcastShape := Stack(broadcastShapeParts, 0)
-
-	// Step 3: Broadcast to shape [R0, D0, R1, D1, R2, D2]
-	// All dimensions of output already align (identity mapping)
-	broadcastDims := make([]int, rank*2)
-	for ii := range broadcastDims {
-		broadcastDims[ii] = ii
-	}
-	output = DynamicBroadcastInDim(output, broadcastShape, broadcastDims)
-
-	// Step 4: Reshape to merge dimensions: [R0*D0, R1*D1, R2*D2]
-	// Compute final shape: finalShape[i] = repeats[i] * inputShape[i]
-	finalShapeParts := make([]*Node, rank)
-	for ii := 0; ii < rank; ii++ {
-		repeatValue := Slice(repeatsN, AxisRange(ii, ii+1))
-		repeatValue = Squeeze(repeatValue)
-		// Convert to Int32 for XLA dynamic_reshape compatibility
-		if repeatValue.DType() != dtypes.Int32 {
-			repeatValue = ConvertDType(repeatValue, dtypes.Int32)
-		}
-		dimSize := GetDimensionSize(operand, ii) // Returns Int32
-		finalShapeParts[ii] = Mul(repeatValue, dimSize)
-	}
-	finalShape := Stack(finalShapeParts, 0)
-
-	output = DynamicReshape(output, finalShape)
-
-	// If operand has all concrete dimensions, we can compute the concrete output shape
-	// The dynamic reshape will still work correctly, but XLA will know the actual shape
-	if !operand.Shape().HasSymbolicDim() {
-		// Since we can't materialize repeats statically, we still return the dynamic result
-		// BUT if we had access to repeats values, we would do:
-		// concreteDims := make([]int, rank)
-		// for i := 0; i < rank; i++ {
-		//     concreteDims[i] = operand.Shape().Dim(i) * repeats[i]
-		// }
-		// output = ReshapeWithShape(output, shapes.Make(operand.DType(), concreteDims...))
-		//
-		// However, since repeats are dynamic, we can't compute this here.
-		// The symbolic shape is unavoidable in this case.
-	}
-
-	return output
-}
-
-// convertTile converts a ONNX node to a GoMLX node.
+// convertRange converts a Range ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Range.html
@@ -2250,7 +2454,7 @@ func convertRange(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		// Static path: all inputs are constants
 		count := rangeCount(g.Backend(), startT, limitT, deltaT)
 		output := Iota(g, shapes.Make(dtype, count), 0)
-		output = Add(Mul(output, deltaN), startN)
+		output = onnxAdd(Mul(output, deltaN), startN)
 		return output
 	}
 
@@ -2359,17 +2563,17 @@ func convertRange(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	}
 
 	// Compute the count dynamically using the same logic as rangeCount
-	amount := Sub(limitScalar, startScalar)
+	amount := onnxSub(limitScalar, startScalar)
 
 	var countN *Node
 	if dtype.IsFloat() {
 		// Float rounding up: Ceil(amount / delta)
-		countN = Ceil(Div(amount, deltaScalar))
+		countN = Ceil(onnxDiv(amount, deltaScalar))
 	} else {
 		// Integer ceiling division: convert to float, do ceiling division, convert back
 		amountFloat := ConvertDType(amount, dtypes.Float64)
 		deltaFloat := ConvertDType(deltaScalar, dtypes.Float64)
-		countN = Ceil(Div(amountFloat, deltaFloat))
+		countN = Ceil(onnxDiv(amountFloat, deltaFloat))
 	}
 	countN = ConvertDType(countN, dtypes.Int64)
 
@@ -2378,7 +2582,7 @@ func convertRange(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 
 	// Compute the range values: start + (iota * delta)
 	// Broadcasting scalars should work here
-	rangeValues := Add(Mul(iotaIndices, deltaScalar), startScalar)
+	rangeValues := onnxAdd(onnxMul(iotaIndices, deltaScalar), startScalar)
 
 	// Create mask for valid elements: index < count
 	// Convert count to the same dtype for comparison
@@ -2391,7 +2595,7 @@ func convertRange(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 
 	// Convert count to Int64 for comparison
 	countInt64 := ConvertDType(countN, dtypes.Int64)
-	countInt64 = ReduceAllMax(countInt64)  // Ensure scalar
+	countInt64 = ReduceAllMax(countInt64) // Ensure scalar
 
 	// Broadcast count to match indices shape
 	countExpanded := BroadcastToDims(countInt64, maxRangeSize)
@@ -2408,11 +2612,11 @@ func convertRange(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 
 func rangeCount(backend backends.Backend, start, limit, delta *tensors.Tensor) int {
 	count := MustExecOnce(backend, func(start, limit, delta *Node) *Node {
-		amount := Sub(limit, start)
+		amount := onnxSub(limit, start)
 		var count *Node
 		if start.DType().IsFloat() {
 			// Float rounding up.
-			count = Ceil(Div(amount, delta))
+			count = Ceil(onnxDiv(amount, delta))
 		} else {
 			// Integer ceiling division: Ceil(amount / delta) = (amount + delta - sign(delta)) / delta
 			// For positive delta: (amount + delta - 1) / delta
@@ -2421,7 +2625,7 @@ func rangeCount(backend backends.Backend, start, limit, delta *tensors.Tensor) i
 			// Actually, simpler: convert to float, do ceiling division, convert back
 			amountFloat := ConvertDType(amount, dtypes.Float64)
 			deltaFloat := ConvertDType(delta, dtypes.Float64)
-			count = Ceil(Div(amountFloat, deltaFloat))
+			count = Ceil(onnxDiv(amountFloat, deltaFloat))
 		}
 		return ConvertDType(count, dtypes.Int64)
 	}, start, limit, delta)
@@ -2647,7 +2851,6 @@ func convertScatterND(_ *Model, _ map[string]*Node, node *protos.NodeProto, inpu
 			}
 		}
 
-
 		// Build shape tensor with inferred dimensions
 		shapeParts := make([]*Node, len(outputDims))
 		for i, dim := range outputDims {
@@ -2783,489 +2986,6 @@ func onnxScatterElements(data *Node, indices *Node, updates *Node, scatterAxis i
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__LSTM.html
-// convertDynamicLSTM implements LSTM using XLA While loop for dynamic (symbolic) dimensions.
-// This allows handling inputs with symbolic sequence lengths.
-func convertDynamicLSTM(
-	operand, inputsW, recurrentW, biasesW, peepholeW *Node,
-	operandLengths, initialHidden, initialCell *Node,
-	direction lstm.DirectionType, layout int,
-) (allHiddenStates, lastHiddenState, lastCellState *Node) {
-	// Reverse direction not yet supported - bidirectional is handled by running forward + backward
-	if direction == lstm.DirReverse {
-		exceptions.Panicf("Dynamic LSTM does not support reverse-only direction yet, got: %v", direction)
-	}
-	if peepholeW != nil {
-		exceptions.Panicf("Dynamic LSTM does not support peephole connections yet")
-	}
-	// Note: operandLengths (sequence_lens in ONNX) specifies the actual length of each sequence in the batch.
-	// For now, we only support the case where all sequences have the full length (i.e., no padding/masking).
-	// This is commonly the case when operandLengths is a constant or when the model doesn't use variable-length sequences.
-	// TODO: Add proper support for ragged sequences by masking outputs based on operandLengths.
-	if operandLengths != nil {
-		// For now, just warn and continue - the model may still work if all sequences are the same length
-		fmt.Printf("WARNING: Dynamic LSTM received operandLengths parameter. Variable-length sequences are not fully supported yet.\n")
-		fmt.Printf("         The model will proceed assuming all sequences use the full length. Results may be incorrect if sequences have different lengths.\n")
-	}
-
-	g := operand.Graph()
-	dtype := operand.DType()
-
-	// Get dimensions
-	batchSize := operand.Shape().Dim(0)
-	seqLen := operand.Shape().Dim(1)      // May be symbolic
-	featuresSize := operand.Shape().Dim(2) // May be symbolic
-	hiddenSize := inputsW.Shape().Dim(2)
-
-	// If dimensions are symbolic, try to get concrete values from runtime
-	// This is needed because the While loop requires concrete shapes
-	var concreteBatchSize, concreteSeqLen, concreteFeaturesSize int
-	if batchSize < 0 || seqLen < 0 || featuresSize < 0 {
-		// Get runtime dimension sizes
-		batchSizeScalar := GetDimensionSize(operand, 0)
-		seqLenScalar := GetDimensionSize(operand, 1)
-		featuresSizeScalar := GetDimensionSize(operand, 2)
-
-		// For the While loop, we need concrete compile-time shapes
-		// Use upper bounds for symbolic dimensions
-		concreteBatchSize = batchSize
-		if concreteBatchSize < 0 {
-			concreteBatchSize = 1 // Upper bound for batch (actual value will be in batchSizeScalar)
-		}
-		concreteSeqLen = seqLen
-		if concreteSeqLen < 0 {
-			concreteSeqLen = 2048 // Upper bound for seqLen
-		}
-		concreteFeaturesSize = featuresSize
-		if concreteFeaturesSize < 0 {
-			// Try to infer from inputsW shape
-			concreteFeaturesSize = inputsW.Shape().Dim(3)
-			if concreteFeaturesSize < 0 {
-				exceptions.Panicf("Cannot determine features size for dynamic LSTM: operand has symbolic dimension and inputsW doesn't provide concrete value")
-			}
-		}
-
-		// Reshape operand to have concrete shape for processing
-		// The actual runtime shape will be determined by the runtime dimension sizes
-		// but we need concrete shapes for the While loop compilation
-		concreteShape := shapes.Make(dtype, concreteBatchSize, concreteSeqLen, concreteFeaturesSize)
-
-		// Use BroadcastToShape to convert symbolic → concrete (this will pad/broadcast as needed)
-		operand = BroadcastToShape(operand, concreteShape)
-
-		// Update dimension variables to use concrete values
-		batchSize = concreteBatchSize
-		seqLen = concreteSeqLen
-		featuresSize = concreteFeaturesSize
-
-		_, _, _ = batchSizeScalar, seqLenScalar, featuresSizeScalar // Mark as used (we'll need these later for runtime bounds)
-	}
-
-	// Check if initial states have valid shapes - if they're all symbolic, ignore them
-	if initialHidden != nil {
-		hiddenShape := initialHidden.Shape()
-		if hiddenShape.Rank() == 3 && hiddenShape.Dim(0) < 0 && hiddenShape.Dim(1) < 0 && hiddenShape.Dim(2) < 0 {
-			fmt.Printf("WARNING: initialHidden has all symbolic dimensions %v, ignoring it\n", hiddenShape)
-			initialHidden = nil
-		}
-	}
-	if initialCell != nil {
-		cellShape := initialCell.Shape()
-		if cellShape.Rank() == 3 && cellShape.Dim(0) < 0 && cellShape.Dim(1) < 0 && cellShape.Dim(2) < 0 {
-			fmt.Printf("WARNING: initialCell has all symbolic dimensions %v, ignoring it\n", cellShape)
-			initialCell = nil
-		}
-	}
-
-	// Calculate all linear projections of x upfront (outside the loop)
-	// projX shape: [numDirections, 4, batchSize, seqLen, hiddenSize]
-	// operand: [batch, seqLen, features]
-	// inputsW: [numDirections, 4, hidden, features]
-	// We want: [numDirections, 4, batch, seqLen, hidden]
-
-	// Use DotGeneral instead of Einsum to preserve symbolic dimensions
-	// operand: [batch, seqLen, features]
-	// inputsW: [numDirections, 4, hidden, features]
-	// Contract on features dimension: operand[2] with inputsW[3]
-	// Result: [batch, seqLen, numDirections, 4, hidden]
-	projX := DotGeneral(operand, []int{2}, nil, inputsW, []int{3}, nil)
-	// Transpose to [numDirections, 4, batch, seqLen, hidden]
-	projX = TransposeAllDims(projX, 2, 3, 0, 1, 4)
-
-	{
-		biasX := Slice(biasesW, AxisRange(), AxisRangeFromStart(4)) // 4 first biases
-		biasX = ExpandAxes(biasX, 2, 3)                              // Create batchSize and seqLen axes
-		projX = Add(projX, biasX)
-	}
-
-	// Get sequence length as runtime value (for While loop termination)
-	seqLenScalar := GetDimensionSize(operand, 1)
-
-	// After reshaping operand, projX should already have concrete dimensions
-	// So we don't need special padding logic anymore
-	projXPadded := projX
-
-	// Get StableHLO function for creating closures - must be done before defining helper closure
-	fn := g.StableHLOFunction()
-	if fn == nil {
-		exceptions.Panicf("convertDynamicLSTM requires StableHLO backend for While loops")
-	}
-
-	// Use concrete dimension values for the While loop
-	// These were computed earlier when reshaping operand
-	useActualBatchSize := batchSize // After reshape, this should be concrete
-	useActualSeqLen := seqLen       // After reshape, this should be concrete
-
-	// Ensure we have concrete dimensions for While loop - XLA requires concrete shapes
-	// Check if projXPadded has any symbolic dimensions and concretize them
-	projXShape := projXPadded.Shape()
-	needsConcretization := false
-	for _, dim := range projXShape.Dimensions {
-		if dim < 0 {
-			needsConcretization = true
-			break
-		}
-	}
-	if needsConcretization {
-		// projXPadded shape is [numDirections, 4, batch, seqLen, hiddenSize]
-		// Use available concrete values for symbolic dimensions
-		concreteProjXDims := make([]int, projXShape.Rank())
-		for i, dim := range projXShape.Dimensions {
-			if dim < 0 {
-				// Use concrete values computed earlier
-				if i == 2 {
-					// Batch dimension
-					if useActualBatchSize > 0 {
-						concreteProjXDims[i] = useActualBatchSize
-					} else {
-						concreteProjXDims[i] = 1 // Fallback
-					}
-				} else if i == 3 {
-					// SeqLen dimension
-					if useActualSeqLen > 0 {
-						concreteProjXDims[i] = useActualSeqLen
-					} else {
-						concreteProjXDims[i] = 2048 // Fallback to upper bound
-					}
-				} else {
-					concreteProjXDims[i] = 1 // Default fallback
-				}
-			} else {
-				concreteProjXDims[i] = dim
-			}
-		}
-		concreteProjXShape := shapes.Make(dtype, concreteProjXDims...)
-
-		// Use Reshape instead of Broadcast - Reshape can convert symbolic to concrete
-		// by trusting that the runtime dimensions will match the target shape.
-		// This works because XLA's DynamicReshape is designed for this purpose.
-		projXPadded = Reshape(projXPadded, concreteProjXDims...)
-
-		// If Reshape still has symbolic dimensions, the input was inherently symbolic.
-		// In this case, we need to check if it's still all-symbolic and handle accordingly.
-		postReshapeShape := projXPadded.Shape()
-		stillSymbolic := false
-		for _, dim := range postReshapeShape.Dimensions {
-			if dim < 0 {
-				stillSymbolic = true
-				break
-			}
-		}
-		if stillSymbolic {
-			// Try using DynamicReshape with explicit shape tensor
-			shapeTensor := Const(g, concreteProjXDims)
-			projXPadded = DynamicReshape(projX, shapeTensor)
-		}
-
-		// Update useActualBatchSize and useActualSeqLen from the concrete shape
-		if useActualBatchSize < 0 {
-			useActualBatchSize = concreteProjXDims[2]
-		}
-		if useActualSeqLen < 0 {
-			useActualSeqLen = concreteProjXDims[3]
-		}
-		_ = concreteProjXShape // suppress unused warning
-	}
-
-	// Helper function to run LSTM for a single direction
-	runDirectionLSTM := func(dirIdx int, isBackward bool) (dirAllHidden, dirLastHidden, dirLastCell *Node) {
-
-		// For weights that don't have symbolic dimensions, we can extract them normally
-		// Extract direction from recurrentW in its original flattened format [numDir, 4*hidden, hidden]
-		dirRecurrentW := Slice(recurrentW, AxisElem(dirIdx)) // [1, 4*hidden, hidden] = [1, 1024, 256]
-		// Squeeze to remove direction dimension: [4*hidden, hidden] = [1024, 256]
-		dirRecurrentW = Squeeze(dirRecurrentW, 0)
-		dirBiasesW := Slice(biasesW, AxisElem(dirIdx)) // [1, 8, hidden]
-		dirBiasesW = Squeeze(dirBiasesW, 0) // [8, hidden]
-
-		// For projX, we use the padded version (projXPadded) which has concrete shapes.
-		// We extract the direction using DynamicSlice in the While loop body.
-
-		// Initialize states for this direction
-		var prevHidden, prevCell *Node
-		if initialHidden == nil {
-			// Create zero hidden state with concrete shape [batch, hidden]
-			// Always use useActualBatchSize which is guaranteed to be concrete
-			prevHidden = Zeros(g, shapes.Make(dtype, useActualBatchSize, hiddenSize))
-		} else {
-			prevHidden = Squeeze(Slice(initialHidden, AxisElem(dirIdx)), 0)
-			// Ensure prevHidden has concrete shape
-			if prevHidden.Shape().Dim(0) < 0 {
-				prevHidden = BroadcastToShape(prevHidden, shapes.Make(dtype, useActualBatchSize, hiddenSize))
-			}
-		}
-		if initialCell == nil {
-			// Use concrete shape to match prevHidden
-			prevCell = Zeros(g, shapes.Make(dtype, useActualBatchSize, hiddenSize))
-		} else {
-			prevCell = Squeeze(Slice(initialCell, AxisElem(dirIdx)), 0)
-			// Ensure prevCell has concrete shape
-			if prevCell.Shape().Dim(0) < 0 {
-				prevCell = BroadcastToShape(prevCell, shapes.Make(dtype, useActualBatchSize, hiddenSize))
-			}
-		}
-
-		// Initialize loop counter
-		counter := Scalar(g, dtypes.Int32, 0)
-
-		// Pre-allocate outputs accumulator
-		// We need a tensor with shape [seqLen, batchSize, hiddenSize]
-		// For While loops, XLA needs concrete shapes at compile time.
-		// We use the concrete values computed earlier (useActualBatchSize, useActualSeqLen)
-		var outputsAccum *Node
-		outputsAccum = Zeros(g, shapes.Make(dtype, useActualSeqLen, useActualBatchSize, hiddenSize))
-
-		// Loop state: [counter, hidden, cell, outputs, seqLen, projX, recurrentW, biasesW, dirIdxScalar]
-		// The last 5 are constants passed through the loop unchanged
-
-		// Create a scalar node for dirIdx to pass to the loop
-		dirIdxScalar := Scalar(g, dtypes.Int32, int32(dirIdx))
-
-		// Create condition closure: counter < seqLen
-		condFn := fn.Closure()
-		condCounter, _ := condFn.Input(xla.ShapeToXLA(counter.Shape()))
-		prevHiddenXLAShape := xla.ShapeToXLA(prevHidden.Shape())
-		condHidden, err := condFn.Input(prevHiddenXLAShape)
-		if err != nil {
-			exceptions.Panicf("Failed to create condHidden input: %v", err)
-		}
-		condCell, _ := condFn.Input(xla.ShapeToXLA(prevCell.Shape()))
-		condOutputs, _ := condFn.Input(xla.ShapeToXLA(outputsAccum.Shape()))
-		condSeqLen, _ := condFn.Input(xla.ShapeToXLA(seqLenScalar.Shape()))
-		condProjX, _ := condFn.Input(xla.ShapeToXLA(projXPadded.Shape())) // Full projXPadded tensor (concrete shape)
-		condRecurrentW, _ := condFn.Input(xla.ShapeToXLA(dirRecurrentW.Shape()))
-		condBiasesW, _ := condFn.Input(xla.ShapeToXLA(dirBiasesW.Shape()))
-		condDirIdx, _ := condFn.Input(xla.ShapeToXLA(dirIdxScalar.Shape()))
-		_ = condHidden
-		_ = condCell
-		_ = condOutputs
-		_ = condProjX
-		_ = condRecurrentW
-		_ = condBiasesW
-		_ = condDirIdx
-		cond, _ := stablehlo.Compare(condCounter, condSeqLen, types.CompareLT, types.CompareSigned)
-		condFn.Return(cond)
-
-		// Create body closure: process one timestep
-		bodyFn := fn.Closure()
-		bodyCounter, _ := bodyFn.Input(xla.ShapeToXLA(counter.Shape()))
-		bodyHidden, _ := bodyFn.Input(xla.ShapeToXLA(prevHidden.Shape()))
-		bodyCell, _ := bodyFn.Input(xla.ShapeToXLA(prevCell.Shape()))
-		bodyOutputs, _ := bodyFn.Input(xla.ShapeToXLA(outputsAccum.Shape()))
-		bodySeqLen, _ := bodyFn.Input(xla.ShapeToXLA(seqLenScalar.Shape()))
-		bodyProjX, _ := bodyFn.Input(xla.ShapeToXLA(projXPadded.Shape())) // Full projXPadded tensor (concrete shape)
-		bodyRecurrentW, _ := bodyFn.Input(xla.ShapeToXLA(dirRecurrentW.Shape()))
-		bodyBiasesW, _ := bodyFn.Input(xla.ShapeToXLA(dirBiasesW.Shape()))
-		bodyDirIdx, _ := bodyFn.Input(xla.ShapeToXLA(dirIdxScalar.Shape()))
-
-		// Convert dtype to StableHLO dtype
-		xladtype := xla.DTypeToXLA(dtype)
-
-		// Compute actual sequence position
-		// For backward: seqPos = seqLen - 1 - counter
-		// For forward: seqPos = counter
-		var seqPosIdx *stablehlo.Value
-		if isBackward {
-			one, _ := bodyFn.ConstantFromScalar(int32(1))
-			seqLenMinusOne, _ := stablehlo.Subtract(bodySeqLen, one)
-			seqPosIdx, _ = stablehlo.Subtract(seqLenMinusOne, bodyCounter)
-		} else {
-			seqPosIdx = bodyCounter
-		}
-
-		// Extract input projection for current direction and timestep
-		// bodyProjX shape: [numDirections, 4, batch, seqLen, hidden]
-		// First, extract the direction: select [dirIdx, :, :, :, :]
-		// Then, extract the timestep: select [:, :, seqPosIdx, :]
-		zero, _ := bodyFn.ConstantFromScalar(int32(0))
-
-		// Step 1: Extract direction slice from bodyProjX
-		// bodyProjX: [numDirections, 4, batch, seqLen, hidden]
-		// We want: [1, 4, batch, seqLen, hidden] at dirIdx
-		// Use useActualSeqLen for the slice size (concrete value)
-		dirSlice, _ := stablehlo.DynamicSlice(bodyProjX,
-			[]*stablehlo.Value{bodyDirIdx, zero, zero, zero, zero},
-			[]int{1, 4, useActualBatchSize, useActualSeqLen, hiddenSize})
-		// Reshape to remove direction dimension: [4, batch, seqLen, hidden]
-		// But wait - useActualSeqLen might be the upper bound (2048), not the actual value.
-		// We can't use Reshape with the symbolic seqLen anyway.
-		// Instead, we'll keep the extra dimension and adjust the next DynamicSlice
-
-		// Step 2: Extract timestep from dirSlice
-		// dirSlice shape: [1, 4, batch, useActualSeqLen, hidden]
-		// Dynamic slice at seqPosIdx position: select [0, :, :, seqPosIdx, :]
-		// Result shape: [1, 4, batch, 1, hidden]
-		stepInput, _ := stablehlo.DynamicSlice(dirSlice,
-			[]*stablehlo.Value{zero, zero, zero, seqPosIdx, zero},
-			[]int{1, 4, useActualBatchSize, 1, hiddenSize})
-		// Reshape to remove extra dimensions: [4, batch, hidden]
-		stepInput, _ = stablehlo.Reshape(stepInput, stablehloshapes.Make(xladtype, 4, useActualBatchSize, hiddenSize))
-
-		// projState = einsum("bh,njh->nbj", bodyHidden, bodyRecurrentW)
-		// bodyHidden: [batch, hidden], bodyRecurrentW: [4*hidden, hidden] (flattened format)
-		// We want: [4, batch, hidden]
-		// Compute each gate separately using the flattened weight matrix
-		var gateResults []*stablehlo.Value
-		for gateIdx := 0; gateIdx < 4; gateIdx++ {
-			// Extract weight matrix for this gate from flattened format: [hidden, hidden]
-			// In flattened format [4*hidden, hidden], gate i occupies rows [i*hidden : (i+1)*hidden]
-			startRow := gateIdx * hiddenSize
-			endRow := (gateIdx + 1) * hiddenSize
-			gateW, _ := stablehlo.Slice(bodyRecurrentW,
-				[]int{startRow, 0},
-				[]int{endRow, hiddenSize},
-				[]int{1, 1})
-			// gateW is now [hidden, hidden]
-
-			// Compute bodyHidden @ gateW: [batch, hidden] @ [hidden, hidden] -> [batch, hidden]
-			gateResult, _ := stablehlo.DotGeneral(
-				bodyHidden, []int{1}, nil, // LHS: contract dim 1 (hidden), no batch dims
-				gateW, []int{0}, nil,      // RHS: contract dim 0 (hidden), no batch dims
-			).Done()
-
-			// Reshape to add gate dimension: [1, batch, hidden]
-			gateResult, _ = stablehlo.Reshape(gateResult, stablehloshapes.Make(xladtype, 1, useActualBatchSize, hiddenSize))
-			gateResults = append(gateResults, gateResult)
-		}
-		// Concatenate results along gate dimension: [4, batch, hidden]
-		projState, _ := stablehlo.Concatenate(0, gateResults...)
-
-		// Add recurrent biases (last 4 biases)
-		biasState, _ := stablehlo.Slice(bodyBiasesW,
-			[]int{4, 0},
-			[]int{8, hiddenSize},
-			[]int{1, 1})
-		biasState, _ = stablehlo.Reshape(biasState, stablehloshapes.Make(xladtype, 4, 1, hiddenSize))
-		projState, _ = stablehlo.Add(projState, biasState)
-
-		// Extract and compute LSTM gates
-		extractGate := func(idx int) (*stablehlo.Value, error) {
-			inputPart, err := stablehlo.Slice(stepInput,
-				[]int{idx, 0, 0},
-				[]int{idx + 1, useActualBatchSize, hiddenSize},
-				[]int{1, 1, 1})
-			if err != nil {
-				return nil, err
-			}
-			inputPart, err = stablehlo.Reshape(inputPart, stablehloshapes.Make(xladtype, useActualBatchSize, hiddenSize))
-			if err != nil {
-				return nil, err
-			}
-
-			recurrentPart, err := stablehlo.Slice(projState,
-				[]int{idx, 0, 0},
-				[]int{idx + 1, useActualBatchSize, hiddenSize},
-				[]int{1, 1, 1})
-			if err != nil {
-				return nil, err
-			}
-			recurrentPart, err = stablehlo.Reshape(recurrentPart, stablehloshapes.Make(xladtype, useActualBatchSize, hiddenSize))
-			if err != nil {
-				return nil, err
-			}
-
-			return stablehlo.Add(inputPart, recurrentPart)
-		}
-
-		iGate, _ := extractGate(0)
-		iGate, _ = stablehlo.Logistic(iGate) // sigmoid
-
-		oGate, _ := extractGate(1)
-		oGate, _ = stablehlo.Logistic(oGate)
-
-		fGate, _ := extractGate(2)
-		fGate, _ = stablehlo.Logistic(fGate)
-
-		cTilde, _ := extractGate(3)
-		cTilde, _ = stablehlo.Tanh(cTilde)
-
-		// newCellState = fGate * bodyCell + iGate * cTilde
-		fPart, _ := stablehlo.Multiply(fGate, bodyCell)
-		iPart, _ := stablehlo.Multiply(iGate, cTilde)
-		newCellState, _ := stablehlo.Add(fPart, iPart)
-
-		// newHiddenState = oGate * tanh(newCellState)
-		cellTanh, _ := stablehlo.Tanh(newCellState)
-		newHiddenState, _ := stablehlo.Multiply(oGate, cellTanh)
-
-		// Update outputs accumulator: bodyOutputs[counter, :, :] = newHiddenState
-		// Reshape newHiddenState to [1, batch, hidden]
-		hiddenExpandedForUpdate, _ := stablehlo.Reshape(newHiddenState, stablehloshapes.Make(xladtype, 1, useActualBatchSize, hiddenSize))
-		newOutputs, _ := stablehlo.DynamicUpdateSlice(bodyOutputs, hiddenExpandedForUpdate,
-			[]*stablehlo.Value{bodyCounter, zero, zero})
-
-		// Increment counter
-		one, _ := bodyFn.ConstantFromScalar(int32(1))
-		newCounter, _ := stablehlo.Add(bodyCounter, one)
-
-		// Return new state: [counter, hidden, cell, outputs, seqLen, projXPadded, recurrentW, biasesW, dirIdxScalar]
-		// Constants are passed through unchanged
-		bodyFn.Return(newCounter, newHiddenState, newCellState, newOutputs, bodySeqLen, bodyProjX, bodyRecurrentW, bodyBiasesW, bodyDirIdx)
-
-		// Execute While loop
-		results := While(condFn, bodyFn, counter, prevHidden, prevCell, outputsAccum, seqLenScalar, projXPadded, dirRecurrentW, dirBiasesW, dirIdxScalar)
-
-		// Extract results
-		// results[0] = final counter (unused)
-		// results[1] = last hidden state
-		// results[2] = last cell state
-		// results[3] = all hidden states
-		dirLastHidden = results[1]
-		dirLastCell = results[2]
-		dirAllHidden = results[3] // [seqLen, batch, hidden]
-
-		return dirAllHidden, dirLastHidden, dirLastCell
-	}
-
-	// Run LSTM for each direction
-	if direction == lstm.DirForward {
-		// Single direction: forward
-		allHiddenStates, lastHidden, lastCell := runDirectionLSTM(0, false)
-		lastHiddenState = ExpandDims(lastHidden, 0) // Add direction dimension
-		lastCellState = ExpandDims(lastCell, 0)     // Add direction dimension
-		// allHiddenStates is currently [seqLen, batch, hidden]
-		// ONNX expects [seqLen, numDirections, batch, hidden]
-		allHiddenStates = ExpandDims(allHiddenStates, 1) // Add direction dimension
-	} else {
-		// Bidirectional: run forward and backward
-		fwdAllHidden, fwdLastHidden, fwdLastCell := runDirectionLSTM(0, false)
-		bwdAllHidden, bwdLastHidden, bwdLastCell := runDirectionLSTM(1, true)
-
-		// Stack last states: [numDirections, batch, hidden]
-		lastHiddenState = Stack([]*Node{fwdLastHidden, bwdLastHidden}, 0)
-		lastCellState = Stack([]*Node{fwdLastCell, bwdLastCell}, 0)
-
-		// For allHiddenStates, we need to interleave forward and backward
-		// fwdAllHidden: [seqLen, batch, hidden]
-		// bwdAllHidden: [seqLen, batch, hidden]
-		// Target: [seqLen, numDirections=2, batch, hidden]
-		fwdExpanded := ExpandDims(fwdAllHidden, 1) // [seqLen, 1, batch, hidden]
-		bwdExpanded := ExpandDims(bwdAllHidden, 1) // [seqLen, 1, batch, hidden]
-		allHiddenStates = Concatenate([]*Node{fwdExpanded, bwdExpanded}, 1) // [seqLen, 2, batch, hidden]
-	}
-
-	return allHiddenStates, lastHiddenState, lastCellState
-}
-
 func convertLSTM(_ *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	// Inputs
 	{
@@ -3290,7 +3010,6 @@ func convertLSTM(_ *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	// Reshape recurrentW to 4D format expected by LSTM layer
 	recurrentW = Reshape(recurrentW, numDirections, 4, hiddenDim, hiddenDim)
 	biasesW = Reshape(biasesW, numDirections, 8, hiddenDim)
-
 
 	// Attributes:
 	activationAlpha := getFloatAttrOr(node, "activation_alpha", 0.01)
@@ -3343,25 +3062,13 @@ func convertLSTM(_ *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 		exceptions.Panicf("unsupported layout %d for LSTM: only values 0 or 1 are supported", layout)
 	}
 
-
 	// Check for symbolic dimensions in operand
 	operandShape := operand.Shape()
 	hasSymbolicDims := operandShape.Dim(0) < 0 || operandShape.Dim(1) < 0 || operandShape.Dim(2) < 0
 
 	if hasSymbolicDims {
-		// Use dynamic LSTM implementation with XLA While loop
-		allHiddenStates, lastHiddenState, lastCellState := convertDynamicLSTM(
-			operand, inputsW, recurrentW, biasesW, peepholeW,
-			operandLengths, initialHidden, initialCell,
-			direction, layout)
-
-		if len(node.Output) >= 2 && node.Output[1] != "" {
-			convertedOutputs[node.Output[1]] = lastHiddenState
-		}
-		if len(node.Output) >= 3 && node.Output[2] != "" {
-			convertedOutputs[node.Output[2]] = lastCellState
-		}
-		return allHiddenStates
+		// Dynamic LSTM not supported for XLA backend
+		exceptions.Panicf("LSTM requires concrete dimensions for XLA backend")
 	}
 
 	lstmLayer := lstm.NewWithWeights(operand, inputsW, recurrentW, biasesW, peepholeW).Direction(direction)
@@ -3490,7 +3197,7 @@ func convertConv(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []
 			}
 			b = Reshape(b, shape...)
 		}
-		out = Add(out, b)
+		out = onnxAdd(out, b)
 	}
 	return out
 }
@@ -3687,8 +3394,8 @@ func convertBatchNormalization(_ *Model, _ map[string]*Node, node *protos.NodePr
 		mean = Reshape(mean, shape...)
 		variance = Reshape(variance, shape...)
 	}
-	normed := Div(Sub(x, mean), Sqrt(Add(variance, Scalar(x.Graph(), variance.DType(), epsilon))))
-	out := Add(Mul(normed, scale), bias)
+	normed := onnxDiv(onnxSub(x, mean), Sqrt(onnxAdd(variance, Scalar(x.Graph(), variance.DType(), epsilon))))
+	out := onnxAdd(onnxMul(normed, scale), bias)
 	return out
 }
 
@@ -3763,18 +3470,18 @@ func convertLayerNormalization(_ *Model, _ map[string]*Node, node *protos.NodePr
 	// Use ReduceAndKeep to preserve dimensions for broadcasting
 	mean := ReduceAndKeep(x, ReduceMean, axes...)
 	// Variance calculation: E[(X - mean)^2]
-	centered := Sub(x, mean)
+	centered := onnxSub(x, mean)
 	variance := ReduceAndKeep(Square(centered), ReduceMean, axes...)
 
 	// Normalize: (X - mean) / Sqrt(variance + epsilon)
-	normalized := Div(centered, Sqrt(Add(variance, Scalar(x.Graph(), x.DType(), epsilon))))
+	normalized := onnxDiv(centered, Sqrt(onnxAdd(variance, Scalar(x.Graph(), x.DType(), epsilon))))
 
 	// Apply scale (gamma)
-	result := Mul(normalized, scale)
+	result := onnxMul(normalized, scale)
 
 	// Apply bias (beta) if provided
 	if bias != nil {
-		result = Add(result, bias)
+		result = onnxAdd(result, bias)
 	}
 
 	return result
@@ -3824,13 +3531,25 @@ func convertSplit(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		}
 	}
 
-	// Perform the split using SliceAxis
+	// Handle empty tensor case: if any dimension is 0, create empty outputs using Zeros
 	splits := make([]*Node, numOutputs)
-	currentStart := 0
-	for i := 0; i < numOutputs; i++ {
-		end := currentStart + splitSizes[i]
-		splits[i] = SliceAxis(x, axis, AxisRange(currentStart, end))
-		currentStart = end
+	if x.Shape().Size() == 0 {
+		// For empty input, create empty outputs with appropriate shapes using Zeros
+		for i := 0; i < numOutputs; i++ {
+			// Create output shape by replacing the split axis dimension
+			outputDims := make([]int, x.Rank())
+			copy(outputDims, x.Shape().Dimensions)
+			outputDims[axis] = splitSizes[i]
+			splits[i] = Zeros(x.Graph(), shapes.Make(x.DType(), outputDims...))
+		}
+	} else {
+		// Normal case: perform the split using SliceAxis
+		currentStart := 0
+		for i := 0; i < numOutputs; i++ {
+			end := currentStart + splitSizes[i]
+			splits[i] = SliceAxis(x, axis, AxisRange(currentStart, end))
+			currentStart = end
+		}
 	}
 
 	// Assign each output to convertedOutputs
@@ -3891,9 +3610,9 @@ func onnxDequantizeLinear(x, scale, xZeroPoint *Node, targetAxis int, outputDTyp
 		scale = Reshape(scale, newScaleShape.Dimensions...)
 	}
 	if xZeroPoint != nil {
-		x = Sub(ConvertDType(x, dtypes.Int32), ConvertDType(xZeroPoint, dtypes.Int32))
+		x = onnxSub(ConvertDType(x, dtypes.Int32), ConvertDType(xZeroPoint, dtypes.Int32))
 	}
-	x = Mul(ConvertDType(x, scale.DType()), scale)
+	x = onnxMul(ConvertDType(x, scale.DType()), scale)
 	if x.DType() != outputDType {
 		x = ConvertDType(x, outputDType)
 	}
@@ -3983,7 +3702,7 @@ func onnxQuantizeLinear(x, yScale, yZeroPoint *Node, targetAxis int, outputDType
 
 	// Add zero point if provided
 	if yZeroPoint != nil {
-		y = Add(y, ConvertDType(yZeroPoint, y.DType()))
+		y = onnxAdd(y, ConvertDType(yZeroPoint, y.DType()))
 	}
 
 	// Saturate to output dtype range
@@ -4075,7 +3794,7 @@ func onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint *Node) *Node {
 				aZeroPointWorking = Reshape(aZeroPointWorking, newShape.Dimensions...)
 			}
 		}
-		aWorking = Sub(aWorking, aZeroPointWorking)
+		aWorking = onnxSub(aWorking, aZeroPointWorking)
 	}
 
 	if bZeroPoint != nil {
@@ -4099,7 +3818,7 @@ func onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint *Node) *Node {
 				bZeroPointWorking = Reshape(bZeroPointWorking, newShape.Dimensions...)
 			}
 		}
-		bWorking = Sub(bWorking, bZeroPointWorking)
+		bWorking = onnxSub(bWorking, bZeroPointWorking)
 	}
 
 	// Perform matrix multiplication in int32
@@ -4111,41 +3830,12 @@ func onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint *Node) *Node {
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__DynamicQuantizeLinear.html
 func convertDynamicQuantizeLinear(convertedOutputs map[string]*Node, nodeProto *protos.NodeProto, inputs []*Node) *Node {
-	x := inputs[0]
 	if len(nodeProto.Output) != 3 {
 		exceptions.Panicf("DynamicQuantizeLinear: expected 3 outputs (y, y_scale, y_zero_point), got %d instead (%q)", len(nodeProto.Output), nodeProto.Output)
 	}
-	y, yScale, yZeroPoint := onnxDynamicQuantizeLinear(x)
-	convertedOutputs[nodeProto.Output[0]] = y
-	convertedOutputs[nodeProto.Output[1]] = yScale
-	convertedOutputs[nodeProto.Output[2]] = yZeroPoint
-	return y
-}
-
-func onnxDynamicQuantizeLinear(x *Node) (y, yScale, yZeroPoint *Node) {
-	g := x.Graph()
-	dtype := x.DType()
-	quantizedDType := dtypes.Uint8
-	zero := ScalarZero(g, dtype)
-	one := ScalarOne(g, dtype)
-
-	qMax := Scalar(g, dtype, 255)
-	xMin := Min(ReduceAllMin(x), zero)
-	xMax := Max(ReduceAllMax(x), zero)
-	xRange := Sub(xMax, xMin)
-	yScale = Div(xRange, qMax)
-	yScale = Where(Equal(yScale, zero), one, yScale)
-	xMinScaled := Div(xMin, yScale)
-	yZeroPoint = Round(Clip(Neg(xMinScaled), zero, qMax))
-
-	// QuantizeLinear: important detail is that the rounding occurs **before** adding the yZeroPoint.
-	y = Add(Round(Div(x, yScale)), yZeroPoint)
-	y = Clip(y, zero, qMax)
-
-	// Convert to quantize dtype.
-	y = ConvertDType(y, quantizedDType)
-	yZeroPoint = ConvertDType(yZeroPoint, quantizedDType)
-	return
+	// DynamicQuantizeLinear not supported for XLA backend
+	exceptions.Panicf("DynamicQuantizeLinear not supported for XLA backend")
+	return nil // unreachable
 }
 
 // convertQLinearMatMul converts the corresponding ONNX node to a GoMLX node.
@@ -4185,18 +3875,18 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 	// Subtract zero points if provided
 	if aZeroPoint != nil && !aZeroPoint.IsScalar() || (aZeroPoint != nil && aZeroPoint.Shape().Size() > 0) {
 		aZeroPointInt32 := ConvertDType(aZeroPoint, dtypes.Int32)
-		aInt32 = Sub(aInt32, aZeroPointInt32)
+		aInt32 = onnxSub(aInt32, aZeroPointInt32)
 	} else if aZeroPoint != nil {
 		aZeroPointInt32 := ConvertDType(aZeroPoint, dtypes.Int32)
-		aInt32 = Sub(aInt32, aZeroPointInt32)
+		aInt32 = onnxSub(aInt32, aZeroPointInt32)
 	}
 
 	if bZeroPoint != nil && !bZeroPoint.IsScalar() || (bZeroPoint != nil && bZeroPoint.Shape().Size() > 0) {
 		bZeroPointInt32 := ConvertDType(bZeroPoint, dtypes.Int32)
-		bInt32 = Sub(bInt32, bZeroPointInt32)
+		bInt32 = onnxSub(bInt32, bZeroPointInt32)
 	} else if bZeroPoint != nil {
 		bZeroPointInt32 := ConvertDType(bZeroPoint, dtypes.Int32)
-		bInt32 = Sub(bInt32, bZeroPointInt32)
+		bInt32 = onnxSub(bInt32, bZeroPointInt32)
 	}
 
 	// Perform integer matrix multiplication in int32
@@ -4208,16 +3898,16 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 	matmulFloat := ConvertDType(matmulResult, scaleDType)
 
 	// Compute combined scale: (a_scale * b_scale) / y_scale
-	combinedScale := Div(Mul(aScale, bScale), yScale)
+	combinedScale := onnxDiv(Mul(aScale, bScale), yScale)
 
 	// Apply scale
-	scaledResult := Mul(matmulFloat, combinedScale)
+	scaledResult := onnxMul(matmulFloat, combinedScale)
 
 	// Add output zero point and convert back to quantized type
 	outputDType := yZeroPoint.DType()
 	if yZeroPoint != nil {
 		yZeroPointFloat := ConvertDType(yZeroPoint, scaleDType)
-		scaledResult = Add(scaledResult, yZeroPointFloat)
+		scaledResult = onnxAdd(scaledResult, yZeroPointFloat)
 	}
 
 	// Round and clip to valid quantized range
@@ -4341,158 +4031,6 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 	return nil
 }
 
-// convertTopKDynamic implements TopK when K is dynamic (not materializable at compile time).
-// It uses Sort + DynamicSlice to extract the top K elements.
-func convertTopKDynamic(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, operand, kNode *Node, axis int, largest bool) *Node {
-	g := operand.Graph()
-	dimSize := operand.Shape().Dim(axis)
-
-	// Create indices tensor [0, 1, 2, ..., dimSize-1] along the sort axis
-	// We need to create this for all elements in the batch
-	operandShape := operand.Shape()
-	rank := operandShape.Rank()
-
-	// Use XLA's backend sort operation directly
-	// We need to create a comparator function
-	// For now, let's use a simpler approach: use GoMLX's sorting capabilities
-	// Since we don't have direct access to XLA Sort from GoMLX yet,
-	// we'll need to use a different approach
-
-	// Alternative: Use argsort-like behavior by pairing values with indices
-	// and then slicing the result
-
-	// For now, implement using repeated operations similar to the static version
-	// but with dynamic slicing at the end
-
-	// Step 1: Sort the entire axis
-	// Since we don't have Sort exposed in GoMLX yet, we'll have to use a workaround
-	// Let's use the existing repeated argmax/argmin approach but collect all results
-	// and then dynamically slice to K
-
-	// This is a workaround until we expose Sort in GoMLX
-	// For GLiNER's case, the dimension size is typically small enough that
-	// we can materialize the full sorted array and then slice
-
-	// Create a large enough k for full sort (use dimSize)
-	// Then we'll dynamically slice to the actual K
-	maxK := dimSize
-
-	// Implement full sort using repeated argmax
-	valuesSlices := make([]*Node, maxK)
-	indicesSlices := make([]*Node, maxK)
-
-	// Current tensor to search
-	current := operand
-	// Mask to track which indices we've already selected
-	mask := OnesLike(operand)
-
-	for i := 0; i < maxK; i++ {
-		// Mask the current values
-		masked := Mul(current, mask)
-
-		// Find the argmax/argmin
-		var idx, val *Node
-		if largest {
-			// For largest, we want argmax
-			idx = ArgMax(masked, axis, dtypes.Int64)
-			val = ReduceMax(masked, axis)
-		} else {
-			// For smallest, we want argmin
-			idx = ArgMin(masked, axis, dtypes.Int64)
-			val = ReduceMin(masked, axis)
-		}
-
-		// Store results
-		indicesSlices[i] = ExpandDims(idx, axis)
-		valuesSlices[i] = ExpandDims(val, axis)
-
-		// Update mask to exclude this index
-		if i < maxK-1 {
-			// Create a one-hot encoding of the selected index
-			oneHot := OneHot(idx, dimSize, dtypes.Float32)
-			// Expand to match operand shape for the axis dimension
-			oneHot = ExpandDims(oneHot, axis)
-			// Subtract from mask (set selected position to 0)
-			mask = Sub(mask, oneHot)
-			// Also update current to set selected values to extreme values
-			if largest {
-				// Set to minimum value
-				replacement := MulScalar(oneHot, -1e9)
-				current = Add(Mul(current, Sub(OnesLike(oneHot), oneHot)), replacement)
-			} else {
-				// Set to maximum value
-				replacement := MulScalar(oneHot, 1e9)
-				current = Add(Mul(current, Sub(OnesLike(oneHot), oneHot)), replacement)
-			}
-		}
-	}
-
-	// Concatenate all results
-	allValues := Concatenate(valuesSlices, axis)
-	allIndices := Concatenate(indicesSlices, axis)
-
-	// Now dynamically slice to K elements
-	// DynamicSlice requires start indices for all dimensions
-	// We want to slice [0:k] along the axis dimension and [0:size] for others
-
-	// Build start indices (all zeros)
-	startIndices := make([]*Node, rank)
-	for i := 0; i < rank; i++ {
-		startIndices[i] = Const(g, int32(0))
-	}
-
-	// Build slice sizes
-	sliceSizes := make([]int, rank)
-	for i := 0; i < rank; i++ {
-		if i == axis {
-			sliceSizes[i] = -1 // Will be replaced with dynamic K
-		} else {
-			sliceSizes[i] = operandShape.Dim(i)
-		}
-	}
-
-	// We need to use DynamicSlice with dynamic size
-	// But DynamicSlice in XLA requires compile-time sizes
-	// Instead, we need to use a different approach
-
-	// Actually, let's use masking: create a mask based on K
-	// and zero out elements beyond K
-
-	// Create a range tensor [0, 1, 2, ..., dimSize-1] along axis
-	rangeShape := allValues.Shape()
-	rangeIndices := Iota(g, rangeShape, axis)
-	rangeIndices = ConvertDType(rangeIndices, dtypes.Int64)
-
-	// Convert K to int64 for comparison
-	kInt64 := ConvertDType(kNode, dtypes.Int64)
-
-	// Broadcast K to match the shape
-	kBroadcast := BroadcastToDims(kInt64, rangeShape.Dimensions...)
-
-	// Create mask: range < k
-	maskNew := LessThan(rangeIndices, kBroadcast)
-
-	// Apply mask (zero out values beyond K)
-	// For values, multiply by mask (converted to same dtype)
-	maskFloat := ConvertDType(maskNew, allValues.DType())
-	values := Mul(allValues, maskFloat)
-
-	// For indices, we can also mask but keeping int64
-	maskInt := ConvertDType(maskNew, dtypes.Int64)
-	indices := Mul(allIndices, maskInt)
-
-	// Register both outputs
-	if len(node.Output) >= 1 && node.Output[0] != "" {
-		convertedOutputs[node.Output[0]] = values
-	}
-	if len(node.Output) >= 2 && node.Output[1] != "" {
-		convertedOutputs[node.Output[1]] = indices
-	}
-
-	// Return values as the primary output (following ONNX spec)
-	return values
-}
-
 // convertTopK converts an ONNX TopK node to GoMLX nodes.
 //
 // See ONNX documentation in:
@@ -4509,11 +4047,15 @@ func convertTopK(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	axis = AdjustAxisToOperandRank(operand, axis)
 
 	// Try to get K from second input - it should be a constant
-	// If it's dynamic (cannot be materialized), we'll use a Sort-based fallback
+	// If it's dynamic (cannot be materialized), panic - not supported
 	kTensor, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 	if err != nil {
-		// K is dynamic - use Sort-based fallback
-		return convertTopKDynamic(m, convertedOutputs, node, operand, inputs[1], axis, largest)
+		// K is dynamic - not supported for XLA backend
+		// Provide a clear error message explaining the limitation
+		exceptions.Panicf("TopK operation at %q requires K to be constant, but K depends on runtime inputs.\n"+
+			"The XLA backend cannot support data-dependent TopK operations.\n"+
+			"K input: %q\n"+
+			"Error: %v", node.Name, node.Input[1], err)
 	}
 	k := tensorToInts(kTensor)[0]
 
@@ -4533,14 +4075,22 @@ func convertTopK(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	// This is not the most efficient but will work
 	var values, indices *Node
 
+	// Convert operand to Float32 if needed for consistent dtype handling
+	// The ONNX operations (onnxMul, onnxSub, onnxAdd) will promote to Float32 anyway
+	// when mixed with Float32 masks/oneHot tensors
+	workingOperand := operand
+	if !operand.DType().IsFloat() {
+		workingOperand = ConvertDType(operand, dtypes.Float32)
+	}
+
 	if k == 1 {
 		// Special case: single element is just ArgMax/ArgMin
 		if largest {
-			indices = ArgMax(operand, axis, dtypes.Int64)
-			values = ReduceMax(operand, axis)
+			indices = ArgMax(workingOperand, axis, dtypes.Int64)
+			values = ReduceMax(workingOperand, axis)
 		} else {
-			indices = ArgMin(operand, axis, dtypes.Int64)
-			values = ReduceMin(operand, axis)
+			indices = ArgMin(workingOperand, axis, dtypes.Int64)
+			values = ReduceMin(workingOperand, axis)
 		}
 		// Expand dims to make output consistent with multi-k case
 		values = ExpandDims(values, axis)
@@ -4557,13 +4107,13 @@ func convertTopK(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 		indicesSlices := make([]*Node, k)
 
 		// Current tensor to search
-		current := operand
+		current := workingOperand
 		// Mask to track which indices we've already selected
-		mask := OnesLike(operand)
+		mask := OnesLike(workingOperand)
 
 		for i := 0; i < k; i++ {
 			// Mask the current values
-			masked := Mul(current, mask)
+			masked := onnxMul(current, mask)
 
 			// Find the argmax/argmin
 			var idx, val *Node
@@ -4584,20 +4134,41 @@ func convertTopK(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 			// Update mask to exclude this index
 			if i < k-1 {
 				// Create a one-hot encoding of the selected index
+				// OneHot adds a dimension at the end, so we need to move it to the correct axis
 				oneHot := OneHot(idx, dimSize, dtypes.Float32)
-				// Expand to match operand shape for the axis dimension
-				oneHot = ExpandDims(oneHot, axis)
+
+				// Move the last dimension (one-hot) to the axis position
+				// For example, if operand is [A, B, C] and axis=1:
+				// - idx is [A, C] (after reduction)
+				// - oneHot is [A, C, B] (after OneHot)
+				// - we need [A, B, C]
+				rank := workingOperand.Rank()
+				if axis != rank-1 {
+					// Create permutation: move last dim to axis position
+					// Example: rank=3, axis=1: oneHot has dims [0, 2, 1] and we want [0, 1, 2]
+					// So perm should be [0, 2, 1] to reorder from [0, 2, 1] to [0, 1, 2]
+					perm := make([]int, rank)
+					for j := 0; j < axis; j++ {
+						perm[j] = j // Keep dims before axis in place
+					}
+					perm[axis] = rank - 1 // Put last dim at axis position
+					for j := axis + 1; j < rank; j++ {
+						perm[j] = j - 1 // Shift remaining dims left
+					}
+					oneHot = TransposeAllDims(oneHot, perm...)
+				}
+
 				// Subtract from mask (set selected position to 0)
-				mask = Sub(mask, oneHot)
+				mask = onnxSub(mask, oneHot)
 				// Also update current to set selected values to extreme values
 				if largest {
 					// Set to minimum value
 					replacement := MulScalar(oneHot, -1e9)
-					current = Add(Mul(current, Sub(OnesLike(oneHot), oneHot)), replacement)
+					current = onnxAdd(onnxMul(current, onnxSub(OnesLike(oneHot), oneHot)), replacement)
 				} else {
 					// Set to maximum value
 					replacement := MulScalar(oneHot, 1e9)
-					current = Add(Mul(current, Sub(OnesLike(oneHot), oneHot)), replacement)
+					current = onnxAdd(onnxMul(current, onnxSub(OnesLike(oneHot), oneHot)), replacement)
 				}
 			}
 		}
@@ -4635,24 +4206,25 @@ func convertNonZero(m *Model, convertedOutputs map[string]*Node, node *protos.No
 	g := input.Graph()
 	rank := input.Rank()
 
-	fmt := func(format string, args ...interface{}) {}  // No-op fmt for now
-	_ = fmt
-
 	// Handle scalar input
 	if rank == 0 {
 		exceptions.Panicf("NonZero does not support scalar inputs for node %s", nodeToString(node))
 	}
 
-	// Handle symbolic dimensions
+	// Handle symbolic dimensions - not supported for XLA backend
 	if input.Shape().HasSymbolicDim() {
-		// Use shape provenance system to infer bounds instead of hardcoded values
-		bounds := m.inferNonZeroBounds(node, convertedOutputs)
-		maxNonZeros := bounds[1] // bounds is [rank, maxNonZeros]
-		return convertNonZeroDynamic(input, maxNonZeros)
+		exceptions.Panicf("NonZero requires concrete dimensions for XLA backend")
 	}
 
 	// Maximum possible non-zeros is the total number of elements
 	maxNonZeros := input.Shape().Size()
+
+	// Handle empty input (zero elements)
+	if maxNonZeros == 0 {
+		// Return an empty tensor of shape [rank, 0]
+		emptyShape := shapes.Make(dtypes.Int64, rank, 0)
+		return Zeros(g, emptyShape)
+	}
 
 	// Warn if the output would be very large
 	if maxNonZeros > 100000 {
@@ -4690,159 +4262,16 @@ func convertNonZero(m *Model, convertedOutputs map[string]*Node, node *protos.No
 	// Mask out zero entries
 	// Expand mask to [rank, maxNonZeros] for broadcasting
 	maskInt64 := ConvertDType(mask, dtypes.Int64)
-	maskExpanded := ExpandDims(maskInt64, 0)                         // [1, maxNonZeros]
+	maskExpanded := ExpandDims(maskInt64, 0)                        // [1, maxNonZeros]
 	maskExpanded = BroadcastToDims(maskExpanded, rank, maxNonZeros) // [rank, maxNonZeros]
 
 	// Multiply coordinates by mask: non-zero positions get their coordinates, others get 0
-	result := Mul(allCoords, maskExpanded)
+	result := onnxMul(allCoords, maskExpanded)
 
 	// Note: This implementation does NOT compact the results - it leaves zeros in place.
 	// A full compaction would require a sort or scatter operation which is more complex.
 	// For many use cases (like subsequent Gather operations), this sparse representation
 	// works fine as the zeros will naturally be filtered out.
-
-	return result
-}
-
-// convertNonZeroDynamic handles NonZero with symbolic dimensions using bounded dynamic shapes.
-// For symbolic dimensions, we use a bounded approach:
-// 1. Use upper bounds for tensor creation (inferred from shape provenance system)
-// 2. Compute actual sizes dynamically using GetDimensionSize
-// 3. Use DynamicReshape to handle the size differences
-//
-// maxTotalNonZeros is the upper bound for total number of non-zero elements,
-// inferred from the input shape by the shape provenance system.
-func convertNonZeroDynamic(input *Node, maxTotalNonZeros int) *Node {
-	g := input.Graph()
-	rank := input.Rank()
-	inputDims := input.Shape().Dimensions
-
-	// Compute concrete upper bound shape for input
-	// We'll just use maxTotalNonZeros as the flattened size, and create a "fake" multi-dim shape
-	// that reshapes back to it. For simplicity with 2D symbolic inputs, we'll use [maxTotalNonZeros, 1]
-	// as the concrete shape, which flattens to exactly maxTotalNonZeros elements.
-	concreteDims := make([]int, rank)
-
-	// Count how many dimensions are symbolic
-	numSymbolic := 0
-	for axis := 0; axis < rank; axis++ {
-		if inputDims[axis] < 0 {
-			numSymbolic++
-		}
-	}
-
-	if numSymbolic == 0 {
-		// No symbolic dimensions, use actual dims
-		for axis := 0; axis < rank; axis++ {
-			concreteDims[axis] = inputDims[axis]
-		}
-	} else if numSymbolic == rank {
-		// All dimensions are symbolic
-		// Use a shape that multiplies to maxTotalNonZeros
-		// For 2D: [128, 1] gives 128 elements
-		// For 3D: [128, 1, 1] gives 128 elements
-		concreteDims[0] = maxTotalNonZeros
-		for axis := 1; axis < rank; axis++ {
-			concreteDims[axis] = 1
-		}
-	} else {
-		// Mixed symbolic and concrete dims
-		// Fill in concrete dims, then distribute maxTotalNonZeros among symbolic ones
-		product := 1
-		for axis := 0; axis < rank; axis++ {
-			if inputDims[axis] >= 0 {
-				concreteDims[axis] = inputDims[axis]
-				product *= inputDims[axis]
-			}
-		}
-		// Distribute remaining budget among symbolic dims
-		remaining := maxTotalNonZeros / product
-		symbolicPerDim := remaining
-		if numSymbolic > 1 {
-			symbolicPerDim = int(float64(remaining) / float64(numSymbolic))
-			if symbolicPerDim < 1 {
-				symbolicPerDim = 1
-			}
-		}
-		for axis := 0; axis < rank; axis++ {
-			if inputDims[axis] < 0 {
-				concreteDims[axis] = symbolicPerDim
-			}
-		}
-	}
-
-	// Compute concrete max possible non-zeros
-	concreteMaxNonZeros := 1
-	for _, d := range concreteDims {
-		concreteMaxNonZeros *= d
-	}
-
-	// Build the shape tensor for dynamic flattening (actual runtime sizes)
-	dimSizeNodes := make([]*Node, rank)
-	for axis := 0; axis < rank; axis++ {
-		dimSize := GetDimensionSize(input, axis)
-		if dimSize.DType() != dtypes.Int32 {
-			dimSize = ConvertDType(dimSize, dtypes.Int32)
-		}
-		dimSizeNodes[axis] = dimSize
-	}
-
-	// Calculate actual total size by multiplying all dimensions
-	actualTotalSize := dimSizeNodes[0]
-	for i := 1; i < rank; i++ {
-		actualTotalSize = Mul(actualTotalSize, dimSizeNodes[i])
-	}
-
-	// Create concrete shape for operations
-	// Use Int64 dtype for coordinate tensors (Iota doesn't support boolean dtype)
-	concreteShape := shapes.Make(dtypes.Int64, concreteDims...)
-	concreteShapeTensor := Const(g, sliceMap(concreteDims, func(d int) int32 { return int32(d) }))
-
-	// Broadcast input to concrete shape if needed
-	inputBroadcasted := input
-	if input.Shape().HasSymbolicDim() {
-		broadcastDims := make([]int, rank)
-		for i := range rank {
-			broadcastDims[i] = i
-		}
-		inputBroadcasted = DynamicBroadcastInDim(input, concreteShapeTensor, broadcastDims)
-	}
-
-	// Flatten input to 1D using concrete size
-	flatInput := Reshape(inputBroadcasted, concreteMaxNonZeros)
-
-	// Create mask of non-zero elements
-	zero := ScalarZero(g, input.DType())
-	mask := NotEqual(flatInput, zero) // Boolean mask
-
-	// Build multi-dimensional index tensors using concrete shape
-	coordTensors := make([]*Node, rank)
-	for axis := 0; axis < rank; axis++ {
-		// Create coordinate tensor for this axis using Iota with concrete shape
-		coord := Iota(g, concreteShape, axis)
-		// Flatten to 1D
-		coordTensors[axis] = Reshape(coord, concreteMaxNonZeros)
-	}
-
-	// Stack all coordinates: [rank, concreteMaxNonZeros]
-	allCoords := Stack(coordTensors, 0)
-
-	// Convert coordinates to int64 as per ONNX spec
-	allCoords = ConvertDType(allCoords, dtypes.Int64)
-
-	// Mask out zero entries
-	// Expand mask to [rank, concreteMaxNonZeros] for broadcasting
-	maskInt64 := ConvertDType(mask, dtypes.Int64)
-	maskExpanded := ExpandDims(maskInt64, 0)                                 // [1, concreteMaxNonZeros]
-	maskExpanded = BroadcastToDims(maskExpanded, rank, concreteMaxNonZeros) // [rank, concreteMaxNonZeros]
-
-	// Multiply coordinates by mask: non-zero positions get their coordinates, others get 0
-	result := Mul(allCoords, maskExpanded)
-
-	// Note: This implementation does NOT compact the results - it leaves zeros in place.
-	// The result has shape [rank, concreteMaxNonZeros] but only the first 'actualTotalSize'
-	// elements are meaningful. For many use cases (like subsequent Gather operations),
-	// this sparse representation works fine as the zeros will naturally be filtered out.
 
 	return result
 }

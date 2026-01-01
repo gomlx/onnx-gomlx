@@ -109,6 +109,16 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 		panic(err)
 	}
 
+	// Propagate concrete input shapes through the ONNX graph.
+	// This allows the ShapeResolver to resolve symbolic dimensions (like batch, seq_len)
+	// to concrete values, which is required for XLA compilation.
+	inputShapes := make(map[string]shapes.Shape)
+	for inputName, node := range convertedOutputs {
+		inputShapes[inputName] = node.Shape()
+	}
+	m.shapeResolver.SetInputShapes(inputShapes)
+	m.shapeResolver.PropagateShapes()
+
 	// Convert variables: create the GoMLX nodes corresponding to the ONNX model variables.
 	if len(m.Proto.Graph.Initializer) > 0 && ctx == nil {
 		exceptions.Panicf("onnx.CallGraph(): model has variables, but a nil context was give")

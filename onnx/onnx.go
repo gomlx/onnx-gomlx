@@ -13,6 +13,7 @@ import (
 
 	"github.com/gomlx/gomlx/backends"
 	"github.com/gomlx/gomlx/backends/simplego"
+	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
@@ -39,6 +40,18 @@ type Model struct {
 
 	// backend used for ONNX-conversion time tensor processing.
 	backend backends.Backend
+
+	// shapeResolver resolves shapes for node outputs before conversion.
+	// This solves ordering issues where nodes depend on shapes of not-yet-converted tensors.
+	shapeResolver *ShapeResolver
+
+	// DefaultBound is the fallback bound used for data-dependent shapes when
+	// model-derived bounds cannot be inferred. Defaults to 4096.
+	DefaultBound int
+
+	// concreteInputShapes stores the concrete input shapes during CallGraph execution.
+	// This is used by computeNonZeroCap to derive bounds from actual input dimensions.
+	concreteInputShapes map[string]shapes.Shape
 }
 
 // Parse parses an ONNX model into an internal representation that can be used to build a GoMLX graph.
@@ -105,6 +118,13 @@ func Parse(contents []byte) (*Model, error) {
 			m.nodeOutputToNode[outputName] = node
 		}
 	}
+
+	// Initialize shape resolver to extract shapes from value_info and propagate through graph
+	m.shapeResolver = NewShapeResolver(m)
+
+	// Set default bound to 4096 for backward compatibility
+	m.DefaultBound = 4096
+
 	return m, nil
 }
 
@@ -151,6 +171,23 @@ func (m *Model) NumInputs() int {
 // The value each input maps to will be converted to a tensors.FromAnyValue.
 func (m *Model) WithInputsAsConstants(inputsAsConstants map[string]any) *Model {
 	m.inputsAsConstants = inputsAsConstants
+	// Recreate shape resolver to include the new inputsAsConstants for value tracing
+	if m.shapeResolver != nil {
+		m.shapeResolver = NewShapeResolver(m)
+	}
+	return m
+}
+
+// WithDefaultBound sets the default bound used for data-dependent shapes when
+// model-derived bounds cannot be inferred.
+// Use this just after creation of the Model if you need a different default than 4096.
+//
+// For example, if your model processes text with max sequence length 512, you might set:
+//   model.WithDefaultBound(512)
+//
+// This helps avoid shape mismatches when the actual dimensions are smaller than 4096.
+func (m *Model) WithDefaultBound(bound int) *Model {
+	m.DefaultBound = bound
 	return m
 }
 
