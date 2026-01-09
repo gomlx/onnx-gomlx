@@ -853,6 +853,186 @@ func convertReduceMean(m *Model, convertedOutputs map[string]*Node, node *protos
 	}
 }
 
+// convertReduceMax converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__ReduceMax.html
+func convertReduceMax(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	return convertReduce(m, convertedOutputs, node, inputs, "ReduceMax", ReduceMax, ReduceAllMax)
+}
+
+// convertReduceMin converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__ReduceMin.html
+func convertReduceMin(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	return convertReduce(m, convertedOutputs, node, inputs, "ReduceMin", ReduceMin, ReduceAllMin)
+}
+
+// convertReduceSum converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__ReduceSum.html
+func convertReduceSum(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	return convertReduce(m, convertedOutputs, node, inputs, "ReduceSum", ReduceSum, ReduceAllSum)
+}
+
+// convertReduceProd converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__ReduceProd.html
+func convertReduceProd(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	return convertReduce(m, convertedOutputs, node, inputs, "ReduceProd", ReduceMultiply, ReduceAllMultiply)
+}
+
+// convertReduce is a generic helper for reduce operations.
+// It handles axes parsing from inputs or attributes, keepdims, and noop_with_empty_axes.
+func convertReduce(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node,
+	opName string,
+	reduceFn func(x *Node, reduceAxes ...int) *Node,
+	reduceAllFn func(x *Node) *Node) *Node {
+	operand := inputs[0]
+	keepDims := getIntAttrOr(node, "keepdims", 1) > 0
+	noOpIfEmpty := getIntAttrOr(node, "noop_with_empty_axes", 0) > 0
+
+	var axes []int
+	if len(inputs) > 1 {
+		if !inputs[1].DType().IsInt() {
+			exceptions.Panicf("axes must be integer, got %s for node %s", inputs[1].DType(), nodeToString(node))
+		}
+
+		axesT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+		if err != nil {
+			panic(errors.WithMessagef(err, "while converting 'axes' for node %s", nodeToString(node)))
+		}
+		axes = tensorToInts(axesT)
+	}
+
+	axesFromAttr := getIntsAttrOr(node, "axes", nil)
+	if len(axesFromAttr) > 0 {
+		if len(axes) > 0 {
+			exceptions.Panicf("%s(operand, [axes]): axes and axes attribute cannot be used together for node %s", opName, nodeToString(node))
+		}
+		axes = axesFromAttr
+	}
+
+	// If there are no axes to reduce, this is a no-op.
+	if len(axes) == 0 {
+		if noOpIfEmpty {
+			return Identity(operand)
+		} else {
+			res := reduceAllFn(operand)
+			if keepDims {
+				res = ExpandLeftToRank(res, operand.Rank())
+			}
+			return res
+		}
+	}
+
+	if !keepDims {
+		return reduceFn(operand, axes...)
+	} else {
+		return ReduceAndKeep(operand, reduceFn, axes...)
+	}
+}
+
+// convertNonZero converts a ONNX node to a GoMLX node.
+//
+// NonZero returns the indices of elements that are non-zero.
+// Because the output shape is data-dependent, this operation requires the input
+// to be materializable as a constant expression at graph build time.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__NonZero.html
+func convertNonZero(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	g := inputs[0].Graph()
+
+	// NonZero output shape depends on data values, so we need to materialize the input
+	inputT, err := m.materializeConstantExpression(node.Input[0], convertedOutputs)
+	if err != nil {
+		panic(errors.WithMessagef(err, "NonZero requires input to be a constant expression (output shape is data-dependent) for node %s", nodeToString(node)))
+	}
+
+	// Compute nonzero indices
+	result := computeNonZero(inputT)
+	return Const(g, result)
+}
+
+// computeNonZero computes the indices of non-zero elements in a tensor.
+// Returns a tensor of shape (rank, numNonZero) where each column is an index tuple.
+func computeNonZero(t *tensors.Tensor) *tensors.Tensor {
+	shape := t.Shape()
+	rank := shape.Rank()
+	dims := shape.Dimensions
+
+	// Flatten the tensor to iterate over elements
+	flat := t.Value()
+
+	// Count non-zero elements and collect their indices
+	var indices [][]int64
+	iterateNonZero(flat, dims, make([]int, rank), 0, &indices)
+
+	numNonZero := len(indices)
+
+	// Create output tensor of shape (rank, numNonZero)
+	// Each row contains the indices for one dimension
+	if numNonZero == 0 {
+		// Return empty tensor of shape (rank, 0)
+		return tensors.FromShape(shapes.Make(dtypes.Int64, rank, 0))
+	}
+
+	// Transpose: from (numNonZero, rank) to (rank, numNonZero)
+	output := make([][]int64, rank)
+	for d := 0; d < rank; d++ {
+		output[d] = make([]int64, numNonZero)
+		for i := 0; i < numNonZero; i++ {
+			output[d][i] = indices[i][d]
+		}
+	}
+
+	return tensors.FromValue(output)
+}
+
+// iterateNonZero recursively iterates over a tensor and collects indices of non-zero elements.
+func iterateNonZero(value any, dims []int, currentIndex []int, depth int, indices *[][]int64) {
+	if depth == len(dims) {
+		// We've reached a scalar value
+		if isNonZero(value) {
+			idx := make([]int64, len(currentIndex))
+			for i, v := range currentIndex {
+				idx[i] = int64(v)
+			}
+			*indices = append(*indices, idx)
+		}
+		return
+	}
+
+	// Iterate over the current dimension
+	rv := reflect.ValueOf(value)
+	for i := 0; i < dims[depth]; i++ {
+		currentIndex[depth] = i
+		iterateNonZero(rv.Index(i).Interface(), dims, currentIndex, depth+1, indices)
+	}
+}
+
+// isNonZero checks if a scalar value is non-zero.
+func isNonZero(value any) bool {
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Float32, reflect.Float64:
+		return rv.Float() != 0
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int() != 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return rv.Uint() != 0
+	case reflect.Bool:
+		return rv.Bool()
+	default:
+		exceptions.Panicf("isNonZero: unsupported type %T", value)
+		return false
+	}
+}
+
 // convertConstantOfShape converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:

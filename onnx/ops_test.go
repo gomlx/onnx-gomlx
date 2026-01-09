@@ -1059,3 +1059,141 @@ func TestIf(t *testing.T) {
 		[]float32{101.0, 202.0},
 	}, -1)
 }
+
+func TestComputeNonZero(t *testing.T) {
+	// Test 1D tensor
+	t.Run("1D", func(t *testing.T) {
+		input := tensors.FromValue([]float32{0, 1, 0, 2, 3})
+		result := computeNonZero(input)
+		expected := [][]int64{{1, 3, 4}}
+		assert.Equal(t, expected, result.Value())
+	})
+
+	// Test 2D tensor
+	t.Run("2D", func(t *testing.T) {
+		input := tensors.FromValue([][]float32{
+			{1, 0},
+			{0, 1},
+		})
+		result := computeNonZero(input)
+		// Non-zero elements at (0,0) and (1,1)
+		expected := [][]int64{
+			{0, 1}, // row indices
+			{0, 1}, // col indices
+		}
+		assert.Equal(t, expected, result.Value())
+	})
+
+	// Test all zeros
+	t.Run("AllZeros", func(t *testing.T) {
+		input := tensors.FromValue([]float32{0, 0, 0})
+		result := computeNonZero(input)
+		assert.Equal(t, []int{1, 0}, result.Shape().Dimensions)
+	})
+
+	// Test boolean tensor
+	t.Run("Bool", func(t *testing.T) {
+		input := tensors.FromValue([]bool{false, true, true, false})
+		result := computeNonZero(input)
+		expected := [][]int64{{1, 2}}
+		assert.Equal(t, expected, result.Value())
+	})
+
+	// Test int tensor
+	t.Run("Int", func(t *testing.T) {
+		input := tensors.FromValue([]int32{0, -1, 2, 0, 3})
+		result := computeNonZero(input)
+		expected := [][]int64{{1, 2, 4}}
+		assert.Equal(t, expected, result.Value())
+	})
+}
+
+func TestReduceOperations(t *testing.T) {
+	// Test ReduceMax
+	graphtest.RunTestGraphFn(t, "ReduceMax-axis0", func(g *Graph) (inputs, outputs []*Node) {
+		operand := Const(g, [][]float32{
+			{1, 2, 3},
+			{4, 5, 6},
+		})
+		inputs = []*Node{operand}
+		outputs = []*Node{ReduceMax(operand, 0)}
+		return
+	}, []any{
+		[]float32{4, 5, 6},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "ReduceMax-axis1", func(g *Graph) (inputs, outputs []*Node) {
+		operand := Const(g, [][]float32{
+			{1, 2, 3},
+			{4, 5, 6},
+		})
+		inputs = []*Node{operand}
+		outputs = []*Node{ReduceMax(operand, 1)}
+		return
+	}, []any{
+		[]float32{3, 6},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "ReduceMax-keepdims", func(g *Graph) (inputs, outputs []*Node) {
+		operand := Const(g, [][]float32{
+			{1, 2, 3},
+			{4, 5, 6},
+		})
+		inputs = []*Node{operand}
+		outputs = []*Node{ReduceAndKeep(operand, ReduceMax, 0)}
+		return
+	}, []any{
+		[][]float32{{4, 5, 6}},
+	}, -1)
+
+	// Test ReduceMin
+	graphtest.RunTestGraphFn(t, "ReduceMin-axis0", func(g *Graph) (inputs, outputs []*Node) {
+		operand := Const(g, [][]float32{
+			{1, 2, 3},
+			{4, 5, 6},
+		})
+		inputs = []*Node{operand}
+		outputs = []*Node{ReduceMin(operand, 0)}
+		return
+	}, []any{
+		[]float32{1, 2, 3},
+	}, -1)
+
+	// Test ReduceSum
+	graphtest.RunTestGraphFn(t, "ReduceSum-axis0", func(g *Graph) (inputs, outputs []*Node) {
+		operand := Const(g, [][]float32{
+			{1, 2, 3},
+			{4, 5, 6},
+		})
+		inputs = []*Node{operand}
+		outputs = []*Node{ReduceSum(operand, 0)}
+		return
+	}, []any{
+		[]float32{5, 7, 9},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "ReduceSum-all", func(g *Graph) (inputs, outputs []*Node) {
+		operand := Const(g, [][]float32{
+			{1, 2, 3},
+			{4, 5, 6},
+		})
+		inputs = []*Node{operand}
+		outputs = []*Node{ReduceAllSum(operand)}
+		return
+	}, []any{
+		float32(21),
+	}, -1)
+
+	// Test ReduceMultiply (ReduceProd)
+	graphtest.RunTestGraphFn(t, "ReduceProd-axis0", func(g *Graph) (inputs, outputs []*Node) {
+		operand := Const(g, [][]float32{
+			{1, 2, 3},
+			{4, 5, 6},
+		})
+		inputs = []*Node{operand}
+		outputs = []*Node{ReduceMultiply(operand, 0)}
+		return
+	}, []any{
+		[]float32{4, 10, 18},
+	}, -1)
+}
