@@ -277,10 +277,7 @@ func convertConstant(m *Model, node *protos.NodeProto, g *Graph) *Node {
 // https://onnx.ai/onnx/operators/onnx__Gather.html
 func convertGather(node *protos.NodeProto, inputs []*Node) *Node {
 	axis := getIntAttrOr(node, "axis", 0)
-	gatherAxis := AdjustAxisToOperandRank(inputs[0], axis)
-	if gatherAxis >= inputs[0].Rank() || gatherAxis < 0 {
-		exceptions.Panicf("Gather(data, indices, axis=%d), axis within d.Rank()=%d range", axis, inputs[0].Rank())
-	}
+	gatherAxis := MustAdjustAxis(axis, inputs[0])
 	return onnxGather(inputs[0], inputs[1], gatherAxis)
 }
 
@@ -334,10 +331,7 @@ func onnxGather(data, indices *Node, gatherAxis int) *Node {
 // https://onnx.ai/onnx/operators/onnx__GatherElements.html
 func convertGatherElements(node *protos.NodeProto, inputs []*Node) *Node {
 	axis := getIntAttrOr(node, "axis", 0)
-	gatherAxis := AdjustAxisToOperandRank(inputs[0], axis)
-	if gatherAxis >= inputs[0].Rank() || gatherAxis < 0 {
-		exceptions.Panicf("Gather(data, indices, axis=%d), axis within d.Rank()=%d range", axis, inputs[0].Rank())
-	}
+	gatherAxis := MustAdjustAxis(axis, inputs[0])
 	if inputs[0].Rank() != inputs[1].Rank() {
 		exceptions.Panicf("Gather(data=%s, indices=%s, axis=%d): data and indices must have the same rank", inputs[0].Shape(), inputs[1].Shape(), axis)
 	}
@@ -410,7 +404,7 @@ func convertShape(node *protos.NodeProto, inputs []*Node) *Node {
 func convertFlatten(node *protos.NodeProto, inputs []*Node) *Node {
 	operand := inputs[0]
 	splitAxis := getIntAttrOr(node, "axis", 1)
-	splitAxis = AdjustAxisToOperandRank(operand, splitAxis)
+	splitAxis = MustAdjustAxis(splitAxis, operand)
 	return onnxFlatten(operand, splitAxis)
 }
 
@@ -1071,7 +1065,7 @@ func convertCumSum(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 // onnxCumSum adds "exclusive" and "reverse" options to the normal CumSum.
 // TODO: reimplement exclusive/reverse by changing original CumSum implementation: it will be much more efficient.
 func onnxCumSum(operand *Node, axis int, exclusive, reverse bool) *Node {
-	adjustedAxis := AdjustAxisToOperandRank(operand, axis)
+	adjustedAxis := MustAdjustAxis(axis, operand)
 	if reverse {
 		operand = Reverse(operand, adjustedAxis)
 	}
@@ -1852,7 +1846,7 @@ func convertQuantizeLinear(nodeProto *protos.NodeProto, inputs []*Node) *Node {
 // Formula: y = saturate((x / y_scale) + y_zero_point)
 func onnxQuantizeLinear(x, yScale, yZeroPoint *Node, targetAxis int, outputDType dtypes.DType) *Node {
 	g := x.Graph()
-	targetAxis = AdjustAxisToOperandRank(x, targetAxis)
+	targetAxis = MustAdjustAxis(targetAxis, x)
 
 	// Reshape scale to match input rank if it's 1-D
 	if !yScale.IsScalar() {
@@ -2348,10 +2342,7 @@ func convertArgMax(node *protos.NodeProto, inputs []*Node) *Node {
 	// Handle keepdims
 	if !keepDims {
 		// Remove the axis dimension (which is size 1)
-		rank := x.Shape().Rank()
-		if axis < 0 {
-			axis = rank + axis
-		}
+		axis = MustAdjustAxis(axis, x)
 		indices = Squeeze(indices, axis)
 	}
 
@@ -2383,10 +2374,7 @@ func convertArgMin(node *protos.NodeProto, inputs []*Node) *Node {
 	// Handle keepdims
 	if !keepDims {
 		// Remove the axis dimension (which is size 1)
-		rank := x.Shape().Rank()
-		if axis < 0 {
-			axis = rank + axis
-		}
+		axis = MustAdjustAxis(axis, x)
 		indices = Squeeze(indices, axis)
 	}
 
