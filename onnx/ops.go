@@ -808,49 +808,7 @@ func convertReshape(m *Model, convertedOutputs map[string]*Node, node *protos.No
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__ReduceMean.html
 func convertReduceMean(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
-	operand := inputs[0]
-	keepDims := getIntAttrOr(node, "keepdims", 1) > 0
-	noOpIfEmpty := getIntAttrOr(node, "noop_with_empty_axes", 0) > 0
-
-	var axes []int
-	if len(inputs) > 1 {
-		if !inputs[1].DType().IsInt() {
-			exceptions.Panicf("axes must be integer, got %s for node %s", inputs[1].DType(), nodeToString(node))
-		}
-
-		axesT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
-		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'axes' for node %s", nodeToString(node)))
-		}
-		axes = tensorToInts(axesT)
-	}
-
-	axesFromAttr := getIntsAttrOr(node, "axes", nil)
-	if len(axesFromAttr) > 0 {
-		if len(axes) > 0 {
-			exceptions.Panicf("ReduceMean(operand, [axes]): axes and axes attribute cannot be used together for node %s", nodeToString(node))
-		}
-		axes = axesFromAttr
-	}
-
-	// If there are no axes to reduce, this is a no-op.
-	if len(axes) == 0 {
-		if noOpIfEmpty {
-			return Identity(operand)
-		} else {
-			res := ReduceAllMean(operand)
-			if keepDims {
-				res = ExpandLeftToRank(res, operand.Rank())
-			}
-			return res
-		}
-	}
-
-	if !keepDims {
-		return ReduceMean(operand, axes...)
-	} else {
-		return ReduceAndKeep(operand, ReduceMean, axes...)
-	}
+	return convertReduce(m, convertedOutputs, node, inputs, "ReduceMean", ReduceMean, ReduceAllMean)
 }
 
 // convertReduceMax converts a ONNX node to a GoMLX node.
@@ -916,6 +874,11 @@ func convertReduce(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 		axes = axesFromAttr
 	}
 
+	// Adjust negative axes to positive.
+	for i, axis := range axes {
+		axes[i] = AdjustAxisToOperandRank(operand, axis)
+	}
+
 	// If there are no axes to reduce, this is a no-op.
 	if len(axes) == 0 {
 		if noOpIfEmpty {
@@ -963,19 +926,30 @@ func convertNonZero(m *Model, convertedOutputs map[string]*Node, node *protos.No
 func computeNonZero(t *tensors.Tensor) *tensors.Tensor {
 	shape := t.Shape()
 	rank := shape.Rank()
-	dims := shape.Dimensions
 
-	// Flatten the tensor to iterate over elements
-	flat := t.Value()
+	// Get a boolean mask of non-zero elements using flat data access.
+	var isNonZero []bool
+	t.ConstFlatData(func(flatAny any) {
+		isNonZero = nonZeroMaskAny(flatAny)
+	})
 
-	// Count non-zero elements and collect their indices
+	// Collect indices of non-zero elements using Shape.Iter().
 	var indices [][]int64
-	iterateNonZero(flat, dims, make([]int, rank), 0, &indices)
+	for flatIdx, elemIndices := range shape.Iter() {
+		if isNonZero[flatIdx] {
+			// Copy the indices since elemIndices is reused.
+			idx := make([]int64, rank)
+			for i, v := range elemIndices {
+				idx[i] = int64(v)
+			}
+			indices = append(indices, idx)
+		}
+	}
 
 	numNonZero := len(indices)
 
 	// Create output tensor of shape (rank, numNonZero)
-	// Each row contains the indices for one dimension
+	// Each row contains the indices for one dimension.
 	if numNonZero == 0 {
 		// Return empty tensor of shape (rank, 0)
 		return tensors.FromShape(shapes.Make(dtypes.Int64, rank, 0))
@@ -983,9 +957,9 @@ func computeNonZero(t *tensors.Tensor) *tensors.Tensor {
 
 	// Transpose: from (numNonZero, rank) to (rank, numNonZero)
 	output := make([][]int64, rank)
-	for d := 0; d < rank; d++ {
+	for d := range rank {
 		output[d] = make([]int64, numNonZero)
-		for i := 0; i < numNonZero; i++ {
+		for i := range numNonZero {
 			output[d][i] = indices[i][d]
 		}
 	}
@@ -993,43 +967,47 @@ func computeNonZero(t *tensors.Tensor) *tensors.Tensor {
 	return tensors.FromValue(output)
 }
 
-// iterateNonZero recursively iterates over a tensor and collects indices of non-zero elements.
-func iterateNonZero(value any, dims []int, currentIndex []int, depth int, indices *[][]int64) {
-	if depth == len(dims) {
-		// We've reached a scalar value
-		if isNonZero(value) {
-			idx := make([]int64, len(currentIndex))
-			for i, v := range currentIndex {
-				idx[i] = int64(v)
-			}
-			*indices = append(*indices, idx)
-		}
-		return
+// nonZeroMask returns a boolean slice indicating which elements are non-zero.
+func nonZeroMask[T dtypes.Supported](values []T) []bool {
+	res := make([]bool, len(values))
+	var zero T
+	for i, v := range values {
+		res[i] = v != zero
 	}
-
-	// Iterate over the current dimension
-	rv := reflect.ValueOf(value)
-	for i := 0; i < dims[depth]; i++ {
-		currentIndex[depth] = i
-		iterateNonZero(rv.Index(i).Interface(), dims, currentIndex, depth+1, indices)
-	}
+	return res
 }
 
-// isNonZero checks if a scalar value is non-zero.
-func isNonZero(value any) bool {
-	rv := reflect.ValueOf(value)
-	switch rv.Kind() {
-	case reflect.Float32, reflect.Float64:
-		return rv.Float() != 0
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return rv.Int() != 0
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return rv.Uint() != 0
-	case reflect.Bool:
-		return rv.Bool()
+// nonZeroMaskAny converts a flat slice of any supported type to a boolean mask.
+func nonZeroMaskAny(valuesAny any) []bool {
+	switch values := valuesAny.(type) {
+	case []bool:
+		// For bool, true is non-zero.
+		res := make([]bool, len(values))
+		copy(res, values)
+		return res
+	case []float32:
+		return nonZeroMask(values)
+	case []float64:
+		return nonZeroMask(values)
+	case []int8:
+		return nonZeroMask(values)
+	case []int16:
+		return nonZeroMask(values)
+	case []int32:
+		return nonZeroMask(values)
+	case []int64:
+		return nonZeroMask(values)
+	case []uint8:
+		return nonZeroMask(values)
+	case []uint16:
+		return nonZeroMask(values)
+	case []uint32:
+		return nonZeroMask(values)
+	case []uint64:
+		return nonZeroMask(values)
 	default:
-		exceptions.Panicf("isNonZero: unsupported type %T", value)
-		return false
+		exceptions.Panicf("nonZeroMaskAny: unsupported type %T", valuesAny)
+		return nil
 	}
 }
 
