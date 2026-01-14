@@ -1,3 +1,7 @@
+# Next
+
+- Added ReduceMax, ReduceMin, ReduceSum, ReduceProd, and NonZero ONNX operations.
+
 # v0.3.4: Updated for GoMLX 0.26.0
 
 - Using new github.com/gomlx/go-xla library.
