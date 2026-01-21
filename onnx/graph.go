@@ -444,7 +444,7 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 
 	// Ops with equivalents:
 	case "MatMul":
-		result = MatMul(inputs[0], inputs[1])
+		result = convertMatMul(inputs[0], inputs[1])
 
 	// Ops with special behavior:
 	case "Clip":

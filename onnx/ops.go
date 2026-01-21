@@ -79,9 +79,26 @@ func onnxBroadcastToCommonShape(operands []*Node) []*Node {
 //
 // It differs from GoMLX and XLA in that it automatically prepend 1-dimensional axes to
 // any of the operands, if they differ in rank.
+// It also handles dtype mismatches by promoting to the higher precision type.
 func convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
 	operands := onnxImplicitExpansion([]*Node{lhs, rhs})
-	return fn(operands[0], operands[1])
+	lhs, rhs = operands[0], operands[1]
+
+	// Handle dtype mismatches by promoting to the higher precision type
+	if lhs.DType() != rhs.DType() {
+		lhs, rhs = promoteToCommonDType(lhs, rhs)
+	}
+
+	return fn(lhs, rhs)
+}
+
+// convertMatMul handles dtype promotion before matrix multiplication.
+// ONNX allows mixed dtypes in MatMul and promotes to the higher precision type.
+func convertMatMul(lhs, rhs *Node) *Node {
+	if lhs.DType() != rhs.DType() {
+		lhs, rhs = promoteToCommonDType(lhs, rhs)
+	}
+	return MatMul(lhs, rhs)
 }
 
 // convertClip converts a ONNX node to a GoMLX node.
@@ -121,8 +138,14 @@ func onnxWhere(inputs []*Node) *Node {
 	// Broadcast according to ONNX rules.
 	inputs = onnxBroadcastToCommonShape(inputs)
 
-	// Now we can use GoMLX Where:
 	cond, onTrue, onFalse := inputs[0], inputs[1], inputs[2]
+
+	// Handle dtype mismatches between onTrue and onFalse.
+	// GoMLX Where requires both branches to have the same dtype.
+	if onTrue.DType() != onFalse.DType() {
+		onTrue, onFalse = promoteToCommonDType(onTrue, onFalse)
+	}
+
 	return Where(cond, onTrue, onFalse)
 }
 
@@ -492,6 +515,11 @@ func convertTranspose(node *protos.NodeProto, inputs []*Node) *Node {
 func convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
 	operandA := inputs[0]
 	operandB := inputs[1]
+
+	// Handle dtype mismatches by promoting to the higher precision type
+	if operandA.DType() != operandB.DType() {
+		operandA, operandB = promoteToCommonDType(operandA, operandB)
+	}
 
 	transposeA := getBoolAttrOr(node, "transA", false)
 	transposeB := getBoolAttrOr(node, "transB", false)
@@ -876,7 +904,7 @@ func convertReduce(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 
 	// Adjust negative axes to positive.
 	for i, axis := range axes {
-		axes[i] = AdjustAxisToOperandRank(operand, axis)
+		axes[i] = MustAdjustAxis(axis, operand)
 	}
 
 	// If there are no axes to reduce, this is a no-op.

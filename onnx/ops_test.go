@@ -1197,3 +1197,126 @@ func TestReduceOperations(t *testing.T) {
 		[]float32{4, 10, 18},
 	}, -1)
 }
+
+////////////////////////////////////////////////////////////////////
+//
+// Tests for dtype promotion
+//
+////////////////////////////////////////////////////////////////////
+
+func TestPromoteToCommonDType(t *testing.T) {
+	// Test Float16 + Float32 -> Float16 (special optimization case)
+	graphtest.RunTestGraphFn(t, "PromoteDType-Float16-Float32", func(g *Graph) (inputs, outputs []*Node) {
+		lhs := Const(g, []float32{1.0, 2.0, 3.0})
+		lhs = ConvertDType(lhs, dtypes.Float16)
+		rhs := Const(g, []float32{4.0, 5.0, 6.0})
+		inputs = []*Node{lhs, rhs}
+
+		// Use convertBinaryOp which calls promoteToCommonDType internally
+		result := convertBinaryOp(Add, lhs, rhs)
+		// Verify the result dtype is Float16 (not Float32)
+		// Convert back to Float32 for comparison since test framework can't compare Float16 directly
+		outputs = []*Node{
+			ConvertDType(result, dtypes.Float32),
+			Const(g, int64(result.DType())),
+		}
+		return
+	}, []any{
+		// Expected sum: 5, 7, 9 (computed in Float16, converted to Float32 for comparison)
+		[]float32{5.0, 7.0, 9.0},
+		int64(dtypes.Float16),
+	}, 1e-2)
+
+	// Test Float32 + Float64 -> Float64 (standard promotion)
+	graphtest.RunTestGraphFn(t, "PromoteDType-Float32-Float64", func(g *Graph) (inputs, outputs []*Node) {
+		lhs := Const(g, []float32{1.0, 2.0, 3.0})
+		rhs := Const(g, []float64{4.0, 5.0, 6.0})
+		inputs = []*Node{lhs, rhs}
+
+		result := convertBinaryOp(Add, lhs, rhs)
+		outputs = []*Node{
+			result,
+			Const(g, int64(result.DType())),
+		}
+		return
+	}, []any{
+		[]float64{5.0, 7.0, 9.0},
+		int64(dtypes.Float64),
+	}, -1)
+
+	// Test Int32 + Float32 -> Float32 (int to float promotion)
+	graphtest.RunTestGraphFn(t, "PromoteDType-Int32-Float32", func(g *Graph) (inputs, outputs []*Node) {
+		lhs := Const(g, []int32{1, 2, 3})
+		rhs := Const(g, []float32{4.5, 5.5, 6.5})
+		inputs = []*Node{lhs, rhs}
+
+		result := convertBinaryOp(Add, lhs, rhs)
+		outputs = []*Node{
+			result,
+			Const(g, int64(result.DType())),
+		}
+		return
+	}, []any{
+		[]float32{5.5, 7.5, 9.5},
+		int64(dtypes.Float32),
+	}, -1)
+
+	// Test Int32 + Int64 -> Int64
+	graphtest.RunTestGraphFn(t, "PromoteDType-Int32-Int64", func(g *Graph) (inputs, outputs []*Node) {
+		lhs := Const(g, []int32{1, 2, 3})
+		rhs := Const(g, []int64{4, 5, 6})
+		inputs = []*Node{lhs, rhs}
+
+		result := convertBinaryOp(Add, lhs, rhs)
+		outputs = []*Node{
+			result,
+			Const(g, int64(result.DType())),
+		}
+		return
+	}, []any{
+		[]int64{5, 7, 9},
+		int64(dtypes.Int64),
+	}, -1)
+}
+
+func TestConvertMatMulMixedDTypes(t *testing.T) {
+	// Test MatMul with mixed Float16 and Float32 inputs
+	graphtest.RunTestGraphFn(t, "MatMul-Mixed-Float16-Float32", func(g *Graph) (inputs, outputs []*Node) {
+		// Create Float16 matrix [2, 3]
+		lhs := Const(g, [][]float32{{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}})
+		lhs = ConvertDType(lhs, dtypes.Float16)
+		// Create Float32 matrix [3, 2]
+		rhs := Const(g, [][]float32{{1.0, 2.0}, {3.0, 4.0}, {5.0, 6.0}})
+		inputs = []*Node{lhs, rhs}
+
+		result := convertMatMul(lhs, rhs)
+		// Convert back to Float32 for comparison since test framework can't compare Float16 directly
+		outputs = []*Node{
+			ConvertDType(result, dtypes.Float32),
+			Const(g, int64(result.DType())),
+		}
+		return
+	}, []any{
+		// [1*1+2*3+3*5, 1*2+2*4+3*6] = [22, 28]
+		// [4*1+5*3+6*5, 4*2+5*4+6*6] = [49, 64]
+		[][]float32{{22.0, 28.0}, {49.0, 64.0}},
+		int64(dtypes.Float16), // Should be Float16 due to optimization
+	}, 1e-1)
+}
+
+func TestOnnxWhereMixedDTypes(t *testing.T) {
+	// Test Where with mixed dtypes for onTrue and onFalse
+	graphtest.RunTestGraphFn(t, "Where-Mixed-DTypes", func(g *Graph) (inputs, outputs []*Node) {
+		cond := Const(g, []bool{true, false, true})
+		onTrue := Const(g, []int32{1, 2, 3})
+		onFalse := Const(g, []float32{10.0, 20.0, 30.0})
+		inputs = []*Node{cond, onTrue, onFalse}
+		outputs = []*Node{
+			onnxWhere([]*Node{cond, onTrue, onFalse}),
+		}
+		return
+	}, []any{
+		// Result should be promoted to Float32
+		[]float32{1.0, 20.0, 3.0},
+	}, -1)
+}
