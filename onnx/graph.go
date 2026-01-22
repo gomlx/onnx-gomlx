@@ -498,6 +498,16 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertReshape(m, convertedOutputs, node, inputs)
 	case "ReduceMean":
 		result = convertReduceMean(m, convertedOutputs, node, inputs)
+	case "ReduceMax":
+		result = convertReduceMax(m, convertedOutputs, node, inputs)
+	case "ReduceMin":
+		result = convertReduceMin(m, convertedOutputs, node, inputs)
+	case "ReduceSum":
+		result = convertReduceSum(m, convertedOutputs, node, inputs)
+	case "ReduceProd":
+		result = convertReduceProd(m, convertedOutputs, node, inputs)
+	case "NonZero":
+		result = convertNonZero(m, convertedOutputs, node, inputs)
 	case "ConstantOfShape":
 		result = convertConstantOfShape(m, convertedOutputs, node, inputs)
 	case "Expand":

@@ -278,6 +278,9 @@ func convertConstant(m *Model, node *protos.NodeProto, g *Graph) *Node {
 func convertGather(node *protos.NodeProto, inputs []*Node) *Node {
 	axis := getIntAttrOr(node, "axis", 0)
 	gatherAxis := MustAdjustAxis(axis, inputs[0])
+	if gatherAxis >= inputs[0].Rank() || gatherAxis < 0 {
+		exceptions.Panicf("Gather(data, indices, axis=%d), axis within d.Rank()=%d range", axis, inputs[0].Rank())
+	}
 	return onnxGather(inputs[0], inputs[1], gatherAxis)
 }
 
@@ -332,6 +335,9 @@ func onnxGather(data, indices *Node, gatherAxis int) *Node {
 func convertGatherElements(node *protos.NodeProto, inputs []*Node) *Node {
 	axis := getIntAttrOr(node, "axis", 0)
 	gatherAxis := MustAdjustAxis(axis, inputs[0])
+	if gatherAxis >= inputs[0].Rank() || gatherAxis < 0 {
+		exceptions.Panicf("Gather(data, indices, axis=%d), axis within d.Rank()=%d range", axis, inputs[0].Rank())
+	}
 	if inputs[0].Rank() != inputs[1].Rank() {
 		exceptions.Panicf("Gather(data=%s, indices=%s, axis=%d): data and indices must have the same rank", inputs[0].Shape(), inputs[1].Shape(), axis)
 	}
@@ -802,6 +808,47 @@ func convertReshape(m *Model, convertedOutputs map[string]*Node, node *protos.No
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__ReduceMean.html
 func convertReduceMean(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	return convertReduce(m, convertedOutputs, node, inputs, "ReduceMean", ReduceMean, ReduceAllMean)
+}
+
+// convertReduceMax converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__ReduceMax.html
+func convertReduceMax(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	return convertReduce(m, convertedOutputs, node, inputs, "ReduceMax", ReduceMax, ReduceAllMax)
+}
+
+// convertReduceMin converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__ReduceMin.html
+func convertReduceMin(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	return convertReduce(m, convertedOutputs, node, inputs, "ReduceMin", ReduceMin, ReduceAllMin)
+}
+
+// convertReduceSum converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__ReduceSum.html
+func convertReduceSum(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	return convertReduce(m, convertedOutputs, node, inputs, "ReduceSum", ReduceSum, ReduceAllSum)
+}
+
+// convertReduceProd converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__ReduceProd.html
+func convertReduceProd(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	return convertReduce(m, convertedOutputs, node, inputs, "ReduceProd", ReduceMultiply, ReduceAllMultiply)
+}
+
+// convertReduce is a generic helper for reduce operations.
+// It handles axes parsing from inputs or attributes, keepdims, and noop_with_empty_axes.
+func convertReduce(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node,
+	opName string,
+	reduceFn func(x *Node, reduceAxes ...int) *Node,
+	reduceAllFn func(x *Node) *Node) *Node {
 	operand := inputs[0]
 	keepDims := getIntAttrOr(node, "keepdims", 1) > 0
 	noOpIfEmpty := getIntAttrOr(node, "noop_with_empty_axes", 0) > 0
@@ -822,9 +869,14 @@ func convertReduceMean(m *Model, convertedOutputs map[string]*Node, node *protos
 	axesFromAttr := getIntsAttrOr(node, "axes", nil)
 	if len(axesFromAttr) > 0 {
 		if len(axes) > 0 {
-			exceptions.Panicf("ReduceMean(operand, [axes]): axes and axes attribute cannot be used together for node %s", nodeToString(node))
+			exceptions.Panicf("%s(operand, [axes]): axes and axes attribute cannot be used together for node %s", opName, nodeToString(node))
 		}
 		axes = axesFromAttr
+	}
+
+	// Adjust negative axes to positive.
+	for i, axis := range axes {
+		axes[i] = AdjustAxisToOperandRank(operand, axis)
 	}
 
 	// If there are no axes to reduce, this is a no-op.
@@ -832,7 +884,7 @@ func convertReduceMean(m *Model, convertedOutputs map[string]*Node, node *protos
 		if noOpIfEmpty {
 			return Identity(operand)
 		} else {
-			res := ReduceAllMean(operand)
+			res := reduceAllFn(operand)
 			if keepDims {
 				res = ExpandLeftToRank(res, operand.Rank())
 			}
@@ -841,9 +893,121 @@ func convertReduceMean(m *Model, convertedOutputs map[string]*Node, node *protos
 	}
 
 	if !keepDims {
-		return ReduceMean(operand, axes...)
+		return reduceFn(operand, axes...)
 	} else {
-		return ReduceAndKeep(operand, ReduceMean, axes...)
+		return ReduceAndKeep(operand, reduceFn, axes...)
+	}
+}
+
+// convertNonZero converts a ONNX node to a GoMLX node.
+//
+// NonZero returns the indices of elements that are non-zero.
+// Because the output shape is data-dependent, this operation requires the input
+// to be materializable as a constant expression at graph build time.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__NonZero.html
+func convertNonZero(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	g := inputs[0].Graph()
+
+	// NonZero output shape depends on data values, so we need to materialize the input
+	inputT, err := m.materializeConstantExpression(node.Input[0], convertedOutputs)
+	if err != nil {
+		panic(errors.WithMessagef(err, "NonZero requires input to be a constant expression (output shape is data-dependent) for node %s", nodeToString(node)))
+	}
+
+	// Compute nonzero indices
+	result := computeNonZero(inputT)
+	return Const(g, result)
+}
+
+// computeNonZero computes the indices of non-zero elements in a tensor.
+// Returns a tensor of shape (rank, numNonZero) where each column is an index tuple.
+func computeNonZero(t *tensors.Tensor) *tensors.Tensor {
+	shape := t.Shape()
+	rank := shape.Rank()
+
+	// Get a boolean mask of non-zero elements using flat data access.
+	var isNonZero []bool
+	t.ConstFlatData(func(flatAny any) {
+		isNonZero = nonZeroMaskAny(flatAny)
+	})
+
+	// Collect indices of non-zero elements using Shape.Iter().
+	var indices [][]int64
+	for flatIdx, elemIndices := range shape.Iter() {
+		if isNonZero[flatIdx] {
+			// Copy the indices since elemIndices is reused.
+			idx := make([]int64, rank)
+			for i, v := range elemIndices {
+				idx[i] = int64(v)
+			}
+			indices = append(indices, idx)
+		}
+	}
+
+	numNonZero := len(indices)
+
+	// Create output tensor of shape (rank, numNonZero)
+	// Each row contains the indices for one dimension.
+	if numNonZero == 0 {
+		// Return empty tensor of shape (rank, 0)
+		return tensors.FromShape(shapes.Make(dtypes.Int64, rank, 0))
+	}
+
+	// Transpose: from (numNonZero, rank) to (rank, numNonZero)
+	output := make([][]int64, rank)
+	for d := range rank {
+		output[d] = make([]int64, numNonZero)
+		for i := range numNonZero {
+			output[d][i] = indices[i][d]
+		}
+	}
+
+	return tensors.FromValue(output)
+}
+
+// nonZeroMask returns a boolean slice indicating which elements are non-zero.
+func nonZeroMask[T dtypes.Supported](values []T) []bool {
+	res := make([]bool, len(values))
+	var zero T
+	for i, v := range values {
+		res[i] = v != zero
+	}
+	return res
+}
+
+// nonZeroMaskAny converts a flat slice of any supported type to a boolean mask.
+func nonZeroMaskAny(valuesAny any) []bool {
+	switch values := valuesAny.(type) {
+	case []bool:
+		// For bool, true is non-zero.
+		res := make([]bool, len(values))
+		copy(res, values)
+		return res
+	case []float32:
+		return nonZeroMask(values)
+	case []float64:
+		return nonZeroMask(values)
+	case []int8:
+		return nonZeroMask(values)
+	case []int16:
+		return nonZeroMask(values)
+	case []int32:
+		return nonZeroMask(values)
+	case []int64:
+		return nonZeroMask(values)
+	case []uint8:
+		return nonZeroMask(values)
+	case []uint16:
+		return nonZeroMask(values)
+	case []uint32:
+		return nonZeroMask(values)
+	case []uint64:
+		return nonZeroMask(values)
+	default:
+		exceptions.Panicf("nonZeroMaskAny: unsupported type %T", valuesAny)
+		return nil
 	}
 }
 
