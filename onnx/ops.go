@@ -876,7 +876,7 @@ func convertReduce(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 
 	// Adjust negative axes to positive.
 	for i, axis := range axes {
-		axes[i] = AdjustAxisToOperandRank(operand, axis)
+		axes[i] = MustAdjustAxis(axis, operand)
 	}
 
 	// If there are no axes to reduce, this is a no-op.
@@ -2417,7 +2417,7 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 //
 // Inputs:
 //   - X: Input tensor
-//   - K: Number of top elements to retrieve (1-D tensor with single int64 value)
+//   - K: Number of top elements to retrieve (scalar int64 value, any shape with total size 1)
 //
 // Outputs:
 //   - Values: Top K values
@@ -2430,7 +2430,7 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 func convertTopK(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	x := inputs[0]
 
-	// Get K value - it's a 1-D tensor that needs to be materialized
+	// Get K value - it's a scalar that needs to be materialized
 	kTensor, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 	if err != nil {
 		exceptions.Panicf("TopK: failed to materialize K for node %s: %v", nodeToString(node), err)
