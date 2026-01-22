@@ -876,7 +876,7 @@ func convertReduce(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 
 	// Adjust negative axes to positive.
 	for i, axis := range axes {
-		axes[i] = AdjustAxisToOperandRank(operand, axis)
+		axes[i] = MustAdjustAxis(axis, operand)
 	}
 
 	// If there are no axes to reduce, this is a no-op.

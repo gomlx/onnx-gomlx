@@ -419,6 +419,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = Erf(inputs[0])
 	case "Relu":
 		result = activations.Relu(inputs[0])
+	case "Gelu":
+		result = activations.Gelu(inputs[0])
 	case "Abs":
 		result = Abs(inputs[0])
 	case "Neg":
