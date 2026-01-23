@@ -14,7 +14,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.11.1
 	github.com/yalue/onnxruntime_go v1.13.0
-	google.golang.org/protobuf v1.36.10
+	google.golang.org/protobuf v1.36.11
 	k8s.io/klog/v2 v2.130.1
 )
 
@@ -35,7 +35,7 @@ require (
 	github.com/streadway/quantile v0.0.0-20220407130108-4246515d968d // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
-	golang.org/x/sys v0.39.0 // indirect
+	golang.org/x/sys v0.40.0 // indirect
 	golang.org/x/term v0.38.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

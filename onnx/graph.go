@@ -553,6 +553,14 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "If":
 		result = convertIf(m, convertedOutputs, node, inputs)
 
+	// Sorting/ranking ops:
+	case "TopK":
+		result = convertTopK(m, convertedOutputs, node, inputs)
+	case "ArgMax":
+		result = convertArgMax(node, inputs)
+	case "ArgMin":
+		result = convertArgMin(node, inputs)
+
 		// Ops not implemented:
 	default:
 		exceptions.Panicf("unimplemented ONNX op %q in %s", node.OpType, nodeToString(node))
