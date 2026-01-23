@@ -79,24 +79,24 @@ func onnxBroadcastToCommonShape(operands []*Node) []*Node {
 //
 // It differs from GoMLX and XLA in that it automatically prepend 1-dimensional axes to
 // any of the operands, if they differ in rank.
-// It also handles dtype mismatches by promoting to the higher precision type.
-func convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
+// It also handles dtype mismatches based on the provided config.
+func convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node, config DTypePromotionConfig) *Node {
 	operands := onnxImplicitExpansion([]*Node{lhs, rhs})
 	lhs, rhs = operands[0], operands[1]
 
-	// Handle dtype mismatches by promoting to the higher precision type
+	// Handle dtype mismatches based on config
 	if lhs.DType() != rhs.DType() {
-		lhs, rhs = promoteToCommonDType(lhs, rhs)
+		lhs, rhs = promoteToCommonDType(lhs, rhs, config)
 	}
 
 	return fn(lhs, rhs)
 }
 
 // convertMatMul handles dtype promotion before matrix multiplication.
-// ONNX allows mixed dtypes in MatMul and promotes to the higher precision type.
-func convertMatMul(lhs, rhs *Node) *Node {
+// Dtype mismatches are handled based on the provided config.
+func convertMatMul(lhs, rhs *Node, config DTypePromotionConfig) *Node {
 	if lhs.DType() != rhs.DType() {
-		lhs, rhs = promoteToCommonDType(lhs, rhs)
+		lhs, rhs = promoteToCommonDType(lhs, rhs, config)
 	}
 	return MatMul(lhs, rhs)
 }
@@ -107,14 +107,14 @@ func convertMatMul(lhs, rhs *Node) *Node {
 // https://onnx.ai/onnx/operators/onnx__Clip.html
 //
 // Notice max/min values are optional, hence the special conversion code.
-func convertClip(_ *protos.NodeProto, inputs []*Node) *Node {
+func convertClip(_ *protos.NodeProto, inputs []*Node, config DTypePromotionConfig) *Node {
 	if len(inputs) == 1 {
 		return inputs[0]
 	}
 	if len(inputs) == 2 {
-		return Max(inputs[0], inputs[1])
+		return convertBinaryOp(Max, inputs[0], inputs[1], config)
 	}
-	return Min(inputs[2], Max(inputs[0], inputs[1]))
+	return convertBinaryOp(Min, inputs[2], convertBinaryOp(Max, inputs[0], inputs[1], config), config)
 }
 
 // convertWhere converts a ONNX node to a GoMLX node.
@@ -123,9 +123,9 @@ func convertClip(_ *protos.NodeProto, inputs []*Node) *Node {
 // https://onnx.ai/onnx/operators/onnx__Where.html
 //
 // Notice broadcast rules for ONNX are difference, hence the special conversion code.
-func convertWhere(node *protos.NodeProto, inputs []*Node) *Node {
+func convertWhere(node *protos.NodeProto, inputs []*Node, config DTypePromotionConfig) *Node {
 	var output *Node
-	err := exceptions.TryCatch[error](func() { output = onnxWhere(inputs) })
+	err := exceptions.TryCatch[error](func() { output = onnxWhere(inputs, config) })
 	if err != nil {
 		panic(errors.WithMessagef(err, "converting node %s", node))
 	}
@@ -134,7 +134,7 @@ func convertWhere(node *protos.NodeProto, inputs []*Node) *Node {
 
 // onnxWhere implements ONNX implicit broadcasting rules.
 // inputs is a tuple with (cond, onTrue, onFalse) values.
-func onnxWhere(inputs []*Node) *Node {
+func onnxWhere(inputs []*Node, config DTypePromotionConfig) *Node {
 	// Broadcast according to ONNX rules.
 	inputs = onnxBroadcastToCommonShape(inputs)
 
@@ -143,7 +143,7 @@ func onnxWhere(inputs []*Node) *Node {
 	// Handle dtype mismatches between onTrue and onFalse.
 	// GoMLX Where requires both branches to have the same dtype.
 	if onTrue.DType() != onFalse.DType() {
-		onTrue, onFalse = promoteToCommonDType(onTrue, onFalse)
+		onTrue, onFalse = promoteToCommonDType(onTrue, onFalse, config)
 	}
 
 	return Where(cond, onTrue, onFalse)
@@ -512,13 +512,13 @@ func convertTranspose(node *protos.NodeProto, inputs []*Node) *Node {
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Gemm.html
-func convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
+func convertGemm(node *protos.NodeProto, inputs []*Node, config DTypePromotionConfig) *Node {
 	operandA := inputs[0]
 	operandB := inputs[1]
 
-	// Handle dtype mismatches by promoting to the higher precision type
+	// Handle dtype mismatches based on config
 	if operandA.DType() != operandB.DType() {
-		operandA, operandB = promoteToCommonDType(operandA, operandB)
+		operandA, operandB = promoteToCommonDType(operandA, operandB, config)
 	}
 
 	transposeA := getBoolAttrOr(node, "transA", false)
@@ -546,7 +546,7 @@ func convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
 			operandC = MulScalar(operandC, beta)
 		}
 		// Add with ONNX broadcast semantics.
-		result = convertBinaryOp(Add, result, operandC)
+		result = convertBinaryOp(Add, result, operandC, config)
 	}
 	return result
 }
@@ -572,11 +572,16 @@ func tensorToInts(t *tensors.Tensor) []int {
 }
 
 // convertPow, with special casing if the exponential is a known constant.
-func convertPow(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func convertPow(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node, config DTypePromotionConfig) *Node {
 	// defaultPow returns the generic Pow function:
 	defaultPow := func() *Node {
 		operands := onnxImplicitExpansion([]*Node{inputs[0], inputs[1]})
-		return Pow(operands[0], operands[1])
+		lhs, rhs := operands[0], operands[1]
+		// Handle dtype mismatches based on config
+		if lhs.DType() != rhs.DType() {
+			lhs, rhs = promoteToCommonDType(lhs, rhs, config)
+		}
+		return Pow(lhs, rhs)
 	}
 	exponentNode := node.Input[1]
 	exponentT, err := m.materializeConstantExpression(exponentNode, convertedOutputs)
@@ -1275,10 +1280,10 @@ func onnxCumSum(operand *Node, axis int, exclusive, reverse bool) *Node {
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Min.html
-func convertMin(operands []*Node) *Node {
+func convertMin(operands []*Node, config DTypePromotionConfig) *Node {
 	output := operands[0]
 	for _, operand := range operands[1:] {
-		output = convertBinaryOp(Min, output, operand)
+		output = convertBinaryOp(Min, output, operand, config)
 	}
 	return output
 }
@@ -1287,10 +1292,10 @@ func convertMin(operands []*Node) *Node {
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Max.html
-func convertMax(operands []*Node) *Node {
+func convertMax(operands []*Node, config DTypePromotionConfig) *Node {
 	output := operands[0]
 	for _, operand := range operands[1:] {
-		output = convertBinaryOp(Max, output, operand)
+		output = convertBinaryOp(Max, output, operand, config)
 	}
 	return output
 }

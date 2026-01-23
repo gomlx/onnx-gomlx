@@ -2,6 +2,7 @@
 package onnx
 
 import (
+	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -46,44 +47,49 @@ func dtypeForONNX(onnxDType protos.TensorProto_DataType) (dtypes.DType, error) {
 	}
 }
 
+// DTypePromotionConfig controls how dtype mismatches are handled during ONNX conversion.
+type DTypePromotionConfig struct {
+	// AllowPromotion enables automatic dtype promotion. If false (default),
+	// dtype mismatches will panic per ONNX specification.
+	AllowPromotion bool
+	// PrioritizeFloat16 prefers Float16 over Float32 when promoting.
+	// Only applies when AllowPromotion is true.
+	PrioritizeFloat16 bool
+}
+
 // promoteToCommonDType converts two nodes to a common dtype based on type promotion rules.
+// Panics if promotion is not allowed (config.AllowPromotion=false) and dtypes mismatch.
 //
-// IMPORTANT: This function intentionally deviates from standard NumPy/PyTorch type promotion
-// rules in one specific case: when mixing Float16 and Float32, we promote to Float16 instead
-// of Float32. This is an intentional optimization to leverage NEON-accelerated FP16 kernels
-// on ARM64 platforms (e.g., Apple Silicon, modern ARM servers), which can provide significant
-// performance improvements for FP16 operations.
-//
-// Trade-offs of this design decision:
-//   - Pro: Up to 2x throughput on ARM64 with native FP16 SIMD (FMLAL/FMLAL2 instructions)
-//   - Pro: Reduced memory bandwidth for large tensors
-//   - Con: Potential precision loss compared to Float32 computation
-//   - Con: Non-standard behavior may surprise users expecting NumPy-like semantics
-//
-// For all other mixed-type combinations, standard promotion rules apply:
-// Float64 > Float32 > Float16/BFloat16 > Int64 > Int32 > Int16 > Int8 > Uint64 > ...
-//
-// Note: This behavior applies to ONNX models that have mixed Float16/Float32 tensors,
-// which commonly occurs in quantization-aware or mixed-precision trained models.
-func promoteToCommonDType(lhs, rhs *Node) (*Node, *Node) {
+// When PrioritizeFloat16 is enabled, Float16+Float32 promotes to Float16 (for ARM64 optimization).
+// Otherwise, standard promotion rules apply: Float64 > Float32 > Float16 > Int64 > ...
+func promoteToCommonDType(lhs, rhs *Node, config DTypePromotionConfig) (*Node, *Node) {
 	lhsDType := lhs.DType()
 	rhsDType := rhs.DType()
 
-	// Special case: prefer FP16 over Float32 to leverage NEON-accelerated FP16 kernels.
-	// This is an intentional performance optimization for ARM64 platforms.
-	// See function documentation for trade-offs and rationale.
-	if (lhsDType == dtypes.Float16 && rhsDType == dtypes.Float32) ||
-		(lhsDType == dtypes.Float32 && rhsDType == dtypes.Float16) {
-		targetDType := dtypes.Float16
-		if lhsDType != targetDType {
-			lhs = ConvertDType(lhs, targetDType)
-		}
-		if rhsDType != targetDType {
-			rhs = ConvertDType(rhs, targetDType)
-		}
+	if lhsDType == rhsDType {
 		return lhs, rhs
 	}
 
+	if !config.AllowPromotion {
+		exceptions.Panicf("dtype mismatch: %v vs %v (ONNX does not allow implicit casting; use Model.AllowDTypePromotion() to enable)", lhsDType, rhsDType)
+	}
+
+	// Special case: prefer FP16 over Float32 if configured (ARM64/NEON optimization)
+	if config.PrioritizeFloat16 {
+		if (lhsDType == dtypes.Float16 && rhsDType == dtypes.Float32) ||
+			(lhsDType == dtypes.Float32 && rhsDType == dtypes.Float16) {
+			targetDType := dtypes.Float16
+			if lhsDType != targetDType {
+				lhs = ConvertDType(lhs, targetDType)
+			}
+			if rhsDType != targetDType {
+				rhs = ConvertDType(rhs, targetDType)
+			}
+			return lhs, rhs
+		}
+	}
+
+	// Standard promotion: use higher precision type
 	targetDType := lhsDType
 	if dtypePriority(rhsDType) > dtypePriority(lhsDType) {
 		targetDType = rhsDType
