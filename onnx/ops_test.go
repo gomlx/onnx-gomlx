@@ -15,20 +15,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testModelWithConfig creates a minimal Model for testing with the specified dtype promotion config.
+func testModelWithConfig(allowPromotion, prioritizeFloat16 bool) *Model {
+	m := &Model{}
+	if allowPromotion {
+		m.allowDTypePromotion = true
+	}
+	if prioritizeFloat16 {
+		m.prioritizeFloat16 = true
+	}
+	return m
+}
+
 func TestONNXWhere(t *testing.T) {
 	graphtest.RunTestGraphFn(t, "Where(): Dense", func(g *Graph) (inputs, outputs []*Node) {
 		cond := ConvertDType(Iota(g, shapes.Make(dtypes.Int32, 3, 2), -1), dtypes.Bool)
 		onTrue := OnePlus(IotaFull(g, shapes.Make(dtypes.Float32, 3, 2)))
 		onFalse := Neg(onTrue)
 		inputs = []*Node{cond, onTrue, onFalse}
-		// Use strict mode config since all dtypes match
-		config := DTypePromotionConfig{AllowPromotion: false}
+		// Use strict mode model since all dtypes match
+		m := testModelWithConfig(false, false)
 		outputs = []*Node{
-			onnxWhere([]*Node{cond, onTrue, onFalse}, config),
-			onnxWhere([]*Node{Const(g, true), onTrue, onFalse}, config),
-			onnxWhere([]*Node{Const(g, false), onTrue, onFalse}, config),
-			onnxWhere([]*Node{cond, Const(g, float32(100)), onFalse}, config),
-			onnxWhere([]*Node{cond, onTrue, Const(g, []float32{100, 1000})}, config),
+			m.onnxWhere([]*Node{cond, onTrue, onFalse}),
+			m.onnxWhere([]*Node{Const(g, true), onTrue, onFalse}),
+			m.onnxWhere([]*Node{Const(g, false), onTrue, onFalse}),
+			m.onnxWhere([]*Node{cond, Const(g, float32(100)), onFalse}),
+			m.onnxWhere([]*Node{cond, onTrue, Const(g, []float32{100, 1000})}),
 		}
 		return
 	}, []any{
@@ -1235,8 +1247,8 @@ func TestPromoteToCommonDTypeSameDType(t *testing.T) {
 		inputs = []*Node{lhs, rhs}
 
 		// Strict mode - should work because dtypes match
-		config := DTypePromotionConfig{AllowPromotion: false}
-		result := convertBinaryOp(Add, lhs, rhs, config)
+		m := testModelWithConfig(false, false)
+		result := m.convertBinaryOp(Add, lhs, rhs)
 		outputs = []*Node{result}
 		return
 	}, []any{
@@ -1252,9 +1264,9 @@ func TestPromoteToCommonDTypeWithPromotion(t *testing.T) {
 		rhs := Const(g, []float32{4.0, 5.0, 6.0})
 		inputs = []*Node{lhs, rhs}
 
-		// Use config with PrioritizeFloat16
-		config := DTypePromotionConfig{AllowPromotion: true, PrioritizeFloat16: true}
-		result := convertBinaryOp(Add, lhs, rhs, config)
+		// Use model with PrioritizeFloat16
+		m := testModelWithConfig(true, true)
+		result := m.convertBinaryOp(Add, lhs, rhs)
 		// Verify the result dtype is Float16
 		outputs = []*Node{
 			ConvertDType(result, dtypes.Float32),
@@ -1273,9 +1285,9 @@ func TestPromoteToCommonDTypeWithPromotion(t *testing.T) {
 		rhs := Const(g, []float32{4.0, 5.0, 6.0})
 		inputs = []*Node{lhs, rhs}
 
-		// Use config without PrioritizeFloat16 - should promote to Float32
-		config := DTypePromotionConfig{AllowPromotion: true, PrioritizeFloat16: false}
-		result := convertBinaryOp(Add, lhs, rhs, config)
+		// Use model without PrioritizeFloat16 - should promote to Float32
+		m := testModelWithConfig(true, false)
+		result := m.convertBinaryOp(Add, lhs, rhs)
 		outputs = []*Node{
 			result,
 			Const(g, int64(result.DType())),
@@ -1292,8 +1304,8 @@ func TestPromoteToCommonDTypeWithPromotion(t *testing.T) {
 		rhs := Const(g, []float64{4.0, 5.0, 6.0})
 		inputs = []*Node{lhs, rhs}
 
-		config := DTypePromotionConfig{AllowPromotion: true}
-		result := convertBinaryOp(Add, lhs, rhs, config)
+		m := testModelWithConfig(true, false)
+		result := m.convertBinaryOp(Add, lhs, rhs)
 		outputs = []*Node{
 			result,
 			Const(g, int64(result.DType())),
@@ -1310,8 +1322,8 @@ func TestPromoteToCommonDTypeWithPromotion(t *testing.T) {
 		rhs := Const(g, []float32{4.5, 5.5, 6.5})
 		inputs = []*Node{lhs, rhs}
 
-		config := DTypePromotionConfig{AllowPromotion: true}
-		result := convertBinaryOp(Add, lhs, rhs, config)
+		m := testModelWithConfig(true, false)
+		result := m.convertBinaryOp(Add, lhs, rhs)
 		outputs = []*Node{
 			result,
 			Const(g, int64(result.DType())),
@@ -1328,8 +1340,8 @@ func TestPromoteToCommonDTypeWithPromotion(t *testing.T) {
 		rhs := Const(g, []int64{4, 5, 6})
 		inputs = []*Node{lhs, rhs}
 
-		config := DTypePromotionConfig{AllowPromotion: true}
-		result := convertBinaryOp(Add, lhs, rhs, config)
+		m := testModelWithConfig(true, false)
+		result := m.convertBinaryOp(Add, lhs, rhs)
 		outputs = []*Node{
 			result,
 			Const(g, int64(result.DType())),
@@ -1349,8 +1361,8 @@ func TestConvertMatMulMixedDTypes(t *testing.T) {
 		rhs := Const(g, [][]float32{{1.0, 2.0}, {3.0, 4.0}, {5.0, 6.0}})
 		inputs = []*Node{lhs, rhs}
 
-		config := DTypePromotionConfig{AllowPromotion: true, PrioritizeFloat16: true}
-		result := convertMatMul(lhs, rhs, config)
+		m := testModelWithConfig(true, true)
+		result := m.convertMatMul(lhs, rhs)
 		outputs = []*Node{
 			ConvertDType(result, dtypes.Float32),
 			Const(g, int64(result.DType())),
@@ -1368,8 +1380,8 @@ func TestConvertMatMulMixedDTypes(t *testing.T) {
 		rhs := Const(g, [][]float32{{1.0, 2.0}, {3.0, 4.0}, {5.0, 6.0}})
 		inputs = []*Node{lhs, rhs}
 
-		config := DTypePromotionConfig{AllowPromotion: true, PrioritizeFloat16: false}
-		result := convertMatMul(lhs, rhs, config)
+		m := testModelWithConfig(true, false)
+		result := m.convertMatMul(lhs, rhs)
 		outputs = []*Node{
 			result,
 			Const(g, int64(result.DType())),
@@ -1389,9 +1401,9 @@ func TestOnnxWhereMixedDTypes(t *testing.T) {
 		onFalse := Const(g, []float32{10.0, 20.0, 30.0})
 		inputs = []*Node{cond, onTrue, onFalse}
 
-		config := DTypePromotionConfig{AllowPromotion: true}
+		m := testModelWithConfig(true, false)
 		outputs = []*Node{
-			onnxWhere([]*Node{cond, onTrue, onFalse}, config),
+			m.onnxWhere([]*Node{cond, onTrue, onFalse}),
 		}
 		return
 	}, []any{

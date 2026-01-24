@@ -367,9 +367,6 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		exceptions.Panicf("overload %q to in-model function in ONNX model not implemented in node %q", node.Overload, node.Name)
 	}
 
-	// Get dtype promotion config for this model.
-	config := m.getDTypePromotionConfig()
-
 	// Convert the node: the usual case is that there is only one output.
 	// If the result is not nil, it is set to convertedOutputs[output[0]].
 	// Anything different must be implemented by the specific op switch.
@@ -378,38 +375,37 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	switch node.OpType {
 	// Binary operators: see the note on differences on default broadcasting.
 	case "Add":
-		result = convertBinaryOp(Add, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(Add, inputs[0], inputs[1])
 	case "Sub":
-		result = convertBinaryOp(Sub, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(Sub, inputs[0], inputs[1])
 	case "Mul":
-		result = convertBinaryOp(Mul, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(Mul, inputs[0], inputs[1])
 	case "Div":
-		result = convertBinaryOp(Div, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(Div, inputs[0], inputs[1])
 	case "Pow":
-		//result = convertBinaryOp(Pow, inputs[0], inputs[1], config)
-		result = convertPow(m, convertedOutputs, node, inputs, config)
+		result = m.convertPow(convertedOutputs, node, inputs)
 	case "And":
-		result = convertBinaryOp(LogicalAnd, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(LogicalAnd, inputs[0], inputs[1])
 	case "Or":
-		result = convertBinaryOp(LogicalOr, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(LogicalOr, inputs[0], inputs[1])
 	case "Xor":
-		result = convertBinaryOp(LogicalXor, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(LogicalXor, inputs[0], inputs[1])
 	case "BitwiseAnd":
-		result = convertBinaryOp(BitwiseAnd, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(BitwiseAnd, inputs[0], inputs[1])
 	case "BitwiseOr":
-		result = convertBinaryOp(BitwiseOr, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(BitwiseOr, inputs[0], inputs[1])
 	case "BitwiseXor":
-		result = convertBinaryOp(BitwiseXor, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(BitwiseXor, inputs[0], inputs[1])
 	case "Equal":
-		result = convertBinaryOp(Equal, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(Equal, inputs[0], inputs[1])
 	case "Less":
-		result = convertBinaryOp(LessThan, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(LessThan, inputs[0], inputs[1])
 	case "LessOrEqual":
-		result = convertBinaryOp(LessOrEqual, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(LessOrEqual, inputs[0], inputs[1])
 	case "Greater":
-		result = convertBinaryOp(GreaterThan, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(GreaterThan, inputs[0], inputs[1])
 	case "GreaterOrEqual":
-		result = convertBinaryOp(GreaterOrEqual, inputs[0], inputs[1], config)
+		result = m.convertBinaryOp(GreaterOrEqual, inputs[0], inputs[1])
 
 	// Unary operators
 	case "Sqrt":
@@ -447,17 +443,17 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 
 	// Ops with equivalents:
 	case "MatMul":
-		result = convertMatMul(inputs[0], inputs[1], config)
+		result = m.convertMatMul(inputs[0], inputs[1])
 
 	// Ops with special behavior:
 	case "Clip":
-		result = convertClip(node, inputs, config)
+		result = m.convertClip(node, inputs)
 	case "Where":
-		result = convertWhere(node, inputs, config)
+		result = m.convertWhere(node, inputs)
 	case "Min":
-		result = convertMin(inputs, config)
+		result = m.convertMin(inputs)
 	case "Max":
-		result = convertMax(inputs, config)
+		result = m.convertMax(inputs)
 
 	// Ops with attributes:
 	case "Constant":
@@ -477,7 +473,7 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "Transpose":
 		result = convertTranspose(node, inputs)
 	case "Gemm":
-		result = convertGemm(node, inputs, config)
+		result = m.convertGemm(node, inputs)
 	case "Flatten":
 		result = convertFlatten(node, inputs)
 	case "DequantizeLinear":
