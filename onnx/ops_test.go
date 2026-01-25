@@ -790,6 +790,106 @@ func TestReduceL2(t *testing.T) {
 	}, 1e-5)
 }
 
+func TestRotaryEmbedding(t *testing.T) {
+	// Test basic RotaryEmbedding with 4D input (batch, heads, seq, head_size)
+	graphtest.RunTestGraphFn(t, "RotaryEmbedding-4D-basic", func(g *Graph) (inputs, outputs []*Node) {
+		// Input: (batch=1, heads=1, seq=2, head_size=4)
+		// For simplicity, use values where rotation is easy to verify
+		x := Const(g, [][][][]float32{{{{1.0, 0.0, 0.0, 0.0}, {0.0, 1.0, 0.0, 0.0}}}})
+
+		// cos_cache and sin_cache: (seq=2, head_size/2=2)
+		// Position 0: cos=[1, 1], sin=[0, 0] (no rotation)
+		// Position 1: cos=[0, 1], sin=[1, 0] (90 degree rotation on first pair)
+		cosCache := Const(g, [][]float32{{1.0, 1.0}, {0.0, 1.0}})
+		sinCache := Const(g, [][]float32{{0.0, 0.0}, {1.0, 0.0}})
+
+		node := &protos.NodeProto{
+			OpType: "RotaryEmbedding",
+		}
+		inputs = []*Node{x, cosCache, sinCache}
+		outputs = []*Node{
+			convertRotaryEmbedding(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Position 0: x=[1,0,0,0], cos=[1,1], sin=[0,0]
+		//   x1=[1,0], x2=[0,0]
+		//   real = cos*x1 - sin*x2 = [1,1]*[1,0] - [0,0]*[0,0] = [1,0]
+		//   imag = sin*x1 + cos*x2 = [0,0]*[1,0] + [1,1]*[0,0] = [0,0]
+		//   output = [1,0,0,0]
+		// Position 1: x=[0,1,0,0], cos=[0,1], sin=[1,0]
+		//   x1=[0,1], x2=[0,0]
+		//   real = cos*x1 - sin*x2 = [0,1]*[0,1] - [1,0]*[0,0] = [0,1]
+		//   imag = sin*x1 + cos*x2 = [1,0]*[0,1] + [0,1]*[0,0] = [0,0]
+		//   output = [0,1,0,0]
+		[][][][]float32{{{{1.0, 0.0, 0.0, 0.0}, {0.0, 1.0, 0.0, 0.0}}}},
+	}, 1e-5)
+
+	// Test RotaryEmbedding with position_ids
+	graphtest.RunTestGraphFn(t, "RotaryEmbedding-with-position-ids", func(g *Graph) (inputs, outputs []*Node) {
+		// Input: (batch=1, heads=1, seq=2, head_size=4)
+		x := Const(g, [][][][]float32{{{{1.0, 2.0, 3.0, 4.0}, {5.0, 6.0, 7.0, 8.0}}}})
+
+		// cos_cache and sin_cache: (max_pos=3, head_size/2=2)
+		cosCache := Const(g, [][]float32{{1.0, 1.0}, {0.5, 0.5}, {0.0, 0.0}})
+		sinCache := Const(g, [][]float32{{0.0, 0.0}, {0.5, 0.5}, {1.0, 1.0}})
+
+		// position_ids: use positions [0, 2] instead of [0, 1]
+		positionIds := Const(g, [][]int64{{0, 2}})
+
+		node := &protos.NodeProto{
+			OpType: "RotaryEmbedding",
+		}
+		inputs = []*Node{x, cosCache, sinCache, positionIds}
+		outputs = []*Node{
+			convertRotaryEmbedding(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Position 0: cos=[1,1], sin=[0,0]
+		//   x1=[1,2], x2=[3,4]
+		//   real = [1,2]*[1,1] - [3,4]*[0,0] = [1,2]
+		//   imag = [1,2]*[0,0] + [3,4]*[1,1] = [3,4]
+		//   output = [1,2,3,4]
+		// Position 2: cos=[0,0], sin=[1,1]
+		//   x1=[5,6], x2=[7,8]
+		//   real = [5,6]*[0,0] - [7,8]*[1,1] = [-7,-8]
+		//   imag = [5,6]*[1,1] + [7,8]*[0,0] = [5,6]
+		//   output = [-7,-8,5,6]
+		[][][][]float32{{{{1.0, 2.0, 3.0, 4.0}, {-7.0, -8.0, 5.0, 6.0}}}},
+	}, 1e-5)
+
+	// Test RotaryEmbedding with interleaved mode
+	graphtest.RunTestGraphFn(t, "RotaryEmbedding-interleaved", func(g *Graph) (inputs, outputs []*Node) {
+		// Input: (batch=1, heads=1, seq=1, head_size=4)
+		// With interleaved, x1=[x[0], x[2]] and x2=[x[1], x[3]]
+		x := Const(g, [][][][]float32{{{{1.0, 2.0, 3.0, 4.0}}}})
+
+		// cos_cache and sin_cache: (seq=1, head_size/2=2)
+		cosCache := Const(g, [][]float32{{0.5, 0.5}})
+		sinCache := Const(g, [][]float32{{0.5, 0.5}})
+
+		node := &protos.NodeProto{
+			OpType: "RotaryEmbedding",
+			Attribute: []*protos.AttributeProto{
+				{Name: "interleaved", Type: protos.AttributeProto_INT, I: 1},
+			},
+		}
+		inputs = []*Node{x, cosCache, sinCache}
+		outputs = []*Node{
+			convertRotaryEmbedding(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// x1=[1,3] (even indices), x2=[2,4] (odd indices)
+		// cos=[0.5,0.5], sin=[0.5,0.5]
+		// real = [1,3]*[0.5,0.5] - [2,4]*[0.5,0.5] = [0.5,1.5] - [1,2] = [-0.5,-0.5]
+		// imag = [1,3]*[0.5,0.5] + [2,4]*[0.5,0.5] = [0.5,1.5] + [1,2] = [1.5,3.5]
+		// interleaved output = [real[0],imag[0],real[1],imag[1]] = [-0.5,1.5,-0.5,3.5]
+		[][][][]float32{{{{-0.5, 1.5, -0.5, 3.5}}}},
+	}, 1e-5)
+}
+
 func TestSplit(t *testing.T) {
 	// Test equal splits
 	graphtest.RunTestGraphFn(t, "Split-equal", func(g *Graph) (inputs, outputs []*Node) {

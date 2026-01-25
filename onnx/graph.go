@@ -541,6 +541,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertLayerNormalization(m, convertedOutputs, node, inputs)
 	case "SimplifiedLayerNormalization":
 		result = convertSimplifiedLayerNormalization(m, convertedOutputs, node, inputs)
+	case "RotaryEmbedding":
+		result = convertRotaryEmbedding(m, convertedOutputs, node, inputs)
 
 	// Multiple outputs ops:
 	case "Pad":

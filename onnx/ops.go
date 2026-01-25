@@ -90,12 +90,20 @@ func convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
 // https://onnx.ai/onnx/operators/onnx__Clip.html
 //
 // Notice max/min values are optional, hence the special conversion code.
+// Optional inputs in ONNX are represented as empty strings, which result in nil Nodes.
 func convertClip(_ *protos.NodeProto, inputs []*Node) *Node {
-	if len(inputs) == 1 {
+	// Check for nil inputs (optional parameters in ONNX can be empty string)
+	hasMin := len(inputs) > 1 && inputs[1] != nil
+	hasMax := len(inputs) > 2 && inputs[2] != nil
+
+	if !hasMin && !hasMax {
 		return inputs[0]
 	}
-	if len(inputs) == 2 {
+	if hasMin && !hasMax {
 		return Max(inputs[0], inputs[1])
+	}
+	if !hasMin && hasMax {
+		return Min(inputs[0], inputs[2])
 	}
 	return Min(inputs[2], Max(inputs[0], inputs[1]))
 }
@@ -1979,6 +1987,165 @@ func convertSimplifiedLayerNormalization(_ *Model, _ map[string]*Node, node *pro
 
 	// Apply scale (gamma)
 	result := Mul(normalized, scale)
+
+	return result
+}
+
+// convertRotaryEmbedding converts the corresponding ONNX node to GoMLX nodes.
+//
+// RotaryEmbedding implements rotary positional embeddings (RoPE) which encode position
+// information by rotating the embedding vectors. This is commonly used in modern LLMs
+// like Gemma, Llama, and other transformer-based models.
+//
+// The rotation formula is:
+//
+//	real = cos * x1 - sin * x2
+//	imag = sin * x1 + cos * x2
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__RotaryEmbedding.html
+func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// Inputs:
+	// - input: 4D (batch, num_heads, seq_len, head_size) or 3D (batch, seq_len, hidden_size)
+	// - cos_cache: cosine values for rotation
+	// - sin_cache: sine values for rotation
+	// - position_ids (optional): position indices for cache lookup
+	x := inputs[0]
+	cosCache := inputs[1]
+	sinCache := inputs[2]
+	var positionIds *Node
+	if len(inputs) > 3 && inputs[3] != nil {
+		positionIds = inputs[3]
+	}
+
+	// Attributes
+	interleaved := getIntAttrOr(node, "interleaved", 0) != 0
+	numHeads := getIntAttrOr(node, "num_heads", 0)
+	rotaryEmbeddingDim := getIntAttrOr(node, "rotary_embedding_dim", 0)
+
+	inputRank := x.Rank()
+	inputShape := x.Shape().Dimensions
+
+	// Handle 3D input by reshaping to 4D
+	var was3D bool
+	var batchSize, seqLen, hiddenSize int
+	if inputRank == 3 {
+		was3D = true
+		batchSize = inputShape[0]
+		seqLen = inputShape[1]
+		hiddenSize = inputShape[2]
+		if numHeads == 0 {
+			exceptions.Panicf("RotaryEmbedding: num_heads attribute required for 3D input")
+		}
+		headSize := hiddenSize / numHeads
+		// Reshape from (batch, seq, hidden) to (batch, seq, num_heads, head_size)
+		// Then transpose to (batch, num_heads, seq, head_size)
+		x = Reshape(x, batchSize, seqLen, numHeads, headSize)
+		x = TransposeAllDims(x, 0, 2, 1, 3)
+	}
+
+	// Now x is 4D: (batch, num_heads, seq_len, head_size)
+	dims := x.Shape().Dimensions
+	headSize := dims[3]
+
+	// Determine rotary dimension (default is full head_size)
+	rotaryDim := headSize
+	if rotaryEmbeddingDim > 0 {
+		rotaryDim = rotaryEmbeddingDim
+	}
+
+	// Split into rotatable and pass-through portions
+	var xRotate, xPass *Node
+	if rotaryDim < headSize {
+		// Partial rotation: split along last axis
+		// xRotate = x[:, :, :, :rotaryDim], xPass = x[:, :, :, rotaryDim:]
+		xRotate = Slice(x, AxisRange(), AxisRange(), AxisRange(), AxisRange(0, rotaryDim))
+		xPass = Slice(x, AxisRange(), AxisRange(), AxisRange(), AxisRange(rotaryDim, headSize))
+	} else {
+		xRotate = x
+		xPass = nil
+	}
+
+	// Get cos and sin values
+	// If position_ids provided, use them to index into 2D cache
+	// Otherwise, cache is already 3D with shape (batch, seq_len, dim/2)
+	var cos, sin *Node
+
+	if positionIds != nil {
+		// cos_cache/sin_cache shape: (max_pos+1, rotary_dim/2)
+		// Gather using position_ids to get (batch, seq_len, rotary_dim/2)
+		cos = onnxGather(cosCache, positionIds, 0)
+		sin = onnxGather(sinCache, positionIds, 0)
+	} else {
+		// cos_cache/sin_cache shape: (batch, seq_len, rotary_dim/2) or similar
+		cos = cosCache
+		sin = sinCache
+	}
+
+	// Reshape cos/sin for broadcasting with x
+	// cos/sin: (..., rotary_dim/2) -> need to broadcast to (batch, num_heads, seq_len, rotary_dim/2)
+	cosRank := cos.Rank()
+	if cosRank == 2 {
+		// (seq_len, dim/2) -> (1, 1, seq_len, dim/2)
+		cos = ExpandLeftToRank(cos, 4)
+		sin = ExpandLeftToRank(sin, 4)
+	} else if cosRank == 3 {
+		// (batch, seq_len, dim/2) -> (batch, 1, seq_len, dim/2)
+		cosDims := cos.Shape().Dimensions
+		cos = Reshape(cos, cosDims[0], 1, cosDims[1], cosDims[2])
+		sin = Reshape(sin, cosDims[0], 1, cosDims[1], cosDims[2])
+	}
+
+	// Split xRotate into two halves for rotation
+	halfDim := rotaryDim / 2
+	var x1, x2 *Node
+
+	if interleaved {
+		// Interleaved: x1 = even indices, x2 = odd indices
+		// x1 = xRotate[:, :, :, 0::2], x2 = xRotate[:, :, :, 1::2]
+		x1 = Slice(xRotate, AxisRange(), AxisRange(), AxisRange(), AxisRange(0, rotaryDim).Stride(2))
+		x2 = Slice(xRotate, AxisRange(), AxisRange(), AxisRange(), AxisRange(1, rotaryDim).Stride(2))
+	} else {
+		// Non-interleaved: split in half
+		// x1 = xRotate[:, :, :, :halfDim], x2 = xRotate[:, :, :, halfDim:]
+		x1 = Slice(xRotate, AxisRange(), AxisRange(), AxisRange(), AxisRange(0, halfDim))
+		x2 = Slice(xRotate, AxisRange(), AxisRange(), AxisRange(), AxisRange(halfDim, rotaryDim))
+	}
+
+	// Apply rotation: real = cos*x1 - sin*x2, imag = sin*x1 + cos*x2
+	real := Sub(Mul(cos, x1), Mul(sin, x2))
+	imag := Add(Mul(sin, x1), Mul(cos, x2))
+
+	// Recombine rotated values
+	var xRotated *Node
+	if interleaved {
+		// Interleave real and imag back together
+		// Stack along new axis then reshape to interleave
+		// real: (batch, heads, seq, half), imag: (batch, heads, seq, half)
+		// -> stack: (batch, heads, seq, half, 2) -> reshape: (batch, heads, seq, rotary_dim)
+		stacked := Stack([]*Node{real, imag}, -1)
+		stackedDims := stacked.Shape().Dimensions
+		xRotated = Reshape(stacked, stackedDims[0], stackedDims[1], stackedDims[2], rotaryDim)
+	} else {
+		// Non-interleaved: concatenate real and imag
+		xRotated = Concatenate([]*Node{real, imag}, -1)
+	}
+
+	// Combine rotated and pass-through portions
+	var result *Node
+	if xPass != nil {
+		result = Concatenate([]*Node{xRotated, xPass}, -1)
+	} else {
+		result = xRotated
+	}
+
+	// If input was 3D, reshape back
+	if was3D {
+		// Transpose from (batch, num_heads, seq, head_size) to (batch, seq, num_heads, head_size)
+		result = TransposeAllDims(result, 0, 2, 1, 3)
+		// Reshape to (batch, seq, hidden)
+		result = Reshape(result, batchSize, seqLen, hiddenSize)
+	}
 
 	return result
 }
