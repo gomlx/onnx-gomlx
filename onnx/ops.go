@@ -843,6 +843,66 @@ func convertReduceProd(m *Model, convertedOutputs map[string]*Node, node *protos
 	return convertReduce(m, convertedOutputs, node, inputs, "ReduceProd", ReduceMultiply, ReduceAllMultiply)
 }
 
+// convertReduceL2 converts a ONNX node to a GoMLX node.
+//
+// ReduceL2 computes the L2 norm (sqrt(sum(x^2))) of the input tensor's elements along the provided axes.
+// This is commonly used in normalization operations like Snowflake Arctic embeddings.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__ReduceL2.html
+func convertReduceL2(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	operand := inputs[0]
+	keepDims := getIntAttrOr(node, "keepdims", 1) > 0
+	noOpIfEmpty := getIntAttrOr(node, "noop_with_empty_axes", 0) > 0
+
+	var axes []int
+	if len(inputs) > 1 {
+		if !inputs[1].DType().IsInt() {
+			exceptions.Panicf("ReduceL2: axes must be integer, got %s for node %s", inputs[1].DType(), nodeToString(node))
+		}
+
+		axesT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+		if err != nil {
+			panic(errors.WithMessagef(err, "while converting 'axes' for ReduceL2 node %s", nodeToString(node)))
+		}
+		axes = tensorToInts(axesT)
+	}
+
+	axesFromAttr := getIntsAttrOr(node, "axes", nil)
+	if len(axesFromAttr) > 0 {
+		if len(axes) > 0 {
+			exceptions.Panicf("ReduceL2(operand, [axes]): axes and axes attribute cannot be used together for node %s", nodeToString(node))
+		}
+		axes = axesFromAttr
+	}
+
+	// Adjust negative axes to positive.
+	for i, axis := range axes {
+		axes[i] = MustAdjustAxis(axis, operand)
+	}
+
+	// Compute L2 norm: sqrt(sum(x^2))
+	squared := Square(operand)
+
+	if len(axes) == 0 {
+		if noOpIfEmpty {
+			return Identity(operand)
+		} else {
+			res := Sqrt(ReduceAllSum(squared))
+			if keepDims {
+				res = ExpandLeftToRank(res, operand.Rank())
+			}
+			return res
+		}
+	}
+
+	if !keepDims {
+		return Sqrt(ReduceSum(squared, axes...))
+	} else {
+		return Sqrt(ReduceAndKeep(squared, ReduceSum, axes...))
+	}
+}
+
 // convertReduce is a generic helper for reduce operations.
 // It handles axes parsing from inputs or attributes, keepdims, and noop_with_empty_axes.
 func convertReduce(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node,
@@ -1845,6 +1905,80 @@ func convertLayerNormalization(_ *Model, _ map[string]*Node, node *protos.NodePr
 	if bias != nil {
 		result = Add(result, bias)
 	}
+
+	return result
+}
+
+// convertSimplifiedLayerNormalization converts the corresponding ONNX node to GoMLX nodes.
+//
+// SimplifiedLayerNormalization (also known as RMSNorm) normalizes the input using the
+// root mean square without centering (no mean subtraction). This is commonly used in
+// Gemma-based models and other modern LLMs.
+//
+// The formula is: Y = X / sqrt(mean(X^2) + epsilon) * scale
+//
+// This is a Microsoft ONNX Runtime contrib op. The official ONNX equivalent is
+// RMSNormalization (opset 23+).
+//
+// See ONNX documentation for RMSNormalization in:
+// https://onnx.ai/onnx/operators/onnx__RMSNormalization.html
+func convertSimplifiedLayerNormalization(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// Inputs: [X, Scale]
+	// X: input tensor
+	// Scale (gamma): scale parameter
+	x := inputs[0]
+	scale := inputs[1]
+
+	// Attributes
+	axis := getIntAttrOr(node, "axis", -1)
+	epsilon := getFloatAttrOr(node, "epsilon", 1e-5)
+
+	// Normalize axis to positive value
+	inputRank := x.Rank()
+	if axis < 0 {
+		axis = inputRank + axis
+	}
+
+	// Calculate axes to reduce over (from axis to the end)
+	axes := make([]int, inputRank-axis)
+	for i := range axes {
+		axes[i] = axis + i
+	}
+
+	// Reshape scale to match input rank for broadcasting
+	// Scale has shape matching the normalized dimensions
+	// Need to add leading 1s to match the input rank
+	if scale.Rank() < inputRank {
+		scaleShape := make([]int, inputRank)
+		// Set leading dimensions to 1
+		for i := 0; i < axis; i++ {
+			scaleShape[i] = 1
+		}
+		// Copy the scale dimensions for the normalized axes
+		scaleDims := scale.Shape().Dimensions
+		scaleRank := len(scaleDims)
+		for i := axis; i < inputRank; i++ {
+			// Check bounds to prevent index out of bounds
+			scaleIdx := i - axis
+			if scaleIdx >= scaleRank {
+				exceptions.Panicf("SimplifiedLayerNormalization: scale tensor has insufficient dimensions (rank=%d) for input rank=%d and axis=%d",
+					scaleRank, inputRank, axis)
+			}
+			scaleShape[i] = scaleDims[scaleIdx]
+		}
+		scale = Reshape(scale, scaleShape...)
+	}
+
+	// Calculate RMS (root mean square) over the normalization axes
+	// RMS = sqrt(mean(X^2) + epsilon)
+	meanSquare := ReduceAndKeep(Square(x), ReduceMean, axes...)
+	rms := Sqrt(Add(meanSquare, Scalar(x.Graph(), x.DType(), epsilon)))
+
+	// Normalize: X / RMS
+	normalized := Div(x, rms)
+
+	// Apply scale (gamma)
+	result := Mul(normalized, scale)
 
 	return result
 }

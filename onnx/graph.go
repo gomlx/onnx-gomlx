@@ -509,6 +509,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertReduceSum(m, convertedOutputs, node, inputs)
 	case "ReduceProd":
 		result = convertReduceProd(m, convertedOutputs, node, inputs)
+	case "ReduceL2":
+		result = convertReduceL2(m, convertedOutputs, node, inputs)
 	case "NonZero":
 		result = convertNonZero(m, convertedOutputs, node, inputs)
 	case "ConstantOfShape":
