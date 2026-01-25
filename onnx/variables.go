@@ -27,8 +27,9 @@ func (m *Model) VariablesToContext(ctx *context.Context) error {
 		exceptions.Panicf("onnx.VariablesToContext does not support ONNX SparseTensors")
 	}
 	ctx = ctx.In(ModelScope).Checked(false)
+	reader := m.getExternalDataReader()
 	for _, tensorProto := range m.Proto.Graph.Initializer {
-		tensor, err := tensorToGoMLX(m.backend, tensorProto)
+		tensor, err := tensorToGoMLXWithBaseDir(m.backend, tensorProto, m.baseDir(), reader)
 		if err != nil {
 			return errors.WithMessagef(err, "Model.VariablesToContext()")
 		}

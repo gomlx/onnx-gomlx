@@ -160,7 +160,7 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 		if !m.isVariableConstant(nodeOutputName) {
 			exceptions.Panicf("attempting to materialize as constant variable %q, which we don't think is constant", nodeOutputName)
 		}
-		t, err := tensorToGoMLX(m.backend, tensorNode)
+		t, err := tensorToGoMLXWithBaseDir(m.backend, tensorNode, m.baseDir(), m.getExternalDataReader())
 		if err != nil {
 			panic(errors.WithMessagef(err, "attempting to materialize variable %q as constant", nodeOutputName))
 		}
