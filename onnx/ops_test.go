@@ -636,6 +636,160 @@ func TestLayerNormalization(t *testing.T) {
 	}, 1e-3)
 }
 
+func TestSimplifiedLayerNormalization(t *testing.T) {
+	// Test basic SimplifiedLayerNormalization (RMSNorm) with default axis (-1)
+	graphtest.RunTestGraphFn(t, "SimplifiedLayerNormalization-basic", func(g *Graph) (inputs, outputs []*Node) {
+		// Input tensor [2, 3]: normalize over last axis (axis=-1, which is axis 1)
+		x := Const(g, [][]float32{{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}})
+		scale := Const(g, []float32{1.0, 1.0, 1.0})
+
+		// Create a mock node to pass attributes
+		node := &protos.NodeProto{
+			OpType: "SimplifiedLayerNormalization",
+		}
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			convertSimplifiedLayerNormalization(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Expected: X / sqrt(mean(X^2) + epsilon) * scale
+		// For [1,2,3]: mean(x^2)=14/3≈4.667, rms=sqrt(4.667)≈2.16, normalized ≈ [0.463, 0.926, 1.389]
+		// For [4,5,6]: mean(x^2)=77/3≈25.67, rms=sqrt(25.67)≈5.066, normalized ≈ [0.789, 0.987, 1.184]
+		[][]float32{{0.4629, 0.9258, 1.3887}, {0.7895, 0.9869, 1.1843}},
+	}, 1e-3)
+
+	// Test with scale
+	graphtest.RunTestGraphFn(t, "SimplifiedLayerNormalization-scale", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}})
+		scale := Const(g, []float32{2.0, 2.0, 2.0})
+
+		node := &protos.NodeProto{
+			OpType: "SimplifiedLayerNormalization",
+		}
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			convertSimplifiedLayerNormalization(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Expected: (X / RMS) * 2
+		[][]float32{{0.9258, 1.8516, 2.7775}, {1.5790, 1.9737, 2.3685}},
+	}, 1e-3)
+
+	// Test 3D tensor (common in transformers: batch, sequence, features)
+	graphtest.RunTestGraphFn(t, "SimplifiedLayerNormalization-3D", func(g *Graph) (inputs, outputs []*Node) {
+		// Shape [2, 2, 3]: batch=2, seq_len=2, features=3
+		x := Const(g, [][][]float32{
+			{{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}},
+			{{7.0, 8.0, 9.0}, {10.0, 11.0, 12.0}},
+		})
+		scale := Const(g, []float32{1.0, 1.0, 1.0})
+
+		node := &protos.NodeProto{
+			OpType: "SimplifiedLayerNormalization",
+			Attribute: []*protos.AttributeProto{
+				{Name: "axis", Type: protos.AttributeProto_INT, I: -1}, // Last axis
+			},
+		}
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			convertSimplifiedLayerNormalization(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Each feature vector should be RMS-normalized independently
+		[][][]float32{
+			{{0.4629, 0.9258, 1.3887}, {0.7895, 0.9869, 1.1843}},
+			{{0.8704, 0.9947, 1.1191}, {0.9071, 0.9978, 1.0885}},
+		},
+	}, 1e-3)
+}
+
+func TestReduceL2(t *testing.T) {
+	// Test basic ReduceL2 over all elements
+	graphtest.RunTestGraphFn(t, "ReduceL2-all", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{3.0, 4.0}})
+
+		node := &protos.NodeProto{
+			OpType: "ReduceL2",
+			Attribute: []*protos.AttributeProto{
+				{Name: "keepdims", Type: protos.AttributeProto_INT, I: 0},
+			},
+		}
+		inputs = []*Node{x}
+		outputs = []*Node{
+			convertReduceL2(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// sqrt(3^2 + 4^2) = sqrt(9 + 16) = sqrt(25) = 5
+		float32(5.0),
+	}, 1e-5)
+
+	// Test ReduceL2 over last axis with keepdims
+	graphtest.RunTestGraphFn(t, "ReduceL2-axis-keepdims", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{3.0, 4.0}, {5.0, 12.0}})
+
+		node := &protos.NodeProto{
+			OpType: "ReduceL2",
+			Attribute: []*protos.AttributeProto{
+				{Name: "axes", Type: protos.AttributeProto_INTS, Ints: []int64{1}},
+				{Name: "keepdims", Type: protos.AttributeProto_INT, I: 1},
+			},
+		}
+		inputs = []*Node{x}
+		outputs = []*Node{
+			convertReduceL2(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// sqrt(3^2 + 4^2) = 5, sqrt(5^2 + 12^2) = 13
+		[][]float32{{5.0}, {13.0}},
+	}, 1e-5)
+
+	// Test ReduceL2 without keepdims
+	graphtest.RunTestGraphFn(t, "ReduceL2-axis-no-keepdims", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{3.0, 4.0}, {5.0, 12.0}})
+
+		node := &protos.NodeProto{
+			OpType: "ReduceL2",
+			Attribute: []*protos.AttributeProto{
+				{Name: "axes", Type: protos.AttributeProto_INTS, Ints: []int64{1}},
+				{Name: "keepdims", Type: protos.AttributeProto_INT, I: 0},
+			},
+		}
+		inputs = []*Node{x}
+		outputs = []*Node{
+			convertReduceL2(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// sqrt(3^2 + 4^2) = 5, sqrt(5^2 + 12^2) = 13
+		[]float32{5.0, 13.0},
+	}, 1e-5)
+
+	// Test ReduceL2 noop_with_empty_axes
+	graphtest.RunTestGraphFn(t, "ReduceL2-noop", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{3.0, 4.0}, {5.0, 12.0}})
+
+		node := &protos.NodeProto{
+			OpType: "ReduceL2",
+			Attribute: []*protos.AttributeProto{
+				{Name: "noop_with_empty_axes", Type: protos.AttributeProto_INT, I: 1},
+			},
+		}
+		inputs = []*Node{x}
+		outputs = []*Node{
+			convertReduceL2(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// With noop_with_empty_axes=1 and no axes specified, return input unchanged
+		[][]float32{{3.0, 4.0}, {5.0, 12.0}},
+	}, 1e-5)
+}
+
 func TestSplit(t *testing.T) {
 	// Test equal splits
 	graphtest.RunTestGraphFn(t, "Split-equal", func(g *Graph) (inputs, outputs []*Node) {
