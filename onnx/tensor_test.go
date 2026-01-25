@@ -971,8 +971,8 @@ func TestExternalDataReader(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		// Verify only one mapping was created
-		require.Len(t, reader.mappings, 1)
+		// Verify only one file handle was created
+		require.Len(t, reader.files, 1)
 	})
 
 	t.Run("MissingFileMmap", func(t *testing.T) {
@@ -990,7 +990,7 @@ func TestExternalDataReader(t *testing.T) {
 		dst := make([]byte, 8)
 		err := reader.ReadInto(info, dst)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "failed to mmap external data file")
+		require.Contains(t, err.Error(), "failed to open external data file")
 	})
 
 	t.Run("CloseReleasesResources", func(t *testing.T) {
@@ -1018,16 +1018,16 @@ func TestExternalDataReader(t *testing.T) {
 			length:   8,
 		}
 
-		// Read to create a mapping
+		// Read to open a file handle
 		dst := make([]byte, 8)
 		err = reader.ReadInto(info, dst)
 		require.NoError(t, err)
-		require.Len(t, reader.mappings, 1)
+		require.Len(t, reader.files, 1)
 
 		// Close should release resources
 		err = reader.Close()
 		require.NoError(t, err)
-		require.Nil(t, reader.mappings)
+		require.Nil(t, reader.files)
 	})
 
 	t.Run("OffsetAndLengthMmap", func(t *testing.T) {

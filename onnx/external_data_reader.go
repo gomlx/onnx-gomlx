@@ -7,65 +7,56 @@ import (
 	"sync"
 
 	"github.com/pkg/errors"
-	"golang.org/x/exp/mmap"
 )
 
-// ExternalDataReader manages memory-mapped external data files for efficient tensor loading.
-// It caches mmap regions by file path since multiple tensors often share the same external file.
-// This eliminates the need for intermediate buffer allocations when loading tensor data.
+// ExternalDataReader manages external data files for tensor loading.
+// It caches file handles by path since multiple tensors often share the same external file,
+// avoiding repeated open/close overhead during model loading.
 type ExternalDataReader struct {
-	baseDir  string
-	mappings map[string]*mmapRegion
-	mu       sync.Mutex
-}
-
-// mmapRegion holds a memory-mapped file region.
-type mmapRegion struct {
-	reader *mmap.ReaderAt
+	baseDir string
+	files   map[string]*os.File
+	mu      sync.Mutex
 }
 
 // NewExternalDataReader creates a reader for the given model directory.
 // baseDir is the directory containing the ONNX model file, used to resolve external data paths.
 func NewExternalDataReader(baseDir string) *ExternalDataReader {
 	return &ExternalDataReader{
-		baseDir:  baseDir,
-		mappings: make(map[string]*mmapRegion),
+		baseDir: baseDir,
+		files:   make(map[string]*os.File),
 	}
 }
 
-// getOrCreateMapping returns the mmap region for the given file path, creating it if necessary.
-func (r *ExternalDataReader) getOrCreateMapping(location string) (*mmapRegion, error) {
+// getOrOpenFile returns the file handle for the given location, opening it if necessary.
+func (r *ExternalDataReader) getOrOpenFile(location string) (*os.File, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Check if already mapped
-	if region, ok := r.mappings[location]; ok {
-		return region, nil
+	// Check if already open
+	if file, ok := r.files[location]; ok {
+		return file, nil
 	}
 
 	// Resolve the external file path relative to the model directory
 	externalPath := filepath.Join(r.baseDir, location)
 
-	// Open and mmap the file
-	reader, err := mmap.Open(externalPath)
+	// Open the file
+	file, err := os.Open(externalPath)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to mmap external data file %q", externalPath)
+		return nil, errors.Wrapf(err, "failed to open external data file %q", externalPath)
 	}
 
-	region := &mmapRegion{reader: reader}
-	r.mappings[location] = region
-	return region, nil
+	r.files[location] = file
+	return file, nil
 }
 
 // ReadInto reads external data directly into the provided byte slice.
-// This avoids intermediate allocations by copying directly from the mmap region
-// into the destination buffer (typically the tensor's backing memory).
 func (r *ExternalDataReader) ReadInto(info *externalDataInfo, dst []byte) error {
 	if r.baseDir == "" {
 		return errors.New("base directory is required for reading external data")
 	}
 
-	region, err := r.getOrCreateMapping(info.location)
+	file, err := r.getOrOpenFile(info.location)
 	if err != nil {
 		return err
 	}
@@ -80,8 +71,8 @@ func (r *ExternalDataReader) ReadInto(info *externalDataInfo, dst []byte) error 
 		length = info.length
 	}
 
-	// Read from mmap region directly into destination
-	n, err := region.reader.ReadAt(dst, info.offset)
+	// Read at the specified offset (ReadAt is safe for concurrent use)
+	n, err := file.ReadAt(dst, info.offset)
 	if err != nil && err != io.EOF {
 		return errors.Wrapf(err, "failed to read %d bytes at offset %d from external data file %q",
 			length, info.offset, info.location)
@@ -94,19 +85,19 @@ func (r *ExternalDataReader) ReadInto(info *externalDataInfo, dst []byte) error 
 	return nil
 }
 
-// Close unmaps all memory regions and releases resources.
+// Close closes all cached file handles and releases resources.
 // After Close is called, the reader should not be used.
 func (r *ExternalDataReader) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	var firstErr error
-	for path, region := range r.mappings {
-		if err := region.reader.Close(); err != nil && firstErr == nil {
-			firstErr = errors.Wrapf(err, "failed to close mmap for %q", path)
+	for path, file := range r.files {
+		if err := file.Close(); err != nil && firstErr == nil {
+			firstErr = errors.Wrapf(err, "failed to close file %q", path)
 		}
 	}
-	r.mappings = nil
+	r.files = nil
 	return firstErr
 }
 
