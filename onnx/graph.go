@@ -198,13 +198,14 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 	// Convert sub-graph initializers (constants) to GoMLX nodes
 	// Also temporarily add them to model's variableNameToValue for materializeConstantExpression
 	subGraphInitializers := make(map[string]*protos.TensorProto)
+	reader := m.getExternalDataReader()
 	for _, initializerProto := range subGraphProto.Initializer {
 		initializerName := initializerProto.Name
 		if initializerName == "" {
 			continue
 		}
 		// Convert the initializer tensor to a GoMLX constant
-		tensor, err := tensorToGoMLX(g.Backend(), initializerProto)
+		tensor, err := tensorToGoMLXWithBaseDir(g.Backend(), initializerProto, m.baseDir(), reader)
 		if err != nil {
 			exceptions.Panicf("failed to convert sub-graph initializer %q: %v", initializerName, err)
 		}
@@ -258,7 +259,7 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 		// Check if it's a model-level initializer (variable)
 		if initializerProto, found := m.variableNameToValue[outputName]; found {
 			// Convert the model-level initializer to a constant in the sub-graph
-			tensor, err := tensorToGoMLX(g.Backend(), initializerProto)
+			tensor, err := tensorToGoMLXWithBaseDir(g.Backend(), initializerProto, m.baseDir(), reader)
 			if err != nil {
 				exceptions.Panicf("failed to convert model initializer %q in sub-graph: %v", outputName, err)
 			}

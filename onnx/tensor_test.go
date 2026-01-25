@@ -1,6 +1,8 @@
 package onnx
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"unsafe"
 
@@ -256,7 +258,7 @@ func TestTensorToGoMLX(t *testing.T) {
 		require.Contains(t, err.Error(), "unsupported")
 	})
 
-	t.Run("ExternalDataNotImplemented", func(t *testing.T) {
+	t.Run("ExternalDataRequiresBaseDir", func(t *testing.T) {
 		proto := &protos.TensorProto{
 			Dims:     []int64{2},
 			DataType: int32(protos.TensorProto_FLOAT),
@@ -264,9 +266,11 @@ func TestTensorToGoMLX(t *testing.T) {
 				{Key: "location", Value: "external.bin"},
 			},
 		}
+		// tensorToGoMLX should return an error for external data
+		// since it doesn't have access to the base directory
 		_, err := tensorToGoMLX(backend, proto)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "external data, which is not implemented")
+		require.Contains(t, err.Error(), "external data")
 	})
 
 	t.Run("SizeMismatch", func(t *testing.T) {
@@ -511,4 +515,560 @@ func TestRoundTripConversion(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestParseExternalData tests the parseExternalData function
+func TestParseExternalData(t *testing.T) {
+	t.Run("NoExternalData", func(t *testing.T) {
+		proto := &protos.TensorProto{
+			Name: "test",
+		}
+		info, err := parseExternalData(proto)
+		require.NoError(t, err)
+		require.Nil(t, info)
+	})
+
+	t.Run("LocationOnly", func(t *testing.T) {
+		proto := &protos.TensorProto{
+			Name: "test",
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "weights.bin"},
+			},
+		}
+		info, err := parseExternalData(proto)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		require.Equal(t, "weights.bin", info.location)
+		require.Equal(t, int64(0), info.offset)
+		require.Equal(t, int64(-1), info.length)
+	})
+
+	t.Run("AllFields", func(t *testing.T) {
+		proto := &protos.TensorProto{
+			Name: "test",
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "weights.bin"},
+				{Key: "offset", Value: "1024"},
+				{Key: "length", Value: "4096"},
+				{Key: "checksum", Value: "abc123"}, // Should be ignored
+			},
+		}
+		info, err := parseExternalData(proto)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		require.Equal(t, "weights.bin", info.location)
+		require.Equal(t, int64(1024), info.offset)
+		require.Equal(t, int64(4096), info.length)
+	})
+
+	t.Run("MissingLocation", func(t *testing.T) {
+		proto := &protos.TensorProto{
+			Name: "test",
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "offset", Value: "1024"},
+			},
+		}
+		_, err := parseExternalData(proto)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "missing required 'location'")
+	})
+
+	t.Run("InvalidOffset", func(t *testing.T) {
+		proto := &protos.TensorProto{
+			Name: "test",
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "weights.bin"},
+				{Key: "offset", Value: "not-a-number"},
+			},
+		}
+		_, err := parseExternalData(proto)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid offset")
+	})
+
+	t.Run("InvalidLength", func(t *testing.T) {
+		proto := &protos.TensorProto{
+			Name: "test",
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "weights.bin"},
+				{Key: "length", Value: "not-a-number"},
+			},
+		}
+		_, err := parseExternalData(proto)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid length")
+	})
+}
+
+// TestTensorToGoMLXWithBaseDir_ExternalData tests external data loading
+func TestTensorToGoMLXWithBaseDir_ExternalData(t *testing.T) {
+	backend := graphtest.BuildTestBackend()
+
+	t.Run("BasicExternalData", func(t *testing.T) {
+		// Create a temporary directory for the test
+		tmpDir := t.TempDir()
+
+		// Create external data file with float32 values
+		data := []float32{1.5, 2.5, 3.5, 4.5}
+		rawBytes := make([]byte, len(data)*4)
+		for i, val := range data {
+			bits := *(*uint32)(unsafe.Pointer(&val))
+			rawBytes[i*4] = byte(bits)
+			rawBytes[i*4+1] = byte(bits >> 8)
+			rawBytes[i*4+2] = byte(bits >> 16)
+			rawBytes[i*4+3] = byte(bits >> 24)
+		}
+		externalFile := filepath.Join(tmpDir, "weights.bin")
+		err := os.WriteFile(externalFile, rawBytes, 0644)
+		require.NoError(t, err)
+
+		// Create proto with external data reference
+		proto := &protos.TensorProto{
+			Name:     "test_tensor",
+			Dims:     []int64{4},
+			DataType: int32(protos.TensorProto_FLOAT),
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "weights.bin"},
+			},
+		}
+
+		// Load tensor
+		tensor, err := tensorToGoMLXWithBaseDir(backend, proto, tmpDir, nil)
+		require.NoError(t, err)
+		require.NotNil(t, tensor)
+		defer tensor.FinalizeAll()
+
+		require.Equal(t, dtypes.Float32, tensor.Shape().DType)
+		require.Equal(t, []int{4}, tensor.Shape().Dimensions)
+		result := tensors.MustCopyFlatData[float32](tensor)
+		require.InDeltaSlice(t, data, result, 0.0001)
+	})
+
+	t.Run("ExternalDataWithOffset", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create external data file with padding + float32 values
+		padding := make([]byte, 128) // Some padding at the start
+		data := []float32{10.0, 20.0}
+		rawBytes := make([]byte, len(data)*4)
+		for i, val := range data {
+			bits := *(*uint32)(unsafe.Pointer(&val))
+			rawBytes[i*4] = byte(bits)
+			rawBytes[i*4+1] = byte(bits >> 8)
+			rawBytes[i*4+2] = byte(bits >> 16)
+			rawBytes[i*4+3] = byte(bits >> 24)
+		}
+		fileContent := append(padding, rawBytes...)
+		externalFile := filepath.Join(tmpDir, "weights.bin")
+		err := os.WriteFile(externalFile, fileContent, 0644)
+		require.NoError(t, err)
+
+		proto := &protos.TensorProto{
+			Name:     "test_tensor",
+			Dims:     []int64{2},
+			DataType: int32(protos.TensorProto_FLOAT),
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "weights.bin"},
+				{Key: "offset", Value: "128"},
+				{Key: "length", Value: "8"},
+			},
+		}
+
+		tensor, err := tensorToGoMLXWithBaseDir(backend, proto, tmpDir, nil)
+		require.NoError(t, err)
+		require.NotNil(t, tensor)
+		defer tensor.FinalizeAll()
+
+		result := tensors.MustCopyFlatData[float32](tensor)
+		require.InDeltaSlice(t, data, result, 0.0001)
+	})
+
+	t.Run("ExternalDataInt32", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create external data file with int32 values
+		data := []int32{100, 200, 300}
+		rawBytes := make([]byte, len(data)*4)
+		for i, val := range data {
+			bits := uint32(val)
+			rawBytes[i*4] = byte(bits)
+			rawBytes[i*4+1] = byte(bits >> 8)
+			rawBytes[i*4+2] = byte(bits >> 16)
+			rawBytes[i*4+3] = byte(bits >> 24)
+		}
+		externalFile := filepath.Join(tmpDir, "data.bin")
+		err := os.WriteFile(externalFile, rawBytes, 0644)
+		require.NoError(t, err)
+
+		proto := &protos.TensorProto{
+			Name:     "test_tensor",
+			Dims:     []int64{3},
+			DataType: int32(protos.TensorProto_INT32),
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "data.bin"},
+			},
+		}
+
+		tensor, err := tensorToGoMLXWithBaseDir(backend, proto, tmpDir, nil)
+		require.NoError(t, err)
+		require.NotNil(t, tensor)
+		defer tensor.FinalizeAll()
+
+		require.Equal(t, dtypes.Int32, tensor.Shape().DType)
+		result := tensors.MustCopyFlatData[int32](tensor)
+		require.Equal(t, data, result)
+	})
+
+	t.Run("SubdirectoryLocation", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create subdirectory and external data file
+		subDir := filepath.Join(tmpDir, "weights")
+		err := os.MkdirAll(subDir, 0755)
+		require.NoError(t, err)
+
+		data := []float32{5.0, 6.0}
+		rawBytes := make([]byte, len(data)*4)
+		for i, val := range data {
+			bits := *(*uint32)(unsafe.Pointer(&val))
+			rawBytes[i*4] = byte(bits)
+			rawBytes[i*4+1] = byte(bits >> 8)
+			rawBytes[i*4+2] = byte(bits >> 16)
+			rawBytes[i*4+3] = byte(bits >> 24)
+		}
+		externalFile := filepath.Join(subDir, "layer1.bin")
+		err = os.WriteFile(externalFile, rawBytes, 0644)
+		require.NoError(t, err)
+
+		proto := &protos.TensorProto{
+			Name:     "test_tensor",
+			Dims:     []int64{2},
+			DataType: int32(protos.TensorProto_FLOAT),
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "weights/layer1.bin"},
+			},
+		}
+
+		tensor, err := tensorToGoMLXWithBaseDir(backend, proto, tmpDir, nil)
+		require.NoError(t, err)
+		require.NotNil(t, tensor)
+		defer tensor.FinalizeAll()
+
+		result := tensors.MustCopyFlatData[float32](tensor)
+		require.InDeltaSlice(t, data, result, 0.0001)
+	})
+
+	t.Run("MissingFile", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		proto := &protos.TensorProto{
+			Name:     "test_tensor",
+			Dims:     []int64{2},
+			DataType: int32(protos.TensorProto_FLOAT),
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "nonexistent.bin"},
+			},
+		}
+
+		_, err := tensorToGoMLXWithBaseDir(backend, proto, tmpDir, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "failed to open external data file")
+	})
+
+	t.Run("EmptyBaseDir", func(t *testing.T) {
+		proto := &protos.TensorProto{
+			Name:     "test_tensor",
+			Dims:     []int64{2},
+			DataType: int32(protos.TensorProto_FLOAT),
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "weights.bin"},
+			},
+		}
+
+		_, err := tensorToGoMLXWithBaseDir(backend, proto, "", nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "base directory is required")
+	})
+
+	t.Run("SizeMismatch", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create file with wrong size (2 floats instead of 4)
+		data := []float32{1.0, 2.0}
+		rawBytes := make([]byte, len(data)*4)
+		for i, val := range data {
+			bits := *(*uint32)(unsafe.Pointer(&val))
+			rawBytes[i*4] = byte(bits)
+			rawBytes[i*4+1] = byte(bits >> 8)
+			rawBytes[i*4+2] = byte(bits >> 16)
+			rawBytes[i*4+3] = byte(bits >> 24)
+		}
+		externalFile := filepath.Join(tmpDir, "weights.bin")
+		err := os.WriteFile(externalFile, rawBytes, 0644)
+		require.NoError(t, err)
+
+		proto := &protos.TensorProto{
+			Name:     "test_tensor",
+			Dims:     []int64{4}, // Expects 4 floats = 16 bytes
+			DataType: int32(protos.TensorProto_FLOAT),
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "weights.bin"},
+			},
+		}
+
+		_, err = tensorToGoMLXWithBaseDir(backend, proto, tmpDir, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "bytes")
+	})
+}
+
+// TestExternalDataReader tests the ExternalDataReader mmap functionality
+func TestExternalDataReader(t *testing.T) {
+	backend := graphtest.BuildTestBackend()
+
+	t.Run("BasicMmapRead", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create external data file with float32 values
+		data := []float32{1.5, 2.5, 3.5, 4.5}
+		rawBytes := make([]byte, len(data)*4)
+		for i, val := range data {
+			bits := *(*uint32)(unsafe.Pointer(&val))
+			rawBytes[i*4] = byte(bits)
+			rawBytes[i*4+1] = byte(bits >> 8)
+			rawBytes[i*4+2] = byte(bits >> 16)
+			rawBytes[i*4+3] = byte(bits >> 24)
+		}
+		externalFile := filepath.Join(tmpDir, "weights.bin")
+		err := os.WriteFile(externalFile, rawBytes, 0644)
+		require.NoError(t, err)
+
+		// Create reader and use it
+		reader := NewExternalDataReader(tmpDir)
+		defer reader.Close()
+
+		proto := &protos.TensorProto{
+			Name:     "test_tensor",
+			Dims:     []int64{4},
+			DataType: int32(protos.TensorProto_FLOAT),
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "weights.bin"},
+			},
+		}
+
+		tensor, err := tensorToGoMLXWithBaseDir(backend, proto, tmpDir, reader)
+		require.NoError(t, err)
+		require.NotNil(t, tensor)
+		defer tensor.FinalizeAll()
+
+		require.Equal(t, dtypes.Float32, tensor.Shape().DType)
+		require.Equal(t, []int{4}, tensor.Shape().Dimensions)
+		result := tensors.MustCopyFlatData[float32](tensor)
+		require.InDeltaSlice(t, data, result, 0.0001)
+	})
+
+	t.Run("MultipleTensorsShareSameFile", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create external data file with multiple tensors' data
+		// Tensor 1: 2 floats at offset 0
+		// Tensor 2: 3 floats at offset 8
+		data1 := []float32{1.0, 2.0}
+		data2 := []float32{3.0, 4.0, 5.0}
+		rawBytes := make([]byte, (len(data1)+len(data2))*4)
+
+		for i, val := range data1 {
+			bits := *(*uint32)(unsafe.Pointer(&val))
+			rawBytes[i*4] = byte(bits)
+			rawBytes[i*4+1] = byte(bits >> 8)
+			rawBytes[i*4+2] = byte(bits >> 16)
+			rawBytes[i*4+3] = byte(bits >> 24)
+		}
+		for i, val := range data2 {
+			offset := (len(data1) + i) * 4
+			bits := *(*uint32)(unsafe.Pointer(&val))
+			rawBytes[offset] = byte(bits)
+			rawBytes[offset+1] = byte(bits >> 8)
+			rawBytes[offset+2] = byte(bits >> 16)
+			rawBytes[offset+3] = byte(bits >> 24)
+		}
+		externalFile := filepath.Join(tmpDir, "shared.bin")
+		err := os.WriteFile(externalFile, rawBytes, 0644)
+		require.NoError(t, err)
+
+		// Create reader
+		reader := NewExternalDataReader(tmpDir)
+		defer reader.Close()
+
+		// Load first tensor
+		proto1 := &protos.TensorProto{
+			Name:     "tensor1",
+			Dims:     []int64{2},
+			DataType: int32(protos.TensorProto_FLOAT),
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "shared.bin"},
+				{Key: "offset", Value: "0"},
+				{Key: "length", Value: "8"},
+			},
+		}
+		tensor1, err := tensorToGoMLXWithBaseDir(backend, proto1, tmpDir, reader)
+		require.NoError(t, err)
+		defer tensor1.FinalizeAll()
+
+		// Load second tensor
+		proto2 := &protos.TensorProto{
+			Name:     "tensor2",
+			Dims:     []int64{3},
+			DataType: int32(protos.TensorProto_FLOAT),
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "shared.bin"},
+				{Key: "offset", Value: "8"},
+				{Key: "length", Value: "12"},
+			},
+		}
+		tensor2, err := tensorToGoMLXWithBaseDir(backend, proto2, tmpDir, reader)
+		require.NoError(t, err)
+		defer tensor2.FinalizeAll()
+
+		// Verify both tensors have correct data
+		result1 := tensors.MustCopyFlatData[float32](tensor1)
+		require.InDeltaSlice(t, data1, result1, 0.0001)
+
+		result2 := tensors.MustCopyFlatData[float32](tensor2)
+		require.InDeltaSlice(t, data2, result2, 0.0001)
+	})
+
+	t.Run("ReaderCaching", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create external data file
+		data := []float32{1.0, 2.0}
+		rawBytes := make([]byte, len(data)*4)
+		for i, val := range data {
+			bits := *(*uint32)(unsafe.Pointer(&val))
+			rawBytes[i*4] = byte(bits)
+			rawBytes[i*4+1] = byte(bits >> 8)
+			rawBytes[i*4+2] = byte(bits >> 16)
+			rawBytes[i*4+3] = byte(bits >> 24)
+		}
+		externalFile := filepath.Join(tmpDir, "cached.bin")
+		err := os.WriteFile(externalFile, rawBytes, 0644)
+		require.NoError(t, err)
+
+		reader := NewExternalDataReader(tmpDir)
+		defer reader.Close()
+
+		info := &externalDataInfo{
+			location: "cached.bin",
+			offset:   0,
+			length:   8,
+		}
+
+		// Read multiple times - should reuse cached mmap
+		for i := 0; i < 3; i++ {
+			dst := make([]byte, 8)
+			err := reader.ReadInto(info, dst)
+			require.NoError(t, err)
+		}
+
+		// Verify only one mapping was created
+		require.Len(t, reader.mappings, 1)
+	})
+
+	t.Run("MissingFileMmap", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		reader := NewExternalDataReader(tmpDir)
+		defer reader.Close()
+
+		info := &externalDataInfo{
+			location: "nonexistent.bin",
+			offset:   0,
+			length:   8,
+		}
+
+		dst := make([]byte, 8)
+		err := reader.ReadInto(info, dst)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "failed to mmap external data file")
+	})
+
+	t.Run("CloseReleasesResources", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create external data file
+		data := []float32{1.0, 2.0}
+		rawBytes := make([]byte, len(data)*4)
+		for i, val := range data {
+			bits := *(*uint32)(unsafe.Pointer(&val))
+			rawBytes[i*4] = byte(bits)
+			rawBytes[i*4+1] = byte(bits >> 8)
+			rawBytes[i*4+2] = byte(bits >> 16)
+			rawBytes[i*4+3] = byte(bits >> 24)
+		}
+		externalFile := filepath.Join(tmpDir, "close_test.bin")
+		err := os.WriteFile(externalFile, rawBytes, 0644)
+		require.NoError(t, err)
+
+		reader := NewExternalDataReader(tmpDir)
+
+		info := &externalDataInfo{
+			location: "close_test.bin",
+			offset:   0,
+			length:   8,
+		}
+
+		// Read to create a mapping
+		dst := make([]byte, 8)
+		err = reader.ReadInto(info, dst)
+		require.NoError(t, err)
+		require.Len(t, reader.mappings, 1)
+
+		// Close should release resources
+		err = reader.Close()
+		require.NoError(t, err)
+		require.Nil(t, reader.mappings)
+	})
+
+	t.Run("OffsetAndLengthMmap", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create external data file with padding + data
+		padding := make([]byte, 256)
+		data := []float32{10.0, 20.0, 30.0}
+		rawBytes := make([]byte, len(data)*4)
+		for i, val := range data {
+			bits := *(*uint32)(unsafe.Pointer(&val))
+			rawBytes[i*4] = byte(bits)
+			rawBytes[i*4+1] = byte(bits >> 8)
+			rawBytes[i*4+2] = byte(bits >> 16)
+			rawBytes[i*4+3] = byte(bits >> 24)
+		}
+		fileContent := append(padding, rawBytes...)
+		externalFile := filepath.Join(tmpDir, "offset_test.bin")
+		err := os.WriteFile(externalFile, fileContent, 0644)
+		require.NoError(t, err)
+
+		reader := NewExternalDataReader(tmpDir)
+		defer reader.Close()
+
+		proto := &protos.TensorProto{
+			Name:     "test_tensor",
+			Dims:     []int64{3},
+			DataType: int32(protos.TensorProto_FLOAT),
+			ExternalData: []*protos.StringStringEntryProto{
+				{Key: "location", Value: "offset_test.bin"},
+				{Key: "offset", Value: "256"},
+				{Key: "length", Value: "12"},
+			},
+		}
+
+		tensor, err := tensorToGoMLXWithBaseDir(backend, proto, tmpDir, reader)
+		require.NoError(t, err)
+		require.NotNil(t, tensor)
+		defer tensor.FinalizeAll()
+
+		result := tensors.MustCopyFlatData[float32](tensor)
+		require.InDeltaSlice(t, data, result, 0.0001)
+	})
 }
