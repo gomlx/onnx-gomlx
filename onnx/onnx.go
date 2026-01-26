@@ -220,14 +220,6 @@ func (m *Model) PrioritizeFloat16() *Model {
 	return m
 }
 
-// getDTypePromotionConfig returns the dtype promotion configuration for this model.
-func (m *Model) getDTypePromotionConfig() DTypePromotionConfig {
-	return DTypePromotionConfig{
-		AllowPromotion:    m.allowDTypePromotion,
-		PrioritizeFloat16: m.prioritizeFloat16,
-	}
-}
-
 // Write will write the ONNX model to the given writer (usually a file).
 //
 // This is useful if the model variables were updated (e.g.: fine-tuning in GoMLX) and one wants to save the

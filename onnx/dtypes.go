@@ -2,8 +2,6 @@
 package onnx
 
 import (
-	"github.com/gomlx/exceptions"
-	. "github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
@@ -47,67 +45,27 @@ func dtypeForONNX(onnxDType protos.TensorProto_DataType) (dtypes.DType, error) {
 	}
 }
 
-// DTypePromotionConfig controls how dtype mismatches are handled during ONNX conversion.
-type DTypePromotionConfig struct {
-	// AllowPromotion enables automatic dtype promotion. If false (default),
-	// dtype mismatches will panic per ONNX specification.
-	AllowPromotion bool
-	// PrioritizeFloat16 prefers Float16 over Float32 when promoting.
-	// Only applies when AllowPromotion is true.
-	PrioritizeFloat16 bool
-}
-
-// promoteToCommonDType converts two nodes to a common dtype based on type promotion rules.
-// Panics if promotion is not allowed (config.AllowPromotion=false) and dtypes mismatch.
+// dtypesPromote converts a list of dtypes to a common dtype based on dtype priority.
 //
-// When PrioritizeFloat16 is enabled, Float16+Float32 promotes to Float16 (for ARM64 optimization).
+// prioritizeFloat16: if true, Float16+Float32 promotes to Float16 (for ARM64 optimization).
 // Otherwise, standard promotion rules apply: Float64 > Float32 > Float16 > Int64 > ...
-func promoteToCommonDType(lhs, rhs *Node, config DTypePromotionConfig) (*Node, *Node) {
-	lhsDType := lhs.DType()
-	rhsDType := rhs.DType()
-
-	if lhsDType == rhsDType {
-		return lhs, rhs
-	}
-
-	if !config.AllowPromotion {
-		exceptions.Panicf("dtype mismatch: %v vs %v (ONNX does not allow implicit casting; use Model.AllowDTypePromotion() to enable)", lhsDType, rhsDType)
-	}
-
-	// Special case: prefer FP16 over Float32 if configured (ARM64/NEON optimization)
-	if config.PrioritizeFloat16 {
-		if (lhsDType == dtypes.Float16 && rhsDType == dtypes.Float32) ||
-			(lhsDType == dtypes.Float32 && rhsDType == dtypes.Float16) {
-			targetDType := dtypes.Float16
-			if lhsDType != targetDType {
-				lhs = ConvertDType(lhs, targetDType)
-			}
-			if rhsDType != targetDType {
-				rhs = ConvertDType(rhs, targetDType)
-			}
-			return lhs, rhs
+func dtypesPromote(prioritizeFloat16 bool, operandDTypes ...dtypes.DType) dtypes.DType {
+	targetDType := operandDTypes[0]
+	currentPriority := dtypePriority(targetDType, prioritizeFloat16)
+	for _, dtype := range operandDTypes[1:] {
+		priority := dtypePriority(dtype, prioritizeFloat16)
+		if priority > currentPriority {
+			targetDType = dtype
+			currentPriority = priority
 		}
 	}
-
-	// Standard promotion: use higher precision type
-	targetDType := lhsDType
-	if dtypePriority(rhsDType) > dtypePriority(lhsDType) {
-		targetDType = rhsDType
-	}
-
-	if lhsDType != targetDType {
-		lhs = ConvertDType(lhs, targetDType)
-	}
-	if rhsDType != targetDType {
-		rhs = ConvertDType(rhs, targetDType)
-	}
-	return lhs, rhs
+	return targetDType
 }
 
 // dtypePriority returns a priority value for dtype promotion.
 // Higher values are preferred in mixed-type operations.
-func dtypePriority(dt dtypes.DType) int {
-	switch dt {
+func dtypePriority(dtype dtypes.DType, prioritizeFloat16 bool) int {
+	switch dtype {
 	case dtypes.Complex128:
 		return 110
 	case dtypes.Complex64:
@@ -116,7 +74,12 @@ func dtypePriority(dt dtypes.DType) int {
 		return 100
 	case dtypes.Float32:
 		return 90
-	case dtypes.Float16, dtypes.BFloat16:
+	case dtypes.Float16:
+		if prioritizeFloat16 {
+			return 91 // Just above Float32
+		}
+		return 80
+	case dtypes.BFloat16:
 		return 80
 	case dtypes.Int64:
 		return 70
