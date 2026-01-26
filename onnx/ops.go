@@ -286,7 +286,7 @@ func convertConstant(m *Model, node *protos.NodeProto, g *Graph) *Node {
 	if valueAttr.T == nil {
 		panic(errors.Errorf("TENSOR attribute for ONNX node %s is nil!?", nodeToString(node)))
 	}
-	tensor, err := tensorToGoMLX(m.backend, valueAttr.T)
+	tensor, err := tensorToGoMLXWithBaseDir(m.backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
 	if err != nil {
 		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
 		panic(err)
@@ -1054,7 +1054,7 @@ func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *p
 	valueAttr := getNodeAttr(node, "value", true)
 	assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
 
-	tensor, err := tensorToGoMLX(m.backend, valueAttr.T)
+	tensor, err := tensorToGoMLXWithBaseDir(m.backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
 	if err != nil {
 		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
 		panic(err)
@@ -2441,4 +2441,139 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 		return results[0]
 	}
 	return nil
+}
+
+// convertTopK converts an ONNX TopK node to GoMLX.
+//
+// TopK retrieves the top K largest or smallest elements along a specified axis.
+// See ONNX documentation: https://onnx.ai/onnx/operators/onnx__TopK.html
+//
+// Inputs:
+//   - X: Input tensor
+//   - K: Number of top elements to retrieve (scalar int64 value, any shape with total size 1)
+//
+// Outputs:
+//   - Values: Top K values
+//   - Indices: Indices of top K values (int64)
+//
+// Attributes:
+//   - axis: Dimension to sort (default -1, last axis)
+//   - largest: If 1 (default), returns largest K; if 0, returns smallest K
+//   - sorted: If 1 (default), results are sorted; if 0, order is undefined
+func convertTopK(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	x := inputs[0]
+
+	// Get K value - it's a scalar that needs to be materialized
+	kTensor, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+	if err != nil {
+		exceptions.Panicf("TopK: failed to materialize K for node %s: %v", nodeToString(node), err)
+	}
+	kValues := tensorToInts(kTensor)
+	if len(kValues) != 1 {
+		exceptions.Panicf("TopK: K must be a scalar, got %d values for node %s", len(kValues), nodeToString(node))
+	}
+	k := kValues[0]
+
+	// Get attributes
+	axis := getIntAttrOr(node, "axis", -1)
+	largest := getIntAttrOr(node, "largest", 1) == 1
+	// Note: sorted attribute is ignored since GoMLX always returns sorted results,
+	// which is valid since ONNX says "order is undefined" when sorted=0
+
+	// Call appropriate GoMLX function
+	var values, indices *Node
+	if largest {
+		values, indices = TopK(x, k, axis)
+	} else {
+		values, indices = BottomK(x, k, axis)
+	}
+
+	// ONNX TopK returns int64 indices, cast if needed
+	if indices.DType() != dtypes.Int64 {
+		indices = ConvertDType(indices, dtypes.Int64)
+	}
+
+	// Assign outputs
+	if len(node.Output) >= 1 && node.Output[0] != "" {
+		convertedOutputs[node.Output[0]] = values
+	}
+	if len(node.Output) >= 2 && node.Output[1] != "" {
+		convertedOutputs[node.Output[1]] = indices
+	}
+
+	return values
+}
+
+// convertArgMax converts an ONNX ArgMax node to GoMLX.
+//
+// ArgMax computes the indices of the maximum elements along an axis.
+// See ONNX documentation: https://onnx.ai/onnx/operators/onnx__ArgMax.html
+//
+// Inputs:
+//   - data: Input tensor
+//
+// Outputs:
+//   - reduced: Indices of maximum elements (int64)
+//
+// Attributes:
+//   - axis: Dimension to reduce (default 0)
+//   - keepdims: If 1 (default), keep the reduced dimension; if 0, remove it
+//   - select_last_index: If 1, return last occurrence; if 0 (default), first occurrence
+func convertArgMax(node *protos.NodeProto, inputs []*Node) *Node {
+	x := inputs[0]
+
+	// Get attributes
+	axis := getIntAttrOr(node, "axis", 0)
+	keepDims := getIntAttrOr(node, "keepdims", 1) == 1
+	// Note: select_last_index is not supported; we always return first occurrence
+	// This matches the default ONNX behavior
+
+	// Use TopK with k=1 to get the index of the maximum element
+	_, indices := TopK(x, 1, axis)
+
+	// ONNX ArgMax returns int64
+	if indices.DType() != dtypes.Int64 {
+		indices = ConvertDType(indices, dtypes.Int64)
+	}
+
+	// Handle keepdims
+	if !keepDims {
+		// Remove the axis dimension (which is size 1)
+		axis = MustAdjustAxis(axis, x)
+		indices = Squeeze(indices, axis)
+	}
+
+	return indices
+}
+
+// convertArgMin converts an ONNX ArgMin node to GoMLX.
+//
+// ArgMin computes the indices of the minimum elements along an axis.
+// See ONNX documentation: https://onnx.ai/onnx/operators/onnx__ArgMin.html
+//
+// Same as ArgMax but for minimum values.
+func convertArgMin(node *protos.NodeProto, inputs []*Node) *Node {
+	x := inputs[0]
+
+	// Get attributes
+	axis := getIntAttrOr(node, "axis", 0)
+	keepDims := getIntAttrOr(node, "keepdims", 1) == 1
+	// Note: select_last_index is not supported; we always return first occurrence
+
+	// Use BottomK with k=1 to get the index of the minimum element
+	_, indices := BottomK(x, 1, axis)
+
+	// ONNX ArgMin returns int64
+	if indices.DType() != dtypes.Int64 {
+		indices = ConvertDType(indices, dtypes.Int64)
+	}
+
+	// Handle keepdims
+	if !keepDims {
+		// Remove the axis dimension (which is size 1)
+		axis = MustAdjustAxis(axis, x)
+		indices = Squeeze(indices, axis)
+	}
+
+	return indices
 }

@@ -198,13 +198,14 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 	// Convert sub-graph initializers (constants) to GoMLX nodes
 	// Also temporarily add them to model's variableNameToValue for materializeConstantExpression
 	subGraphInitializers := make(map[string]*protos.TensorProto)
+	reader := m.getExternalDataReader()
 	for _, initializerProto := range subGraphProto.Initializer {
 		initializerName := initializerProto.Name
 		if initializerName == "" {
 			continue
 		}
 		// Convert the initializer tensor to a GoMLX constant
-		tensor, err := tensorToGoMLX(g.Backend(), initializerProto)
+		tensor, err := tensorToGoMLXWithBaseDir(g.Backend(), initializerProto, m.baseDir(), reader)
 		if err != nil {
 			exceptions.Panicf("failed to convert sub-graph initializer %q: %v", initializerName, err)
 		}
@@ -258,7 +259,7 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 		// Check if it's a model-level initializer (variable)
 		if initializerProto, found := m.variableNameToValue[outputName]; found {
 			// Convert the model-level initializer to a constant in the sub-graph
-			tensor, err := tensorToGoMLX(g.Backend(), initializerProto)
+			tensor, err := tensorToGoMLXWithBaseDir(g.Backend(), initializerProto, m.baseDir(), reader)
 			if err != nil {
 				exceptions.Panicf("failed to convert model initializer %q in sub-graph: %v", outputName, err)
 			}
@@ -418,6 +419,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = Erf(inputs[0])
 	case "Relu":
 		result = activations.Relu(inputs[0])
+	case "Gelu":
+		result = activations.Gelu(inputs[0])
 	case "Abs":
 		result = Abs(inputs[0])
 	case "Neg":
@@ -549,6 +552,14 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	// Control flow ops:
 	case "If":
 		result = convertIf(m, convertedOutputs, node, inputs)
+
+	// Sorting/ranking ops:
+	case "TopK":
+		result = convertTopK(m, convertedOutputs, node, inputs)
+	case "ArgMax":
+		result = convertArgMax(node, inputs)
+	case "ArgMin":
+		result = convertArgMin(node, inputs)
 
 		// Ops not implemented:
 	default:

@@ -1076,6 +1076,112 @@ func TestIf(t *testing.T) {
 	}, -1)
 }
 
+func TestTopK(t *testing.T) {
+	// Test TopK with largest=true (default)
+	graphtest.RunTestGraphFn(t, "TopK-largest", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{3, 1, 4, 1, 5, 9, 2, 6})
+		values, indices := TopK(x, 3, 0) // Get top 3 largest
+		inputs = []*Node{x}
+		outputs = []*Node{values, ConvertDType(indices, dtypes.Int32)}
+		return
+	}, []any{
+		[]float32{9, 6, 5},    // Top 3 values
+		[]int32{5, 7, 4},      // Their indices
+	}, -1)
+
+	// Test TopK with 2D tensor
+	graphtest.RunTestGraphFn(t, "TopK-2D", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{
+			{3, 1, 4},
+			{1, 5, 9},
+		})
+		values, indices := TopK(x, 2, 1) // Top 2 along axis 1
+		inputs = []*Node{x}
+		outputs = []*Node{values, ConvertDType(indices, dtypes.Int32)}
+		return
+	}, []any{
+		[][]float32{{4, 3}, {9, 5}}, // Top 2 values per row
+		[][]int32{{2, 0}, {2, 1}},   // Their indices
+	}, -1)
+
+	// Test BottomK (smallest values)
+	graphtest.RunTestGraphFn(t, "BottomK", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{3, 1, 4, 1, 5, 9, 2, 6})
+		values, indices := BottomK(x, 3, 0) // Get bottom 3 smallest
+		inputs = []*Node{x}
+		outputs = []*Node{values, ConvertDType(indices, dtypes.Int32)}
+		return
+	}, []any{
+		[]float32{1, 1, 2},    // Bottom 3 values
+		[]int32{1, 3, 6},      // Their indices
+	}, -1)
+}
+
+func TestArgMax(t *testing.T) {
+	// Test ArgMax along axis 0
+	graphtest.RunTestGraphFn(t, "ArgMax-axis0", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{
+			{1, 2, 3},
+			{4, 5, 6},
+			{7, 8, 9},
+		})
+		// ArgMax along axis 0, keepdims=true
+		_, indices := TopK(x, 1, 0)
+		inputs = []*Node{x}
+		outputs = []*Node{ConvertDType(indices, dtypes.Int32)}
+		return
+	}, []any{
+		[][]int32{{2, 2, 2}}, // Max values are in row 2
+	}, -1)
+
+	// Test ArgMax along axis 1
+	graphtest.RunTestGraphFn(t, "ArgMax-axis1", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{
+			{3, 1, 4},
+			{1, 5, 9},
+			{2, 6, 5},
+		})
+		_, indices := TopK(x, 1, 1)
+		inputs = []*Node{x}
+		outputs = []*Node{ConvertDType(indices, dtypes.Int32)}
+		return
+	}, []any{
+		[][]int32{{2}, {2}, {1}}, // Index of max in each row
+	}, -1)
+
+	// Test ArgMax with keepdims=false (squeeze)
+	graphtest.RunTestGraphFn(t, "ArgMax-no-keepdims", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{
+			{3, 1, 4},
+			{1, 5, 9},
+		})
+		_, indices := TopK(x, 1, 1)
+		squeezed := Squeeze(indices, 1)
+		inputs = []*Node{x}
+		outputs = []*Node{ConvertDType(squeezed, dtypes.Int32)}
+		return
+	}, []any{
+		[]int32{2, 2}, // Indices without keepdims
+	}, -1)
+}
+
+func TestArgMin(t *testing.T) {
+	// Test ArgMin along axis 1
+	graphtest.RunTestGraphFn(t, "ArgMin-axis1", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{
+			{3, 1, 4},
+			{1, 5, 9},
+			{2, 6, 5},
+		})
+		_, indices := BottomK(x, 1, 1)
+		inputs = []*Node{x}
+		outputs = []*Node{ConvertDType(indices, dtypes.Int32)}
+		return
+	}, []any{
+		[][]int32{{1}, {0}, {0}}, // Index of min in each row
+	}, -1)
+}
+
 func TestComputeNonZero(t *testing.T) {
 	// Test 1D tensor
 	t.Run("1D", func(t *testing.T) {
