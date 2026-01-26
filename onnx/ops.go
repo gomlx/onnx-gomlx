@@ -293,8 +293,22 @@ func convertGather(node *protos.NodeProto, inputs []*Node) *Node {
 	return onnxGather(inputs[0], inputs[1], gatherAxis)
 }
 
+// normalizeNegativeIndices converts negative indices to positive ones by adding the axis size.
+// ONNX allows negative indices where -1 means the last element, -2 the second-to-last, etc.
+func normalizeNegativeIndices(indices *Node, axisSize int) *Node {
+	g := indices.Graph()
+	zero := ScalarZero(g, indices.DType())
+	axisSizeNode := Scalar(g, indices.DType(), axisSize)
+	isNegative := LessThan(indices, zero)
+	return Where(isNegative, Add(indices, axisSizeNode), indices)
+}
+
 func onnxGather(data, indices *Node, gatherAxis int) *Node {
-	expandedIndices := ExpandAxes(indices, -1)
+	// Normalize negative indices: ONNX allows -1 for last element, -2 for second-to-last, etc.
+	axisSize := data.Shape().Dim(gatherAxis)
+	normalizedIndices := normalizeNegativeIndices(indices, axisSize)
+
+	expandedIndices := ExpandAxes(normalizedIndices, -1)
 	if gatherAxis == 0 {
 		// Trivial case, like GoMLX version.
 		return Gather(data, expandedIndices)
@@ -367,6 +381,10 @@ func onnxGatherElements(data *Node, indices *Node, gatherAxis int) *Node {
 		}
 	}
 
+	// Normalize negative indices: ONNX allows -1 for last element, -2 for second-to-last, etc.
+	axisSize := data.Shape().Dim(gatherAxis)
+	normalizedIndices := normalizeNegativeIndices(indices, axisSize)
+
 	// fullIndicesParts is a slice with one value per axis of the data to gather.
 	// Each part will be shaped [indicesSize, 1], and it will eventually be concatenated
 	// to shape [indicesSize, <data.Rank()>].
@@ -378,7 +396,7 @@ func onnxGatherElements(data *Node, indices *Node, gatherAxis int) *Node {
 		var part *Node
 		if axis == gatherAxis {
 			// On the gatherAxis, the index is the one given by the caller.
-			part = Reshape(indices, indicesSize, 1)
+			part = Reshape(normalizedIndices, indicesSize, 1)
 		} else {
 			// On all axes that we are not gathering, the indices are the same in input and output.
 			part = Iota(g, iotaShape, axis)
@@ -775,6 +793,36 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		effectiveStarts[axis] = start
 		effectiveEnds[axis] = end
 		effectiveSteps[axis] = step
+	}
+
+	// Check if any axis produces an empty slice (start >= end for positive step,
+	// or start <= end for negative step). Per the ONNX spec, this should produce
+	// a zero-length result along that axis, but GoMLX's Slice doesn't support
+	// start == dimSize, so we handle it here.
+	emptySlice := false
+	outputDims := make([]int, rank)
+	for i := 0; i < rank; i++ {
+		start := effectiveStarts[i]
+		end := effectiveEnds[i]
+		step := effectiveSteps[i]
+		if step > 0 {
+			if start >= end {
+				emptySlice = true
+				outputDims[i] = 0
+			} else {
+				outputDims[i] = (end - start + step - 1) / step
+			}
+		} else {
+			if start <= end {
+				emptySlice = true
+				outputDims[i] = 0
+			} else {
+				outputDims[i] = (start - end + (-step) - 1) / (-step)
+			}
+		}
+	}
+	if emptySlice {
+		return Zeros(operand.Graph(), shapes.Make(operand.DType(), outputDims...))
 	}
 
 	specs := make([]SliceAxisSpec, rank)
@@ -2806,8 +2854,16 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 	}
 
 	cond := inputs[0]
-	if !cond.IsScalar() || cond.DType() != dtypes.Bool {
+	if cond.DType() != dtypes.Bool {
 		exceptions.Panicf("If: condition must be a boolean scalar, got %s", cond.Shape())
+	}
+	if !cond.IsScalar() {
+		// ONNX allows single-element tensors (e.g. shape [1]) as the condition.
+		if cond.Shape().Size() == 1 {
+			cond = Reshape(cond)
+		} else {
+			exceptions.Panicf("If: condition must be a boolean scalar or single-element tensor, got %s", cond.Shape())
+		}
 	}
 
 	// Get the then_branch and else_branch sub-graphs from attributes

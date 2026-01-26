@@ -73,6 +73,43 @@ func TestONNXGather(t *testing.T) {
 			{{4.5, 5.9}},
 		},
 	}, -1)
+
+	// Test negative indices: -1 means last element, -2 means second-to-last, etc.
+	graphtest.RunTestGraphFn(t, "onnxGather(axis=0, negative indices)", func(g *Graph) (inputs, outputs []*Node) {
+		data := Const(g, [][]float32{{1.0, 1.2}, {2.3, 3.4}, {4.5, 5.7}})
+		// -1 -> 2 (last), -2 -> 1, -3 -> 0
+		indices := Const(g, []int32{-1, -2, -3})
+		inputs = []*Node{data, indices}
+		outputs = []*Node{onnxGather(data, indices, 0)}
+		return
+	}, []any{
+		// indices shape [3] -> output shape [3, 2]
+		[][]float32{
+			{4.5, 5.7}, // index -1 -> row 2
+			{2.3, 3.4}, // index -2 -> row 1
+			{1.0, 1.2}, // index -3 -> row 0
+		},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "onnxGather(axis=1, negative indices)", func(g *Graph) (inputs, outputs []*Node) {
+		data := Const(g, [][]float32{
+			{1.0, 1.2, 1.9},
+			{2.3, 3.4, 3.9},
+			{4.5, 5.7, 5.9},
+		})
+		// -1 -> 2 (last column)
+		indices := Const(g, []int32{-1})
+		inputs = []*Node{data, indices}
+		outputs = []*Node{onnxGather(data, indices, 1)}
+		return
+	}, []any{
+		// data shape [3, 3], indices shape [1] -> output shape [3, 1]
+		[][]float32{
+			{1.9}, // row 0, col -1 (last)
+			{3.9}, // row 1, col -1 (last)
+			{5.9}, // row 2, col -1 (last)
+		},
+	}, -1)
 }
 
 func TestTile(t *testing.T) {
