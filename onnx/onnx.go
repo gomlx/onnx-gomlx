@@ -41,6 +41,14 @@ type Model struct {
 	// backend used for ONNX-conversion time tensor processing.
 	backend backends.Backend
 
+	// allowDTypePromotion enables automatic dtype promotion for mixed-precision models.
+	// By default (false), dtype mismatches will panic per ONNX spec.
+	allowDTypePromotion bool
+
+	// prioritizeFloat16 prefers Float16 over Float32 when promoting dtypes.
+	// Only applies when allowDTypePromotion is true.
+	prioritizeFloat16 bool
+
 	// externalDataReader manages memory-mapped external data files for efficient tensor loading.
 	// It is initialized lazily when external data is first accessed.
 	externalDataReader *ExternalDataReader
@@ -192,6 +200,23 @@ func (m *Model) NumInputs() int {
 // The value each input maps to will be converted to a tensors.FromAnyValue.
 func (m *Model) WithInputsAsConstants(inputsAsConstants map[string]any) *Model {
 	m.inputsAsConstants = inputsAsConstants
+	return m
+}
+
+// AllowDTypePromotion enables automatic dtype promotion for operations with
+// mismatched types. By default, ONNX does not allow implicit casting, so
+// dtype mismatches will panic. Enable this for mixed-precision models
+// (e.g., from quantization-aware training or mixed-precision export).
+func (m *Model) AllowDTypePromotion() *Model {
+	m.allowDTypePromotion = true
+	return m
+}
+
+// PrioritizeFloat16 configures dtype promotion to prefer Float16 over Float32.
+// This leverages hardware-accelerated FP16 kernels on ARM64/NEON platforms.
+// Only effective when AllowDTypePromotion() is also called.
+func (m *Model) PrioritizeFloat16() *Model {
+	m.prioritizeFloat16 = true
 	return m
 }
 
