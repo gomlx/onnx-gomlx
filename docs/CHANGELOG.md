@@ -1,6 +1,9 @@
 # Next
 
 - Added ReduceMax, ReduceMin, ReduceSum, ReduceProd, and NonZero ONNX operations.
+- Optional auto-promotion of dtypes in case of mismatches: this is an error
+  in ONNX specification, but some Pytorch models do this. See `Model.AllowDTypePromotion()`.
+- Added support for reading variables from external data files (due to proto 2/4 Gb size-limit)
 
 # v0.3.4: Updated for GoMLX 0.26.0
 
