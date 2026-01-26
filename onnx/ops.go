@@ -75,6 +75,29 @@ func onnxBroadcastToCommonShape(operands []*Node) []*Node {
 	return result
 }
 
+// checkOrPromoteDTypes checks that two operands have the same dtype -- panics if not.
+//
+// Optionally, if dtype promotion is enabled, it converts two nodes to a common dtype
+// based on dtype promotion rules (see dtypesPromote).
+func (m *Model) checkOrPromoteDTypes(lhs, rhs *Node) (*Node, *Node) {
+	lhsDType := lhs.DType()
+	rhsDType := rhs.DType()
+	if lhsDType == rhsDType {
+		return lhs, rhs
+	}
+	if !m.allowDTypePromotion {
+		exceptions.Panicf("dtype mismatch: %v vs %v (ONNX does not allow implicit casting; use Model.AllowDTypePromotion() to enable)", lhsDType, rhsDType)
+	}
+	targetDType := dtypesPromote(m.prioritizeFloat16, lhsDType, rhsDType)
+	if lhsDType != targetDType {
+		lhs = ConvertDType(lhs, targetDType)
+	}
+	if rhsDType != targetDType {
+		rhs = ConvertDType(rhs, targetDType)
+	}
+	return lhs, rhs
+}
+
 // convertBinaryOp applies ONNX broadcasting rule before calling the fn.
 //
 // It differs from GoMLX and XLA in that it automatically prepend 1-dimensional axes to
@@ -83,21 +106,14 @@ func onnxBroadcastToCommonShape(operands []*Node) []*Node {
 func (m *Model) convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
 	operands := onnxImplicitExpansion([]*Node{lhs, rhs})
 	lhs, rhs = operands[0], operands[1]
-
-	// Handle dtype mismatches based on config
-	if lhs.DType() != rhs.DType() {
-		lhs, rhs = promoteToCommonDType(lhs, rhs, m.getDTypePromotionConfig())
-	}
-
+	lhs, rhs = m.checkOrPromoteDTypes(lhs, rhs)
 	return fn(lhs, rhs)
 }
 
 // convertMatMul handles dtype promotion before matrix multiplication.
 // Dtype mismatches are handled based on the Model's dtype promotion config.
 func (m *Model) convertMatMul(lhs, rhs *Node) *Node {
-	if lhs.DType() != rhs.DType() {
-		lhs, rhs = promoteToCommonDType(lhs, rhs, m.getDTypePromotionConfig())
-	}
+	lhs, rhs = m.checkOrPromoteDTypes(lhs, rhs)
 	return MatMul(lhs, rhs)
 }
 
@@ -139,12 +155,7 @@ func (m *Model) onnxWhere(inputs []*Node) *Node {
 	inputs = onnxBroadcastToCommonShape(inputs)
 
 	cond, onTrue, onFalse := inputs[0], inputs[1], inputs[2]
-
-	// Handle dtype mismatches between onTrue and onFalse.
-	// GoMLX Where requires both branches to have the same dtype.
-	if onTrue.DType() != onFalse.DType() {
-		onTrue, onFalse = promoteToCommonDType(onTrue, onFalse, m.getDTypePromotionConfig())
-	}
+	onTrue, onFalse = m.checkOrPromoteDTypes(onTrue, onFalse)
 
 	return Where(cond, onTrue, onFalse)
 }
@@ -515,11 +526,7 @@ func convertTranspose(node *protos.NodeProto, inputs []*Node) *Node {
 func (m *Model) convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
 	operandA := inputs[0]
 	operandB := inputs[1]
-
-	// Handle dtype mismatches based on config
-	if operandA.DType() != operandB.DType() {
-		operandA, operandB = promoteToCommonDType(operandA, operandB, m.getDTypePromotionConfig())
-	}
+	operandA, operandB = m.checkOrPromoteDTypes(operandA, operandB)
 
 	transposeA := getBoolAttrOr(node, "transA", false)
 	transposeB := getBoolAttrOr(node, "transB", false)
@@ -577,10 +584,7 @@ func (m *Model) convertPow(convertedOutputs map[string]*Node, node *protos.NodeP
 	defaultPow := func() *Node {
 		operands := onnxImplicitExpansion([]*Node{inputs[0], inputs[1]})
 		lhs, rhs := operands[0], operands[1]
-		// Handle dtype mismatches based on config
-		if lhs.DType() != rhs.DType() {
-			lhs, rhs = promoteToCommonDType(lhs, rhs, m.getDTypePromotionConfig())
-		}
+		lhs, rhs = m.checkOrPromoteDTypes(lhs, rhs)
 		return Pow(lhs, rhs)
 	}
 	exponentNode := node.Input[1]
