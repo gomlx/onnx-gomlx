@@ -10,6 +10,7 @@ package onnx
 import (
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/gomlx/gomlx/backends"
 	"github.com/gomlx/gomlx/backends/simplego"
@@ -39,6 +40,18 @@ type Model struct {
 
 	// backend used for ONNX-conversion time tensor processing.
 	backend backends.Backend
+
+	// allowDTypePromotion enables automatic dtype promotion for mixed-precision models.
+	// By default (false), dtype mismatches will panic per ONNX spec.
+	allowDTypePromotion bool
+
+	// prioritizeFloat16 prefers Float16 over Float32 when promoting dtypes.
+	// Only applies when allowDTypePromotion is true.
+	prioritizeFloat16 bool
+
+	// externalDataReader manages memory-mapped external data files for efficient tensor loading.
+	// It is initialized lazily when external data is first accessed.
+	externalDataReader *ExternalDataReader
 }
 
 // Parse parses an ONNX model into an internal representation that can be used to build a GoMLX graph.
@@ -126,6 +139,42 @@ func ReadFile(filePath string) (*Model, error) {
 // Name of the model graph.
 func (m *Model) Name() string { return m.name }
 
+// baseDir returns the directory containing the ONNX model file.
+// This is used for resolving external data file paths.
+// Returns an empty string if the model was not loaded from a file.
+func (m *Model) baseDir() string {
+	if m.onnxFileName == "" {
+		return ""
+	}
+	return filepath.Dir(m.onnxFileName)
+}
+
+// getExternalDataReader returns the ExternalDataReader for this model, creating it lazily if needed.
+// Returns nil if the model has no base directory (e.g., parsed from bytes without a file path).
+func (m *Model) getExternalDataReader() *ExternalDataReader {
+	if m.externalDataReader != nil {
+		return m.externalDataReader
+	}
+	baseDir := m.baseDir()
+	if baseDir == "" {
+		return nil
+	}
+	m.externalDataReader = NewExternalDataReader(baseDir)
+	return m.externalDataReader
+}
+
+// Close releases resources held by the model, including memory-mapped external data files.
+// After Close is called, the model should not be used for operations that require external data.
+// It is safe to call Close multiple times.
+func (m *Model) Close() error {
+	if m.externalDataReader != nil {
+		err := m.externalDataReader.Close()
+		m.externalDataReader = nil
+		return err
+	}
+	return nil
+}
+
 // Inputs return the names and DynamicShapes of the inputs.
 func (m *Model) Inputs() (names []string, dshapes []DynamicShape) {
 	return m.InputsNames, m.InputsShapes
@@ -152,6 +201,31 @@ func (m *Model) NumInputs() int {
 func (m *Model) WithInputsAsConstants(inputsAsConstants map[string]any) *Model {
 	m.inputsAsConstants = inputsAsConstants
 	return m
+}
+
+// AllowDTypePromotion enables automatic dtype promotion for operations with
+// mismatched types. By default, ONNX does not allow implicit casting, so
+// dtype mismatches will panic. Enable this for mixed-precision models
+// (e.g., from quantization-aware training or mixed-precision export).
+func (m *Model) AllowDTypePromotion() *Model {
+	m.allowDTypePromotion = true
+	return m
+}
+
+// PrioritizeFloat16 configures dtype promotion to prefer Float16 over Float32.
+// This leverages hardware-accelerated FP16 kernels on ARM64/NEON platforms.
+// Only effective when AllowDTypePromotion() is also called.
+func (m *Model) PrioritizeFloat16() *Model {
+	m.prioritizeFloat16 = true
+	return m
+}
+
+// getDTypePromotionConfig returns the dtype promotion configuration for this model.
+func (m *Model) getDTypePromotionConfig() DTypePromotionConfig {
+	return DTypePromotionConfig{
+		AllowPromotion:    m.allowDTypePromotion,
+		PrioritizeFloat16: m.prioritizeFloat16,
+	}
 }
 
 // Write will write the ONNX model to the given writer (usually a file).

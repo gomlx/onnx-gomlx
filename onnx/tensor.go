@@ -1,6 +1,8 @@
 package onnx
 
 import (
+	"strconv"
+
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/backends"
 	"github.com/gomlx/gomlx/backends/simplego"
@@ -139,8 +141,143 @@ func tensorToGoMLX(backend backends.Backend, proto *protos.TensorProto) (t *tens
 		return nil, errors.Errorf("ONNX model tensor %q holds string data which is not supported in GoMLX models", proto.Name)
 	}
 	if len(proto.ExternalData) > 0 {
-		return nil, errors.Errorf("ONNX model tensor %q is stored as external data, which is not implemented", proto.Name)
+		return nil, errors.Errorf("ONNX model tensor %q is stored as external data; use tensorToGoMLXWithBaseDir with the model's base directory", proto.Name)
 	}
+	// Unknown tensor data type!?
+	return nil, errors.Errorf("tensor %q shaped %s has no supported format of data in the ONNX model!?", proto.Name, shape)
+}
+
+// externalDataInfo holds parsed external data parameters from ONNX TensorProto.
+type externalDataInfo struct {
+	location string // path to external file (relative to model directory)
+	offset   int64  // byte offset in file, default 0
+	length   int64  // number of bytes to read, -1 means read to EOF
+}
+
+// parseExternalData extracts external data parameters from the TensorProto.
+// Returns nil if there is no external data.
+func parseExternalData(proto *protos.TensorProto) (*externalDataInfo, error) {
+	if len(proto.ExternalData) == 0 {
+		return nil, nil
+	}
+
+	info := &externalDataInfo{
+		offset: 0,
+		length: -1, // -1 means read to EOF
+	}
+
+	for _, entry := range proto.ExternalData {
+		switch entry.Key {
+		case "location":
+			info.location = entry.Value
+		case "offset":
+			offset, err := strconv.ParseInt(entry.Value, 10, 64)
+			if err != nil {
+				return nil, errors.Wrapf(err, "invalid offset value %q for tensor %q", entry.Value, proto.Name)
+			}
+			info.offset = offset
+		case "length":
+			length, err := strconv.ParseInt(entry.Value, 10, 64)
+			if err != nil {
+				return nil, errors.Wrapf(err, "invalid length value %q for tensor %q", entry.Value, proto.Name)
+			}
+			info.length = length
+		case "checksum":
+			// Checksum is optional and used for verification; we don't validate it currently
+		default:
+			// Ignore unknown keys for forward compatibility
+		}
+	}
+
+	if info.location == "" {
+		return nil, errors.Errorf("external data for tensor %q is missing required 'location' key", proto.Name)
+	}
+
+	return info, nil
+}
+
+
+// tensorToGoMLXWithBaseDir converts a protos.TensorProto object to a tensors.Tensor object,
+// handling errors and different data types including external data.
+// baseDir is the directory containing the ONNX model file, used to resolve external data paths.
+// reader is an optional ExternalDataReader for memory-efficient external data loading.
+// If reader is nil and external data is present, it falls back to direct file I/O.
+// If baseDir is empty and external data is present, an error is returned.
+func tensorToGoMLXWithBaseDir(backend backends.Backend, proto *protos.TensorProto, baseDir string, reader *ExternalDataReader) (t *tensors.Tensor, err error) {
+	if proto == nil {
+		return nil, errors.New("ONNX TensorProto is nil")
+	}
+
+	var shape shapes.Shape
+	shape, err = Shape(proto)
+	if err != nil {
+		err = errors.WithMessagef(err, "while parsing tensor %q", proto.Name)
+		return
+	}
+
+	// Check for external data first
+	if len(proto.ExternalData) > 0 {
+		info, err := parseExternalData(proto)
+		if err != nil {
+			return nil, err
+		}
+
+		// Create tensor and read directly into its backing memory
+		t = tensors.FromShape(shape)
+		t.MutableBytes(func(data []byte) {
+			// Use the reader if available (mmap path), otherwise fall back to direct I/O
+			if reader != nil {
+				err = reader.ReadInto(info, data)
+			} else {
+				err = readExternalDataDirect(baseDir, info, data)
+			}
+		})
+		if err != nil {
+			t.FinalizeAll()
+			return nil, errors.WithMessagef(err, "while reading external data for tensor %q", proto.Name)
+		}
+		return t, nil
+	}
+
+	// If data is provided as RawData: check that the size of the data is the same used in GoMLX.
+	if proto.RawData != nil {
+		t = tensors.FromShape(shape)
+		t.MutableBytes(func(data []byte) {
+			if len(data) != len(proto.RawData) {
+				err = errors.Errorf("tensor %q shaped %s uses %d bytes, but ONNX model provided %d bytes of raw-data!?",
+					proto.Name, shape, len(data), len(proto.RawData))
+			} else {
+				copy(data, proto.RawData)
+			}
+		})
+		if err != nil {
+			t.FinalizeAll()
+			t = nil
+			return nil, err
+		}
+		return
+	}
+
+	// Tries to convert to each data type.
+	if proto.DoubleData != nil {
+		return checkAndCreateTensorFromProto(backend, proto, proto.DoubleData, shape)
+	}
+	if proto.FloatData != nil {
+		return checkAndCreateTensorFromProto(backend, proto, proto.FloatData, shape)
+	}
+	if proto.Int64Data != nil {
+		return checkAndCreateTensorFromProto(backend, proto, proto.Int64Data, shape)
+	}
+	if proto.Uint64Data != nil {
+		return checkAndCreateTensorFromProto(backend, proto, proto.Uint64Data, shape)
+	}
+	if proto.Int32Data != nil {
+		return checkAndCreateTensorFromProto(backend, proto, proto.Int32Data, shape)
+	}
+	if proto.StringData != nil {
+		return nil, errors.Errorf("ONNX model tensor %q holds string data which is not supported in GoMLX models", proto.Name)
+	}
+
 	// Unknown tensor data type!?
 	return nil, errors.Errorf("tensor %q shaped %s has no supported format of data in the ONNX model!?", proto.Name, shape)
 }

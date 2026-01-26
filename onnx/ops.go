@@ -79,9 +79,26 @@ func onnxBroadcastToCommonShape(operands []*Node) []*Node {
 //
 // It differs from GoMLX and XLA in that it automatically prepend 1-dimensional axes to
 // any of the operands, if they differ in rank.
-func convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
+// It also handles dtype mismatches based on the Model's dtype promotion config.
+func (m *Model) convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
 	operands := onnxImplicitExpansion([]*Node{lhs, rhs})
-	return fn(operands[0], operands[1])
+	lhs, rhs = operands[0], operands[1]
+
+	// Handle dtype mismatches based on config
+	if lhs.DType() != rhs.DType() {
+		lhs, rhs = promoteToCommonDType(lhs, rhs, m.getDTypePromotionConfig())
+	}
+
+	return fn(lhs, rhs)
+}
+
+// convertMatMul handles dtype promotion before matrix multiplication.
+// Dtype mismatches are handled based on the Model's dtype promotion config.
+func (m *Model) convertMatMul(lhs, rhs *Node) *Node {
+	if lhs.DType() != rhs.DType() {
+		lhs, rhs = promoteToCommonDType(lhs, rhs, m.getDTypePromotionConfig())
+	}
+	return MatMul(lhs, rhs)
 }
 
 // convertClip converts a ONNX node to a GoMLX node.
@@ -90,14 +107,14 @@ func convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
 // https://onnx.ai/onnx/operators/onnx__Clip.html
 //
 // Notice max/min values are optional, hence the special conversion code.
-func convertClip(_ *protos.NodeProto, inputs []*Node) *Node {
+func (m *Model) convertClip(_ *protos.NodeProto, inputs []*Node) *Node {
 	if len(inputs) == 1 {
 		return inputs[0]
 	}
 	if len(inputs) == 2 {
-		return Max(inputs[0], inputs[1])
+		return m.convertBinaryOp(Max, inputs[0], inputs[1])
 	}
-	return Min(inputs[2], Max(inputs[0], inputs[1]))
+	return m.convertBinaryOp(Min, inputs[2], m.convertBinaryOp(Max, inputs[0], inputs[1]))
 }
 
 // convertWhere converts a ONNX node to a GoMLX node.
@@ -106,9 +123,9 @@ func convertClip(_ *protos.NodeProto, inputs []*Node) *Node {
 // https://onnx.ai/onnx/operators/onnx__Where.html
 //
 // Notice broadcast rules for ONNX are difference, hence the special conversion code.
-func convertWhere(node *protos.NodeProto, inputs []*Node) *Node {
+func (m *Model) convertWhere(node *protos.NodeProto, inputs []*Node) *Node {
 	var output *Node
-	err := exceptions.TryCatch[error](func() { output = onnxWhere(inputs) })
+	err := exceptions.TryCatch[error](func() { output = m.onnxWhere(inputs) })
 	if err != nil {
 		panic(errors.WithMessagef(err, "converting node %s", node))
 	}
@@ -117,12 +134,18 @@ func convertWhere(node *protos.NodeProto, inputs []*Node) *Node {
 
 // onnxWhere implements ONNX implicit broadcasting rules.
 // inputs is a tuple with (cond, onTrue, onFalse) values.
-func onnxWhere(inputs []*Node) *Node {
+func (m *Model) onnxWhere(inputs []*Node) *Node {
 	// Broadcast according to ONNX rules.
 	inputs = onnxBroadcastToCommonShape(inputs)
 
-	// Now we can use GoMLX Where:
 	cond, onTrue, onFalse := inputs[0], inputs[1], inputs[2]
+
+	// Handle dtype mismatches between onTrue and onFalse.
+	// GoMLX Where requires both branches to have the same dtype.
+	if onTrue.DType() != onFalse.DType() {
+		onTrue, onFalse = promoteToCommonDType(onTrue, onFalse, m.getDTypePromotionConfig())
+	}
+
 	return Where(cond, onTrue, onFalse)
 }
 
@@ -263,7 +286,7 @@ func convertConstant(m *Model, node *protos.NodeProto, g *Graph) *Node {
 	if valueAttr.T == nil {
 		panic(errors.Errorf("TENSOR attribute for ONNX node %s is nil!?", nodeToString(node)))
 	}
-	tensor, err := tensorToGoMLX(m.backend, valueAttr.T)
+	tensor, err := tensorToGoMLXWithBaseDir(m.backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
 	if err != nil {
 		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
 		panic(err)
@@ -489,9 +512,14 @@ func convertTranspose(node *protos.NodeProto, inputs []*Node) *Node {
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Gemm.html
-func convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
+func (m *Model) convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
 	operandA := inputs[0]
 	operandB := inputs[1]
+
+	// Handle dtype mismatches based on config
+	if operandA.DType() != operandB.DType() {
+		operandA, operandB = promoteToCommonDType(operandA, operandB, m.getDTypePromotionConfig())
+	}
 
 	transposeA := getBoolAttrOr(node, "transA", false)
 	transposeB := getBoolAttrOr(node, "transB", false)
@@ -518,7 +546,7 @@ func convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
 			operandC = MulScalar(operandC, beta)
 		}
 		// Add with ONNX broadcast semantics.
-		result = convertBinaryOp(Add, result, operandC)
+		result = m.convertBinaryOp(Add, result, operandC)
 	}
 	return result
 }
@@ -544,11 +572,16 @@ func tensorToInts(t *tensors.Tensor) []int {
 }
 
 // convertPow, with special casing if the exponential is a known constant.
-func convertPow(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func (m *Model) convertPow(convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	// defaultPow returns the generic Pow function:
 	defaultPow := func() *Node {
 		operands := onnxImplicitExpansion([]*Node{inputs[0], inputs[1]})
-		return Pow(operands[0], operands[1])
+		lhs, rhs := operands[0], operands[1]
+		// Handle dtype mismatches based on config
+		if lhs.DType() != rhs.DType() {
+			lhs, rhs = promoteToCommonDType(lhs, rhs, m.getDTypePromotionConfig())
+		}
+		return Pow(lhs, rhs)
 	}
 	exponentNode := node.Input[1]
 	exponentT, err := m.materializeConstantExpression(exponentNode, convertedOutputs)
@@ -876,7 +909,7 @@ func convertReduce(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 
 	// Adjust negative axes to positive.
 	for i, axis := range axes {
-		axes[i] = AdjustAxisToOperandRank(operand, axis)
+		axes[i] = MustAdjustAxis(axis, operand)
 	}
 
 	// If there are no axes to reduce, this is a no-op.
@@ -1021,7 +1054,7 @@ func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *p
 	valueAttr := getNodeAttr(node, "value", true)
 	assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
 
-	tensor, err := tensorToGoMLX(m.backend, valueAttr.T)
+	tensor, err := tensorToGoMLXWithBaseDir(m.backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
 	if err != nil {
 		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
 		panic(err)
@@ -1247,10 +1280,10 @@ func onnxCumSum(operand *Node, axis int, exclusive, reverse bool) *Node {
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Min.html
-func convertMin(operands []*Node) *Node {
+func (m *Model) convertMin(operands []*Node) *Node {
 	output := operands[0]
 	for _, operand := range operands[1:] {
-		output = convertBinaryOp(Min, output, operand)
+		output = m.convertBinaryOp(Min, output, operand)
 	}
 	return output
 }
@@ -1259,10 +1292,10 @@ func convertMin(operands []*Node) *Node {
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Max.html
-func convertMax(operands []*Node) *Node {
+func (m *Model) convertMax(operands []*Node) *Node {
 	output := operands[0]
 	for _, operand := range operands[1:] {
-		output = convertBinaryOp(Max, output, operand)
+		output = m.convertBinaryOp(Max, output, operand)
 	}
 	return output
 }
@@ -2408,4 +2441,139 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 		return results[0]
 	}
 	return nil
+}
+
+// convertTopK converts an ONNX TopK node to GoMLX.
+//
+// TopK retrieves the top K largest or smallest elements along a specified axis.
+// See ONNX documentation: https://onnx.ai/onnx/operators/onnx__TopK.html
+//
+// Inputs:
+//   - X: Input tensor
+//   - K: Number of top elements to retrieve (scalar int64 value, any shape with total size 1)
+//
+// Outputs:
+//   - Values: Top K values
+//   - Indices: Indices of top K values (int64)
+//
+// Attributes:
+//   - axis: Dimension to sort (default -1, last axis)
+//   - largest: If 1 (default), returns largest K; if 0, returns smallest K
+//   - sorted: If 1 (default), results are sorted; if 0, order is undefined
+func convertTopK(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	x := inputs[0]
+
+	// Get K value - it's a scalar that needs to be materialized
+	kTensor, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+	if err != nil {
+		exceptions.Panicf("TopK: failed to materialize K for node %s: %v", nodeToString(node), err)
+	}
+	kValues := tensorToInts(kTensor)
+	if len(kValues) != 1 {
+		exceptions.Panicf("TopK: K must be a scalar, got %d values for node %s", len(kValues), nodeToString(node))
+	}
+	k := kValues[0]
+
+	// Get attributes
+	axis := getIntAttrOr(node, "axis", -1)
+	largest := getIntAttrOr(node, "largest", 1) == 1
+	// Note: sorted attribute is ignored since GoMLX always returns sorted results,
+	// which is valid since ONNX says "order is undefined" when sorted=0
+
+	// Call appropriate GoMLX function
+	var values, indices *Node
+	if largest {
+		values, indices = TopK(x, k, axis)
+	} else {
+		values, indices = BottomK(x, k, axis)
+	}
+
+	// ONNX TopK returns int64 indices, cast if needed
+	if indices.DType() != dtypes.Int64 {
+		indices = ConvertDType(indices, dtypes.Int64)
+	}
+
+	// Assign outputs
+	if len(node.Output) >= 1 && node.Output[0] != "" {
+		convertedOutputs[node.Output[0]] = values
+	}
+	if len(node.Output) >= 2 && node.Output[1] != "" {
+		convertedOutputs[node.Output[1]] = indices
+	}
+
+	return values
+}
+
+// convertArgMax converts an ONNX ArgMax node to GoMLX.
+//
+// ArgMax computes the indices of the maximum elements along an axis.
+// See ONNX documentation: https://onnx.ai/onnx/operators/onnx__ArgMax.html
+//
+// Inputs:
+//   - data: Input tensor
+//
+// Outputs:
+//   - reduced: Indices of maximum elements (int64)
+//
+// Attributes:
+//   - axis: Dimension to reduce (default 0)
+//   - keepdims: If 1 (default), keep the reduced dimension; if 0, remove it
+//   - select_last_index: If 1, return last occurrence; if 0 (default), first occurrence
+func convertArgMax(node *protos.NodeProto, inputs []*Node) *Node {
+	x := inputs[0]
+
+	// Get attributes
+	axis := getIntAttrOr(node, "axis", 0)
+	keepDims := getIntAttrOr(node, "keepdims", 1) == 1
+	// Note: select_last_index is not supported; we always return first occurrence
+	// This matches the default ONNX behavior
+
+	// Use TopK with k=1 to get the index of the maximum element
+	_, indices := TopK(x, 1, axis)
+
+	// ONNX ArgMax returns int64
+	if indices.DType() != dtypes.Int64 {
+		indices = ConvertDType(indices, dtypes.Int64)
+	}
+
+	// Handle keepdims
+	if !keepDims {
+		// Remove the axis dimension (which is size 1)
+		axis = MustAdjustAxis(axis, x)
+		indices = Squeeze(indices, axis)
+	}
+
+	return indices
+}
+
+// convertArgMin converts an ONNX ArgMin node to GoMLX.
+//
+// ArgMin computes the indices of the minimum elements along an axis.
+// See ONNX documentation: https://onnx.ai/onnx/operators/onnx__ArgMin.html
+//
+// Same as ArgMax but for minimum values.
+func convertArgMin(node *protos.NodeProto, inputs []*Node) *Node {
+	x := inputs[0]
+
+	// Get attributes
+	axis := getIntAttrOr(node, "axis", 0)
+	keepDims := getIntAttrOr(node, "keepdims", 1) == 1
+	// Note: select_last_index is not supported; we always return first occurrence
+
+	// Use BottomK with k=1 to get the index of the minimum element
+	_, indices := BottomK(x, 1, axis)
+
+	// ONNX ArgMin returns int64
+	if indices.DType() != dtypes.Int64 {
+		indices = ConvertDType(indices, dtypes.Int64)
+	}
+
+	// Handle keepdims
+	if !keepDims {
+		// Remove the axis dimension (which is size 1)
+		axis = MustAdjustAxis(axis, x)
+		indices = Squeeze(indices, axis)
+	}
+
+	return indices
 }
