@@ -2,6 +2,7 @@ package onnx
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 
@@ -2005,18 +2006,18 @@ func convertSimplifiedLayerNormalization(_ *Model, _ map[string]*Node, node *pro
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__RotaryEmbedding.html
 func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
-	// Inputs:
+	// Inputs (per ONNX custom op used by HuggingFace optimum):
 	// - input: 4D (batch, num_heads, seq_len, head_size) or 3D (batch, seq_len, hidden_size)
+	// - position_ids: position indices for cache lookup (may be nil if optional)
 	// - cos_cache: cosine values for rotation
 	// - sin_cache: sine values for rotation
-	// - position_ids (optional): position indices for cache lookup
 	x := inputs[0]
-	cosCache := inputs[1]
-	sinCache := inputs[2]
 	var positionIds *Node
-	if len(inputs) > 3 && inputs[3] != nil {
-		positionIds = inputs[3]
+	if len(inputs) > 1 && inputs[1] != nil {
+		positionIds = inputs[1]
 	}
+	cosCache := inputs[2]
+	sinCache := inputs[3]
 
 	// Attributes
 	interleaved := getIntAttrOr(node, "interleaved", 0) != 0
@@ -2035,7 +2036,10 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 		seqLen = inputShape[1]
 		hiddenSize = inputShape[2]
 		if numHeads == 0 {
-			exceptions.Panicf("RotaryEmbedding: num_heads attribute required for 3D input")
+			// When num_heads=0 with 3D input, treat as single head where
+			// the last dimension is already the head_size (common in models
+			// that reshape per-head before applying RoPE)
+			numHeads = 1
 		}
 		headSize := hiddenSize / numHeads
 		// Reshape from (batch, seq, hidden) to (batch, seq, num_heads, head_size)
@@ -2048,10 +2052,16 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 	dims := x.Shape().Dimensions
 	headSize := dims[3]
 
-	// Determine rotary dimension (default is full head_size)
+	// Determine rotary dimension
+	// When rotaryEmbeddingDim=0, infer from cos_cache shape (last dim is rotary_dim/2)
+	// This handles models where only part of the head dimension uses RoPE
 	rotaryDim := headSize
 	if rotaryEmbeddingDim > 0 {
 		rotaryDim = rotaryEmbeddingDim
+	} else {
+		// Infer from cos_cache: last dimension is rotary_dim/2
+		cosCacheDims := cosCache.Shape().Dimensions
+		rotaryDim = cosCacheDims[len(cosCacheDims)-1] * 2
 	}
 
 	// Split into rotatable and pass-through portions
@@ -2148,6 +2158,161 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 	}
 
 	return result
+}
+
+// convertMultiHeadAttention converts the corresponding ONNX node to GoMLX nodes.
+//
+// MultiHeadAttention implements scaled dot-product multi-head attention commonly used
+// in transformer models. This is a Microsoft ONNX Runtime contrib op.
+//
+// The computation is:
+//  1. Reshape Q, K, V from (batch, seq, hidden) to (batch, num_heads, seq, head_size)
+//  2. Compute attention scores: scores = Q @ K^T * scale
+//  3. Apply attention mask (if provided)
+//  4. Softmax over the last dimension
+//  5. Compute output: output = softmax(scores) @ V
+//  6. Reshape back to (batch, seq, hidden)
+//
+// See ONNX Runtime contrib ops documentation.
+func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// Inputs (com.microsoft contrib op):
+	// - query: (batch, q_seq_len, hidden_size) or (batch, num_heads, q_seq_len, head_size)
+	// - key: (batch, kv_seq_len, hidden_size) or (batch, num_heads, kv_seq_len, head_size)
+	// - value: (batch, kv_seq_len, v_hidden_size) or (batch, num_heads, kv_seq_len, v_head_size)
+	// - bias (optional): combined bias for Q, K, V projections
+	// - key_padding_mask (optional): (batch, kv_seq_len) mask for padding
+	// - attention_mask (optional): (batch, 1, q_seq_len, kv_seq_len) or broadcastable
+	query := inputs[0]
+	key := inputs[1]
+	value := inputs[2]
+
+	// Optional inputs - check bounds and nil
+	var attentionMask *Node
+	// Attention mask can be at different positions depending on the model
+	// Common positions: input[3] (after value) or input[5] (after bias and key_padding_mask)
+	for i := 3; i < len(inputs); i++ {
+		if inputs[i] != nil {
+			inp := inputs[i]
+			// Attention mask is typically float and has rank >= 2
+			if !inp.DType().IsInt() && inp.Rank() >= 2 {
+				attentionMask = inp
+				break
+			}
+		}
+	}
+
+	// Attributes
+	numHeads := getIntAttrOr(node, "num_heads", 0)
+	scale := getFloatAttrOr(node, "scale", 0)
+
+	// Determine input format and reshape if needed
+	queryRank := query.Rank()
+	queryShape := query.Shape().Dimensions
+
+	var batchSize, qSeqLen, kvSeqLen, hiddenSize, headSize int
+	var was3D bool
+
+	if queryRank == 3 {
+		// 3D input: (batch, seq, hidden)
+		was3D = true
+		batchSize = queryShape[0]
+		qSeqLen = queryShape[1]
+		hiddenSize = queryShape[2]
+
+		if numHeads == 0 {
+			exceptions.Panicf("MultiHeadAttention: num_heads attribute required for 3D input")
+		}
+		headSize = hiddenSize / numHeads
+
+		// Reshape Q, K, V to 4D: (batch, seq, hidden) -> (batch, num_heads, seq, head_size)
+		query = Reshape(query, batchSize, qSeqLen, numHeads, headSize)
+		query = TransposeAllDims(query, 0, 2, 1, 3) // (batch, num_heads, seq, head_size)
+
+		keyShape := key.Shape().Dimensions
+		kvSeqLen = keyShape[1]
+		key = Reshape(key, batchSize, kvSeqLen, numHeads, headSize)
+		key = TransposeAllDims(key, 0, 2, 1, 3)
+
+		valueShape := value.Shape().Dimensions
+		vHeadSize := valueShape[2] / numHeads
+		value = Reshape(value, batchSize, kvSeqLen, numHeads, vHeadSize)
+		value = TransposeAllDims(value, 0, 2, 1, 3)
+	} else {
+		// 4D input: (batch, num_heads, seq, head_size)
+		was3D = false
+		batchSize = queryShape[0]
+		numHeads = queryShape[1]
+		qSeqLen = queryShape[2]
+		headSize = queryShape[3]
+		hiddenSize = numHeads * headSize
+
+		kvSeqLen = key.Shape().Dimensions[2]
+	}
+
+	// Compute scale (default is 1/sqrt(head_size))
+	var scaleValue float64
+	if scale > 0 {
+		scaleValue = float64(scale)
+	} else {
+		scaleValue = 1.0 / float64(headSize)
+		scaleValue = scaleValue * scaleValue // Will apply sqrt later via separate scaling
+		// Actually, standard attention uses 1/sqrt(head_size)
+		scaleValue = 1.0 / math.Sqrt(float64(headSize))
+	}
+
+	// Compute Q @ K^T
+	// query: (batch, num_heads, q_seq, head_size)
+	// key:   (batch, num_heads, kv_seq, head_size)
+	// We need: (batch, num_heads, q_seq, kv_seq)
+	// So we transpose key's last two dims and matmul
+
+	// Transpose key: (batch, num_heads, kv_seq, head_size) -> (batch, num_heads, head_size, kv_seq)
+	keyT := TransposeAllDims(key, 0, 1, 3, 2)
+
+	// MatMul: (batch, num_heads, q_seq, head_size) @ (batch, num_heads, head_size, kv_seq)
+	//       = (batch, num_heads, q_seq, kv_seq)
+	scores := Einsum("bhqd,bhdk->bhqk", query, keyT)
+
+	// Apply scale
+	scores = MulScalar(scores, scaleValue)
+
+	// Apply attention mask if provided
+	if attentionMask != nil {
+		// Mask shape should be broadcastable to (batch, num_heads, q_seq, kv_seq)
+		// Common shapes: (batch, 1, 1, kv_seq), (batch, 1, q_seq, kv_seq), (1, 1, q_seq, kv_seq)
+		maskRank := attentionMask.Rank()
+		if maskRank == 2 {
+			// (batch, kv_seq) -> (batch, 1, 1, kv_seq)
+			attentionMask = ExpandLeftToRank(attentionMask, 4)
+			attentionMask = TransposeAllDims(attentionMask, 0, 2, 3, 1)
+		} else if maskRank == 3 {
+			// (batch, q_seq, kv_seq) -> (batch, 1, q_seq, kv_seq)
+			maskDims := attentionMask.Shape().Dimensions
+			attentionMask = Reshape(attentionMask, maskDims[0], 1, maskDims[1], maskDims[2])
+		}
+		// The mask is typically additive (0 for attend, large negative for mask out)
+		scores = Add(scores, attentionMask)
+	}
+
+	// Softmax over last dimension (kv_seq)
+	attnWeights := Softmax(scores, -1)
+
+	// Compute attention output: attn_weights @ value
+	// attn_weights: (batch, num_heads, q_seq, kv_seq)
+	// value:        (batch, num_heads, kv_seq, v_head_size)
+	// output:       (batch, num_heads, q_seq, v_head_size)
+	output := Einsum("bhqk,bhkd->bhqd", attnWeights, value)
+
+	// Reshape back to 3D if input was 3D
+	if was3D {
+		// Transpose: (batch, num_heads, q_seq, head_size) -> (batch, q_seq, num_heads, head_size)
+		output = TransposeAllDims(output, 0, 2, 1, 3)
+		// Reshape: (batch, q_seq, num_heads, head_size) -> (batch, q_seq, hidden_size)
+		vHeadSize := output.Shape().Dimensions[3]
+		output = Reshape(output, batchSize, qSeqLen, numHeads*vHeadSize)
+	}
+
+	return output
 }
 
 // convertSplit converts the corresponding ONNX node to GoMLX nodes.

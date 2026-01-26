@@ -792,21 +792,26 @@ func TestReduceL2(t *testing.T) {
 
 func TestRotaryEmbedding(t *testing.T) {
 	// Test basic RotaryEmbedding with 4D input (batch, heads, seq, head_size)
+	// Input order: [input, position_ids, cos_cache, sin_cache]
 	graphtest.RunTestGraphFn(t, "RotaryEmbedding-4D-basic", func(g *Graph) (inputs, outputs []*Node) {
 		// Input: (batch=1, heads=1, seq=2, head_size=4)
 		// For simplicity, use values where rotation is easy to verify
 		x := Const(g, [][][][]float32{{{{1.0, 0.0, 0.0, 0.0}, {0.0, 1.0, 0.0, 0.0}}}})
 
-		// cos_cache and sin_cache: (seq=2, head_size/2=2)
+		// cos_cache and sin_cache: (max_pos=2, head_size/2=2)
 		// Position 0: cos=[1, 1], sin=[0, 0] (no rotation)
 		// Position 1: cos=[0, 1], sin=[1, 0] (90 degree rotation on first pair)
 		cosCache := Const(g, [][]float32{{1.0, 1.0}, {0.0, 1.0}})
 		sinCache := Const(g, [][]float32{{0.0, 0.0}, {1.0, 0.0}})
 
+		// Sequential position_ids: [0, 1]
+		positionIds := Const(g, [][]int64{{0, 1}})
+
 		node := &protos.NodeProto{
 			OpType: "RotaryEmbedding",
 		}
-		inputs = []*Node{x, cosCache, sinCache}
+		// Inputs: [input, position_ids, cos_cache, sin_cache]
+		inputs = []*Node{x, positionIds, cosCache, sinCache}
 		outputs = []*Node{
 			convertRotaryEmbedding(nil, nil, node, inputs),
 		}
@@ -840,7 +845,8 @@ func TestRotaryEmbedding(t *testing.T) {
 		node := &protos.NodeProto{
 			OpType: "RotaryEmbedding",
 		}
-		inputs = []*Node{x, cosCache, sinCache, positionIds}
+		// Inputs: [input, position_ids, cos_cache, sin_cache]
+		inputs = []*Node{x, positionIds, cosCache, sinCache}
 		outputs = []*Node{
 			convertRotaryEmbedding(nil, nil, node, inputs),
 		}
@@ -865,9 +871,12 @@ func TestRotaryEmbedding(t *testing.T) {
 		// With interleaved, x1=[x[0], x[2]] and x2=[x[1], x[3]]
 		x := Const(g, [][][][]float32{{{{1.0, 2.0, 3.0, 4.0}}}})
 
-		// cos_cache and sin_cache: (seq=1, head_size/2=2)
+		// cos_cache and sin_cache: (max_pos=1, head_size/2=2)
 		cosCache := Const(g, [][]float32{{0.5, 0.5}})
 		sinCache := Const(g, [][]float32{{0.5, 0.5}})
+
+		// Sequential position_ids: [0]
+		positionIds := Const(g, [][]int64{{0}})
 
 		node := &protos.NodeProto{
 			OpType: "RotaryEmbedding",
@@ -875,7 +884,8 @@ func TestRotaryEmbedding(t *testing.T) {
 				{Name: "interleaved", Type: protos.AttributeProto_INT, I: 1},
 			},
 		}
-		inputs = []*Node{x, cosCache, sinCache}
+		// Inputs: [input, position_ids, cos_cache, sin_cache]
+		inputs = []*Node{x, positionIds, cosCache, sinCache}
 		outputs = []*Node{
 			convertRotaryEmbedding(nil, nil, node, inputs),
 		}
@@ -888,6 +898,86 @@ func TestRotaryEmbedding(t *testing.T) {
 		// interleaved output = [real[0],imag[0],real[1],imag[1]] = [-0.5,1.5,-0.5,3.5]
 		[][][][]float32{{{{-0.5, 1.5, -0.5, 3.5}}}},
 	}, 1e-5)
+}
+
+func TestMultiHeadAttention(t *testing.T) {
+	// Test basic multi-head attention with 4D input (batch, heads, seq, head_size)
+	graphtest.RunTestGraphFn(t, "MultiHeadAttention-4D-basic", func(g *Graph) (inputs, outputs []*Node) {
+		// Simple case: batch=1, heads=1, seq=2, head_size=2
+		// Q, K, V all same shape for self-attention
+		q := Const(g, [][][][]float32{{{{1.0, 0.0}, {0.0, 1.0}}}})
+		k := Const(g, [][][][]float32{{{{1.0, 0.0}, {0.0, 1.0}}}})
+		v := Const(g, [][][][]float32{{{{1.0, 2.0}, {3.0, 4.0}}}})
+
+		node := &protos.NodeProto{
+			OpType: "MultiHeadAttention",
+		}
+		inputs = []*Node{q, k, v}
+		outputs = []*Node{
+			convertMultiHeadAttention(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Q @ K^T (scaled by 1/sqrt(2) ≈ 0.707):
+		//   [[1,0],[0,1]] @ [[1,0],[0,1]]^T = [[1,0],[0,1]]
+		//   scaled: [[0.707,0],[0,0.707]]
+		// softmax over last dim:
+		//   row 0: softmax([0.707, 0]) ≈ [0.66, 0.34]
+		//   row 1: softmax([0, 0.707]) ≈ [0.34, 0.66]
+		// output = attn @ V
+		[][][][]float32{{{{1.6605, 2.6605}, {2.3395, 3.3395}}}},
+	}, 1e-3)
+
+	// Test with 3D input (batch, seq, hidden) and num_heads attribute
+	graphtest.RunTestGraphFn(t, "MultiHeadAttention-3D", func(g *Graph) (inputs, outputs []*Node) {
+		// batch=1, seq=2, hidden=4, num_heads=2, head_size=2
+		q := Const(g, [][][]float32{{{1.0, 0.0, 0.0, 1.0}, {0.0, 1.0, 1.0, 0.0}}})
+		k := Const(g, [][][]float32{{{1.0, 0.0, 0.0, 1.0}, {0.0, 1.0, 1.0, 0.0}}})
+		v := Const(g, [][][]float32{{{1.0, 2.0, 3.0, 4.0}, {5.0, 6.0, 7.0, 8.0}}})
+
+		node := &protos.NodeProto{
+			OpType: "MultiHeadAttention",
+			Attribute: []*protos.AttributeProto{
+				{Name: "num_heads", Type: protos.AttributeProto_INT, I: 2},
+			},
+		}
+		inputs = []*Node{q, k, v}
+		outputs = []*Node{
+			convertMultiHeadAttention(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Output shape should be (batch=1, seq=2, hidden=4)
+		// With 2 heads, each processes half of the hidden dimension
+		[][][]float32{{{2.3210, 3.3210, 4.3210, 5.3210}, {3.6790, 4.6790, 5.6790, 6.6790}}},
+	}, 1e-3)
+
+	// Test with attention mask
+	graphtest.RunTestGraphFn(t, "MultiHeadAttention-with-mask", func(g *Graph) (inputs, outputs []*Node) {
+		// batch=1, heads=1, seq=2, head_size=2
+		q := Const(g, [][][][]float32{{{{1.0, 0.0}, {0.0, 1.0}}}})
+		k := Const(g, [][][][]float32{{{{1.0, 0.0}, {0.0, 1.0}}}})
+		v := Const(g, [][][][]float32{{{{1.0, 2.0}, {3.0, 4.0}}}})
+
+		// Attention mask: mask out second position for first query
+		// Shape (1, 1, 2, 2): large negative masks out attention
+		mask := Const(g, [][][][]float32{{{{0.0, -10000.0}, {0.0, 0.0}}}})
+
+		node := &protos.NodeProto{
+			OpType: "MultiHeadAttention",
+		}
+		inputs = []*Node{q, k, v, mask}
+		outputs = []*Node{
+			convertMultiHeadAttention(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// With mask, first query can only attend to first key
+		// softmax([0.707, -inf]) ≈ [1.0, 0.0]
+		// output row 0 = [1, 0] @ V = [1, 2]
+		// Second query unchanged
+		[][][][]float32{{{{1.0, 2.0}, {2.3395, 3.3395}}}},
+	}, 1e-3)
 }
 
 func TestSplit(t *testing.T) {
