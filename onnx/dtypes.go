@@ -51,18 +51,12 @@ func dtypeForONNX(onnxDType protos.TensorProto_DataType) (dtypes.DType, error) {
 // Otherwise, standard promotion rules apply: Float64 > Float32 > Float16 > Int64 > ...
 func dtypesPromote(prioritizeFloat16 bool, operandDTypes ...dtypes.DType) dtypes.DType {
 	targetDType := operandDTypes[0]
+	currentPriority := dtypePriority(targetDType, prioritizeFloat16)
 	for _, dtype := range operandDTypes[1:] {
-		if prioritizeFloat16 {
-			if dtype == dtypes.Float16 && targetDType == dtypes.Float32 {
-				targetDType = dtypes.Float16
-				continue
-			}
-			if dtype == dtypes.Float32 && targetDType == dtypes.Float16 {
-				continue
-			}
-		}
-		if dtypePriority(dtype) > dtypePriority(targetDType) {
+		priority := dtypePriority(dtype, prioritizeFloat16)
+		if priority > currentPriority {
 			targetDType = dtype
+			currentPriority = priority
 		}
 	}
 	return targetDType
@@ -70,7 +64,7 @@ func dtypesPromote(prioritizeFloat16 bool, operandDTypes ...dtypes.DType) dtypes
 
 // dtypePriority returns a priority value for dtype promotion.
 // Higher values are preferred in mixed-type operations.
-func dtypePriority(dtype dtypes.DType) int {
+func dtypePriority(dtype dtypes.DType, prioritizeFloat16 bool) int {
 	switch dtype {
 	case dtypes.Complex128:
 		return 110
@@ -80,7 +74,12 @@ func dtypePriority(dtype dtypes.DType) int {
 		return 100
 	case dtypes.Float32:
 		return 90
-	case dtypes.Float16, dtypes.BFloat16:
+	case dtypes.Float16:
+		if prioritizeFloat16 {
+			return 91 // Just above Float32
+		}
+		return 80
+	case dtypes.BFloat16:
 		return 80
 	case dtypes.Int64:
 		return 70
