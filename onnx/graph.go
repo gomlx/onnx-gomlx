@@ -443,6 +443,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = Sin(inputs[0])
 	case "Cos":
 		result = Cos(inputs[0])
+	case "Sigmoid":
+		result = Sigmoid(inputs[0])
 
 	// Ops with equivalents:
 	case "MatMul":

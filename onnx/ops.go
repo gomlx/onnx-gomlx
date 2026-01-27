@@ -1523,9 +1523,6 @@ func convertConv(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []
 		exceptions.Panicf("Conv: support for attribute 'auto_pad' (%s) is not yet implemented", autoPad)
 	}
 	kernelShape := getIntsAttrOr(node, "kernel_shape", nil)
-	if kernelShape == nil {
-		exceptions.Panicf("Conv: support for inferring 'kernel_shape' is not yet implemented")
-	}
 	strides := getIntsAttrOr(node, "strides", nil)
 	pads := getIntsAttrOr(node, "pads", nil)
 	dilations := getIntsAttrOr(node, "dilations", nil)
@@ -1536,6 +1533,13 @@ func convertConv(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []
 	var b *Node
 	if len(inputs) > 2 {
 		b = inputs[2]
+	}
+
+	// Infer kernel_shape from weights if not provided.
+	// ONNX Conv weights have shape [O, I, spatial...], so kernel_shape is the spatial dimensions.
+	if kernelShape == nil {
+		wDims := w.Shape().Dimensions
+		kernelShape = wDims[2:]
 	}
 
 	var paddings [][2]int
