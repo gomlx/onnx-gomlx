@@ -362,6 +362,61 @@ func onnxGather(data, indices *Node, gatherAxis int) *Node {
 	return TransposeAllAxes(transposed, axesPermutation...)
 }
 
+// convertGatherND converts a ONNX node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__GatherND.html
+func convertGatherND(node *protos.NodeProto, inputs []*Node) *Node {
+	data := inputs[0]
+	indices := inputs[1]
+
+	batchDims := getIntAttrOr(node, "batch_dims", 0)
+
+	r := data.Rank()
+	q := indices.Rank()
+
+	if r < 1 {
+		exceptions.Panicf("GatherND: data must have rank >= 1, got %d", r)
+	}
+	if q < 1 {
+		exceptions.Panicf("GatherND: indices must have rank >= 1, got %d", q)
+	}
+
+	indicesShape := indices.Shape()
+	indexDepth := indicesShape.Dim(q - 1)
+
+	if indexDepth > r-batchDims {
+		exceptions.Panicf("GatherND: indices.shape[-1] (%d) must be <= data.rank - batch_dims (%d - %d = %d)",
+			indexDepth, r, batchDims, r-batchDims)
+	}
+
+	var output *Node
+	err := exceptions.TryCatch[error](func() { output = onnxGatherND(data, indices, batchDims) })
+	if err != nil {
+		panic(errors.WithMessagef(err, "converting node %s", node))
+	}
+	return output
+}
+
+// onnxGatherND implements the ONNX GatherND operation.
+//
+// For batch_dims=0 (the common case):
+//
+//	output[i_0, ..., i_{q-2}] = data[indices[i_0, ..., i_{q-2}, :]]
+//
+// The output shape is: indices.shape[:-1] + data.shape[indices.shape[-1]:]
+func onnxGatherND(data, indices *Node, batchDims int) *Node {
+	if batchDims != 0 {
+		exceptions.Panicf("GatherND: batch_dims=%d not yet supported (only batch_dims=0 is implemented)", batchDims)
+	}
+
+	// GoMLX's Gather function already handles the GatherND semantics for batch_dims=0:
+	// - indices has shape [i0, i1, ..., im, indexDepth]
+	// - it gathers slices from data using the last dimension of indices as multi-dimensional indices
+	// - output shape is [i0, i1, ..., im, d_{indexDepth}, ..., d_{r-1}]
+	return Gather(data, indices)
+}
+
 // convertGatherElements converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
