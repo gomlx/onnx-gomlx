@@ -531,7 +531,7 @@ func (m *Model) convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
 	transposeA := getBoolAttrOr(node, "transA", false)
 	transposeB := getBoolAttrOr(node, "transB", false)
 	alpha := getFloatAttrOr(node, "alpha", 1.0)
-	beta := getFloatAttrOr(node, "alpha", 1.0)
+	beta := getFloatAttrOr(node, "beta", 1.0)
 
 	aAxes, bAxes := "ij", "jk"
 	if transposeA {
