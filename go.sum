@@ -32,6 +32,8 @@ github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88 h1:3FAQ+KA5WY/AzZ62
 github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88/go.mod h1:K/hj2IVnPJPuyypawBeTju2IgaP/CUlf1ziOZzPiWjw=
 github.com/gomlx/gomlx v0.26.1-0.20260112174616-b93657653c31 h1:Msn56gAddxztAMogD9Ap5nvFKuYKZAr+pSH8JNzYFiw=
 github.com/gomlx/gomlx v0.26.1-0.20260112174616-b93657653c31/go.mod h1:Ee0g7u/rMk9mdRTQytbn00DsqytYUmL46pS70xcaCBg=
+github.com/gomlx/gomlx v0.26.1-0.20260130154013-b5c594b4603c h1:nUValGUQjlRmzTYATHeWdI+UMQdUQXH6og4ygGPGBrw=
+github.com/gomlx/gomlx v0.26.1-0.20260130154013-b5c594b4603c/go.mod h1:emH+1SuMpi4/ZhxdY5dwLBWNdgSx2WC5al/usel3D/I=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=

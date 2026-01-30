@@ -160,7 +160,23 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 				varName, nodeOutputName)
 			return
 		}
-		convertedOutputs[nodeOutputName] = v.ValueGraph(g)
+
+		// Check if the backend prefers constants for variables (e.g., CoreML).
+		// This enables optimizations like blob storage for weights and avoids
+		// passing hundreds of weight tensors as inputs per inference.
+		backend := g.Backend()
+		if backend != nil && backend.Capabilities().PreferConstantsForVariables {
+			// Get the variable value and create a constant node
+			value, err := v.Value()
+			if err != nil {
+				exceptions.Panicf("failed to get value for variable %q: %v", varName, err)
+				return
+			}
+			convertedOutputs[nodeOutputName] = Const(g, value)
+		} else {
+			// Default behavior: create a parameter that will be filled at execution time
+			convertedOutputs[nodeOutputName] = v.ValueGraph(g)
+		}
 		return
 	}
 
@@ -443,6 +459,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = Sin(inputs[0])
 	case "Cos":
 		result = Cos(inputs[0])
+	case "Sigmoid":
+		result = Sigmoid(inputs[0])
 
 	// Ops with equivalents:
 	case "MatMul":
@@ -465,6 +483,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertGather(node, inputs)
 	case "GatherElements":
 		result = convertGatherElements(node, inputs)
+	case "GatherND":
+		result = convertGatherND(node, inputs)
 	case "Shape":
 		result = convertShape(node, inputs)
 	case "Concat":

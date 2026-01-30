@@ -116,6 +116,50 @@ func TestONNXGather(t *testing.T) {
 	}, -1)
 }
 
+func TestONNXGatherND(t *testing.T) {
+	// Test case from ONNX specification example 1:
+	// data = [[0,1],[2,3]]
+	// indices = [[0,0],[1,1]]
+	// output = [0,3]
+	graphtest.RunTestGraphFn(t, "onnxGatherND: basic 2D", func(g *Graph) (inputs, outputs []*Node) {
+		data := Const(g, [][]int32{{0, 1}, {2, 3}})
+		indices := Const(g, [][]int32{{0, 0}, {1, 1}})
+		inputs = []*Node{data, indices}
+		outputs = []*Node{onnxGatherND(data, indices, 0)}
+		return
+	}, []any{
+		[]int32{0, 3},
+	}, -1)
+
+	// Test case from ONNX specification example 2:
+	// data = [[0,1],[2,3]]
+	// indices = [[1],[0]]
+	// output = [[2,3],[0,1]]
+	graphtest.RunTestGraphFn(t, "onnxGatherND: partial indexing", func(g *Graph) (inputs, outputs []*Node) {
+		data := Const(g, [][]int32{{0, 1}, {2, 3}})
+		indices := Const(g, [][]int32{{1}, {0}})
+		inputs = []*Node{data, indices}
+		outputs = []*Node{onnxGatherND(data, indices, 0)}
+		return
+	}, []any{
+		[][]int32{{2, 3}, {0, 1}},
+	}, -1)
+
+	// Test case from ONNX specification example 3:
+	// data = [[[0,1],[2,3]],[[4,5],[6,7]]]
+	// indices = [[0,1],[1,0]]
+	// output = [[2,3],[4,5]]
+	graphtest.RunTestGraphFn(t, "onnxGatherND: 3D data", func(g *Graph) (inputs, outputs []*Node) {
+		data := Const(g, [][][]int32{{{0, 1}, {2, 3}}, {{4, 5}, {6, 7}}})
+		indices := Const(g, [][]int32{{0, 1}, {1, 0}})
+		inputs = []*Node{data, indices}
+		outputs = []*Node{onnxGatherND(data, indices, 0)}
+		return
+	}, []any{
+		[][]int32{{2, 3}, {4, 5}},
+	}, -1)
+}
+
 func TestTile(t *testing.T) {
 	graphtest.RunTestGraphFn(t, "Tile 1D", func(g *Graph) (inputs, outputs []*Node) {
 		operand := Const(g, []float32{1, 2})
