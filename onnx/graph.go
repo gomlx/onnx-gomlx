@@ -528,6 +528,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertReduceSum(m, convertedOutputs, node, inputs)
 	case "ReduceProd":
 		result = convertReduceProd(m, convertedOutputs, node, inputs)
+	case "ReduceL2":
+		result = convertReduceL2(m, convertedOutputs, node, inputs)
 	case "NonZero":
 		result = convertNonZero(m, convertedOutputs, node, inputs)
 	case "ConstantOfShape":
@@ -556,6 +558,12 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertBatchNormalization(m, convertedOutputs, node, inputs)
 	case "LayerNormalization":
 		result = convertLayerNormalization(m, convertedOutputs, node, inputs)
+	case "SimplifiedLayerNormalization":
+		result = convertSimplifiedLayerNormalization(m, convertedOutputs, node, inputs)
+	case "RotaryEmbedding":
+		result = convertRotaryEmbedding(m, convertedOutputs, node, inputs)
+	case "MultiHeadAttention":
+		result = convertMultiHeadAttention(m, convertedOutputs, node, inputs)
 
 	// Multiple outputs ops:
 	case "Pad":
