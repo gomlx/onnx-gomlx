@@ -2,7 +2,6 @@ package onnx
 
 import (
 	"fmt"
-	"math"
 	"reflect"
 	"slices"
 
@@ -15,6 +14,8 @@ import (
 	timage "github.com/gomlx/gomlx/pkg/core/tensors/images"
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/ml/layers"
+	"github.com/gomlx/gomlx/pkg/ml/layers/attention"
+	"github.com/gomlx/gomlx/pkg/ml/layers/attention/pos"
 	"github.com/gomlx/gomlx/pkg/ml/layers/lstm"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
@@ -2162,7 +2163,7 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 	// Attributes
 	interleaved := getIntAttrOr(node, "interleaved", 0) != 0
 	numHeads := getIntAttrOr(node, "num_heads", 0)
-	rotaryEmbeddingDim := getIntAttrOr(node, "rotary_embedding_dim", 0)
+
 
 	inputRank := x.Rank()
 	inputShape := x.Shape().Dimensions
@@ -2189,32 +2190,6 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 	}
 
 	// Now x is 4D: (batch, num_heads, seq_len, head_size)
-	dims := x.Shape().Dimensions
-	headSize := dims[3]
-
-	// Determine rotary dimension
-	// When rotaryEmbeddingDim=0, infer from cos_cache shape (last dim is rotary_dim/2)
-	// This handles models where only part of the head dimension uses RoPE
-	rotaryDim := headSize
-	if rotaryEmbeddingDim > 0 {
-		rotaryDim = rotaryEmbeddingDim
-	} else {
-		// Infer from cos_cache: last dimension is rotary_dim/2
-		cosCacheDims := cosCache.Shape().Dimensions
-		rotaryDim = cosCacheDims[len(cosCacheDims)-1] * 2
-	}
-
-	// Split into rotatable and pass-through portions
-	var xRotate, xPass *Node
-	if rotaryDim < headSize {
-		// Partial rotation: split along last axis
-		// xRotate = x[:, :, :, :rotaryDim], xPass = x[:, :, :, rotaryDim:]
-		xRotate = Slice(x, AxisRange(), AxisRange(), AxisRange(), AxisRange(0, rotaryDim))
-		xPass = Slice(x, AxisRange(), AxisRange(), AxisRange(), AxisRange(rotaryDim, headSize))
-	} else {
-		xRotate = x
-		xPass = nil
-	}
 
 	// Get cos and sin values
 	// If position_ids provided, use them to index into 2D cache
@@ -2246,48 +2221,10 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 		sin = Reshape(sin, cosDims[0], 1, cosDims[1], cosDims[2])
 	}
 
-	// Split xRotate into two halves for rotation
-	halfDim := rotaryDim / 2
-	var x1, x2 *Node
-
-	if interleaved {
-		// Interleaved: x1 = even indices, x2 = odd indices
-		// x1 = xRotate[:, :, :, 0::2], x2 = xRotate[:, :, :, 1::2]
-		x1 = Slice(xRotate, AxisRange(), AxisRange(), AxisRange(), AxisRange(0, rotaryDim).Stride(2))
-		x2 = Slice(xRotate, AxisRange(), AxisRange(), AxisRange(), AxisRange(1, rotaryDim).Stride(2))
-	} else {
-		// Non-interleaved: split in half
-		// x1 = xRotate[:, :, :, :halfDim], x2 = xRotate[:, :, :, halfDim:]
-		x1 = Slice(xRotate, AxisRange(), AxisRange(), AxisRange(), AxisRange(0, halfDim))
-		x2 = Slice(xRotate, AxisRange(), AxisRange(), AxisRange(), AxisRange(halfDim, rotaryDim))
-	}
-
-	// Apply rotation: real = cos*x1 - sin*x2, imag = sin*x1 + cos*x2
-	real := Sub(Mul(cos, x1), Mul(sin, x2))
-	imag := Add(Mul(sin, x1), Mul(cos, x2))
-
-	// Recombine rotated values
-	var xRotated *Node
-	if interleaved {
-		// Interleave real and imag back together
-		// Stack along new axis then reshape to interleave
-		// real: (batch, heads, seq, half), imag: (batch, heads, seq, half)
-		// -> stack: (batch, heads, seq, half, 2) -> reshape: (batch, heads, seq, rotary_dim)
-		stacked := Stack([]*Node{real, imag}, -1)
-		stackedDims := stacked.Shape().Dimensions
-		xRotated = Reshape(stacked, stackedDims[0], stackedDims[1], stackedDims[2], rotaryDim)
-	} else {
-		// Non-interleaved: concatenate real and imag
-		xRotated = Concatenate([]*Node{real, imag}, -1)
-	}
-
-	// Combine rotated and pass-through portions
-	var result *Node
-	if xPass != nil {
-		result = Concatenate([]*Node{xRotated, xPass}, -1)
-	} else {
-		result = xRotated
-	}
+	// Apply rotation using pre-computed cos/sin via ApplyWithCosSin.
+	// ApplyWithCosSin handles splitting, rotation, recombination, and partial rotation
+	// (pass-through for dimensions beyond rotary_dim) automatically based on cos/sin dimensions.
+	result := pos.ApplyWithCosSin(x, cos, sin, interleaved)
 
 	// If input was 3D, reshape back
 	if was3D {
@@ -2349,7 +2286,7 @@ func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodePr
 	queryRank := query.Rank()
 	queryShape := query.Shape().Dimensions
 
-	var batchSize, qSeqLen, kvSeqLen, hiddenSize, headSize int
+	var batchSize, qSeqLen int
 	var was3D bool
 
 	if queryRank == 3 {
@@ -2357,19 +2294,19 @@ func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodePr
 		was3D = true
 		batchSize = queryShape[0]
 		qSeqLen = queryShape[1]
-		hiddenSize = queryShape[2]
+		hiddenSize := queryShape[2]
 
 		if numHeads == 0 {
 			exceptions.Panicf("MultiHeadAttention: num_heads attribute required for 3D input")
 		}
-		headSize = hiddenSize / numHeads
+		headSize := hiddenSize / numHeads
 
 		// Reshape Q, K, V to 4D: (batch, seq, hidden) -> (batch, num_heads, seq, head_size)
 		query = Reshape(query, batchSize, qSeqLen, numHeads, headSize)
 		query = TransposeAllDims(query, 0, 2, 1, 3) // (batch, num_heads, seq, head_size)
 
 		keyShape := key.Shape().Dimensions
-		kvSeqLen = keyShape[1]
+		kvSeqLen := keyShape[1]
 		key = Reshape(key, batchSize, kvSeqLen, numHeads, headSize)
 		key = TransposeAllDims(key, 0, 2, 1, 3)
 
@@ -2377,49 +2314,10 @@ func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodePr
 		vHeadSize := valueShape[2] / numHeads
 		value = Reshape(value, batchSize, kvSeqLen, numHeads, vHeadSize)
 		value = TransposeAllDims(value, 0, 2, 1, 3)
-	} else {
-		// 4D input: (batch, num_heads, seq, head_size)
-		was3D = false
-		batchSize = queryShape[0]
-		numHeads = queryShape[1]
-		qSeqLen = queryShape[2]
-		headSize = queryShape[3]
-		hiddenSize = numHeads * headSize
-
-		kvSeqLen = key.Shape().Dimensions[2]
 	}
 
-	// Compute scale (default is 1/sqrt(head_size))
-	var scaleValue float64
-	if scale > 0 {
-		scaleValue = float64(scale)
-	} else {
-		scaleValue = 1.0 / float64(headSize)
-		scaleValue = scaleValue * scaleValue // Will apply sqrt later via separate scaling
-		// Actually, standard attention uses 1/sqrt(head_size)
-		scaleValue = 1.0 / math.Sqrt(float64(headSize))
-	}
-
-	// Compute Q @ K^T
-	// query: (batch, num_heads, q_seq, head_size)
-	// key:   (batch, num_heads, kv_seq, head_size)
-	// We need: (batch, num_heads, q_seq, kv_seq)
-	// So we transpose key's last two dims and matmul
-
-	// Transpose key: (batch, num_heads, kv_seq, head_size) -> (batch, num_heads, head_size, kv_seq)
-	keyT := TransposeAllDims(key, 0, 1, 3, 2)
-
-	// MatMul: (batch, num_heads, q_seq, head_size) @ (batch, num_heads, head_size, kv_seq)
-	//       = (batch, num_heads, q_seq, kv_seq)
-	scores := Einsum("bhqd,bhdk->bhqk", query, keyT)
-
-	// Apply scale
-	scores = MulScalar(scores, scaleValue)
-
-	// Apply attention mask if provided
+	// Reshape attention mask to be broadcastable to (batch, num_heads, q_seq, kv_seq)
 	if attentionMask != nil {
-		// Mask shape should be broadcastable to (batch, num_heads, q_seq, kv_seq)
-		// Common shapes: (batch, 1, 1, kv_seq), (batch, 1, q_seq, kv_seq), (1, 1, q_seq, kv_seq)
 		maskRank := attentionMask.Rank()
 		if maskRank == 2 {
 			// (batch, kv_seq) -> (batch, 1, 1, kv_seq)
@@ -2430,18 +2328,18 @@ func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodePr
 			maskDims := attentionMask.Shape().Dimensions
 			attentionMask = Reshape(attentionMask, maskDims[0], 1, maskDims[1], maskDims[2])
 		}
-		// The mask is typically additive (0 for attend, large negative for mask out)
-		scores = Add(scores, attentionMask)
 	}
 
-	// Softmax over last dimension (kv_seq)
-	attnWeights := Softmax(scores, -1)
-
-	// Compute attention output: attn_weights @ value
-	// attn_weights: (batch, num_heads, q_seq, kv_seq)
-	// value:        (batch, num_heads, kv_seq, v_head_size)
-	// output:       (batch, num_heads, q_seq, v_head_size)
-	output := Einsum("bhqk,bhkd->bhqd", attnWeights, value)
+	// Use ScaledDotProductAttention for the core computation.
+	// query, key, value are already in [batch, heads, seq, dim] layout.
+	builder := attention.ScaledDotProductAttention(query, key, value)
+	if scale > 0 {
+		builder = builder.WithScale(float64(scale))
+	}
+	if attentionMask != nil {
+		builder = builder.WithAdditiveMask(attentionMask)
+	}
+	output := builder.Done()
 
 	// Reshape back to 3D if input was 3D
 	if was3D {
