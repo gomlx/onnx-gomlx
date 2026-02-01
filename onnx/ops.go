@@ -13,6 +13,8 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	timage "github.com/gomlx/gomlx/pkg/core/tensors/images"
+	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/pkg/ml/layers"
 	"github.com/gomlx/gomlx/pkg/ml/layers/lstm"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
@@ -2098,20 +2100,24 @@ func convertSimplifiedLayerNormalization(_ *Model, _ map[string]*Node, node *pro
 		axes[i] = axis + i
 	}
 
+	// Use GoMLX's RMSNorm without its learnable scale (we apply the ONNX-provided scale ourselves).
+	normalized := layers.RMSNorm(context.New(), x).
+		WithScale(false).
+		WithEpsilon(float64(epsilon)).
+		WithNormalizationAxes(axes...).
+		Done()
+
 	// Reshape scale to match input rank for broadcasting
 	// Scale has shape matching the normalized dimensions
 	// Need to add leading 1s to match the input rank
 	if scale.Rank() < inputRank {
 		scaleShape := make([]int, inputRank)
-		// Set leading dimensions to 1
 		for i := 0; i < axis; i++ {
 			scaleShape[i] = 1
 		}
-		// Copy the scale dimensions for the normalized axes
 		scaleDims := scale.Shape().Dimensions
 		scaleRank := len(scaleDims)
 		for i := axis; i < inputRank; i++ {
-			// Check bounds to prevent index out of bounds
 			scaleIdx := i - axis
 			if scaleIdx >= scaleRank {
 				exceptions.Panicf("SimplifiedLayerNormalization: scale tensor has insufficient dimensions (rank=%d) for input rank=%d and axis=%d",
@@ -2122,18 +2128,8 @@ func convertSimplifiedLayerNormalization(_ *Model, _ map[string]*Node, node *pro
 		scale = Reshape(scale, scaleShape...)
 	}
 
-	// Calculate RMS (root mean square) over the normalization axes
-	// RMS = sqrt(mean(X^2) + epsilon)
-	meanSquare := ReduceAndKeep(Square(x), ReduceMean, axes...)
-	rms := Sqrt(Add(meanSquare, Scalar(x.Graph(), x.DType(), epsilon)))
-
-	// Normalize: X / RMS
-	normalized := Div(x, rms)
-
-	// Apply scale (gamma)
-	result := Mul(normalized, scale)
-
-	return result
+	// Apply the ONNX-provided scale (gamma)
+	return Mul(normalized, scale)
 }
 
 // convertRotaryEmbedding converts the corresponding ONNX node to GoMLX nodes.
