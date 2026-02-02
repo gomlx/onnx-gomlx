@@ -115,6 +115,17 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 		return
 	}
 
+	// Build active fusion groups based on backend capabilities.
+	// This rebuilds from detectedFusionGroups each time, so different backends
+	// or repeated calls work correctly.
+	m.activeFusionGroups = nil
+	if len(m.detectedFusionGroups) > 0 {
+		backend := g.Backend()
+		if backend != nil {
+			m.activeFusionGroups = m.buildActiveFusionGroups(backend.Capabilities())
+		}
+	}
+
 	// Convert all nodes recursively, which will implicitly yield a topological order.
 	for _, target := range outputNames {
 		m.recursiveCallGraph(ctx, g, target, convertedOutputs)
@@ -144,6 +155,12 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputName string, convertedOutputs map[string]*Node) {
 	if _, found := convertedOutputs[nodeOutputName]; found {
 		// Already converted.
+		return
+	}
+
+	// Check if this output belongs to a fusion group.
+	if fg := m.isFusionGroupOutput(nodeOutputName); fg != nil {
+		m.ensureFusionGroupConverted(ctx, g, fg, convertedOutputs)
 		return
 	}
 

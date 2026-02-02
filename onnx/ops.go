@@ -2330,7 +2330,20 @@ func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodePr
 		}
 	}
 
-	// Use ScaledDotProductAttention for the core computation.
+	// Use fused SDPA if the backend supports it, otherwise fall through
+	// to the decomposed path below.
+	if query.Graph().Backend().Capabilities().Operations[backends.OpTypeFusedMultiHeadSDPA] {
+		numKVHeads := numHeads
+		output := FusedMultiHeadSDPA(query, key, value, attentionMask, numHeads, numKVHeads, float64(scale), false)
+		if was3D {
+			output = TransposeAllDims(output, 0, 2, 1, 3)
+			vHeadSize := output.Shape().Dimensions[3]
+			output = Reshape(output, batchSize, qSeqLen, numHeads*vHeadSize)
+		}
+		return output
+	}
+
+	// Decomposed fallback for backends without fused SDPA support.
 	// query, key, value are already in [batch, heads, seq, dim] layout.
 	builder := attention.ScaledDotProductAttention(query, key, value)
 	if scale > 0 {

@@ -52,6 +52,15 @@ type Model struct {
 	// externalDataReader manages memory-mapped external data files for efficient tensor loading.
 	// It is initialized lazily when external data is first accessed.
 	externalDataReader *ExternalDataReader
+
+	// detectedFusionGroups maps root output names to detected fusion patterns (SDPA, QKV Dense).
+	// Populated by detectFusionPatterns during Parse. This is the immutable set of all detected
+	// patterns; it is never modified after detection.
+	detectedFusionGroups map[string]*FusionGroup
+
+	// activeFusionGroups is the subset of detectedFusionGroups that the current backend supports.
+	// It is rebuilt from detectedFusionGroups at the start of each CallGraph invocation.
+	activeFusionGroups map[string]*FusionGroup
 }
 
 // Parse parses an ONNX model into an internal representation that can be used to build a GoMLX graph.
@@ -118,6 +127,10 @@ func Parse(contents []byte) (*Model, error) {
 			m.nodeOutputToNode[outputName] = node
 		}
 	}
+
+	// Detect fusible patterns (SDPA, QKV Dense) for potential acceleration.
+	m.detectFusionPatterns()
+
 	return m, nil
 }
 
