@@ -102,6 +102,11 @@ func tensorToGoMLX(backend backends.Backend, proto *protos.TensorProto) (t *tens
 		return
 	}
 
+	// Handle zero-sized tensors (e.g., shape [0]): no data is expected.
+	if shape.Size() == 0 {
+		return tensors.FromShape(shape), nil
+	}
+
 	// If data is provided as RawData: check that the size of the data is the same used in GoMLX.
 	if proto.RawData != nil {
 		t = tensors.FromShape(shape)
@@ -213,6 +218,11 @@ func tensorToGoMLXWithBaseDir(backend backends.Backend, proto *protos.TensorProt
 	if err != nil {
 		err = errors.WithMessagef(err, "while parsing tensor %q", proto.Name)
 		return
+	}
+
+	// Handle zero-sized tensors (e.g., shape [0]): no data is expected.
+	if shape.Size() == 0 {
+		return tensors.FromShape(shape), nil
 	}
 
 	// Check for external data first
