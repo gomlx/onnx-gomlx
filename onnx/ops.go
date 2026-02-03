@@ -2372,6 +2372,128 @@ func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodePr
 	return output
 }
 
+// convertGroupQueryAttention converts the corresponding ONNX node to GoMLX nodes.
+//
+// GroupQueryAttention implements grouped query attention (GQA) with fewer KV heads
+// than query heads, optional KV cache, and optional sliding window masking.
+// This is a Microsoft ONNX Runtime contrib op.
+//
+// See ONNX Runtime contrib ops documentation for GroupQueryAttention.
+func convertGroupQueryAttention(_ *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// Inputs (com.microsoft contrib op):
+	// 0: query  - (batch, seq_len, num_heads * head_size)
+	// 1: key    - (batch, kv_seq_len, kv_num_heads * head_size)
+	// 2: value  - (batch, kv_seq_len, kv_num_heads * head_size)
+	// 3: past_key   - (batch, kv_num_heads, past_seq_len, head_size) or empty
+	// 4: past_value - (batch, kv_num_heads, past_seq_len, head_size) or empty
+	// 5: seqlens_k  - optional
+	// 6: total_sequence_length - optional
+	// 7: cos_cache  - optional (unused when do_rotary=0)
+	// 8: sin_cache  - optional (unused when do_rotary=0)
+	query := inputs[0]
+	key := inputs[1]
+	value := inputs[2]
+
+	var pastKey, pastValue *Node
+	if len(inputs) > 3 && inputs[3] != nil {
+		pastKey = inputs[3]
+	}
+	if len(inputs) > 4 && inputs[4] != nil {
+		pastValue = inputs[4]
+	}
+
+	numHeads := getIntAttrOr(node, "num_heads", 0)
+	kvNumHeads := getIntAttrOr(node, "kv_num_heads", 0)
+	scale := getFloatAttrOr(node, "scale", 0)
+	localWindowSize := getIntAttrOr(node, "local_window_size", -1)
+
+	if numHeads == 0 {
+		exceptions.Panicf("GroupQueryAttention: num_heads attribute is required")
+	}
+	if kvNumHeads == 0 {
+		exceptions.Panicf("GroupQueryAttention: kv_num_heads attribute is required")
+	}
+
+	queryShape := query.Shape().Dimensions
+	batchSize := queryShape[0]
+	qSeqLen := queryShape[1]
+	headSize := queryShape[2] / numHeads
+
+	// Reshape Q, K, V from 3D packed to 4D: (batch, seq, heads*dim) -> (batch, heads, seq, dim)
+	query = Reshape(query, batchSize, qSeqLen, numHeads, headSize)
+	query = TransposeAllDims(query, 0, 2, 1, 3)
+
+	keyShape := key.Shape().Dimensions
+	kvSeqLen := keyShape[1]
+	key = Reshape(key, batchSize, kvSeqLen, kvNumHeads, headSize)
+	key = TransposeAllDims(key, 0, 2, 1, 3)
+
+	value = Reshape(value, batchSize, kvSeqLen, kvNumHeads, headSize)
+	value = TransposeAllDims(value, 0, 2, 1, 3)
+
+	// Concatenate past KV cache along sequence axis to form present KV.
+	presentKey := key
+	presentValue := value
+	if pastKey != nil && pastValue != nil {
+		presentKey = Concatenate([]*Node{pastKey, key}, 2)
+		presentValue = Concatenate([]*Node{pastValue, value}, 2)
+	}
+
+	totalSeqLen := presentKey.Shape().Dimensions[2]
+
+	// Expand KV heads to match query heads for GQA via reshape+broadcast.
+	attKey := presentKey
+	attValue := presentValue
+	if kvNumHeads != numHeads {
+		repeats := numHeads / kvNumHeads
+		attKey = gqaRepeatHeads(presentKey, batchSize, kvNumHeads, repeats, totalSeqLen, headSize)
+		attValue = gqaRepeatHeads(presentValue, batchSize, kvNumHeads, repeats, totalSeqLen, headSize)
+	}
+
+	// Build causal mask: query at absolute position qPos can attend to kvPos <= qPos.
+	g := query.Graph()
+	qPositions := Iota(g, shapes.Make(dtypes.Int32, qSeqLen), 0)
+	qPositions = AddScalar(qPositions, float64(totalSeqLen-qSeqLen))
+	qPositions = Reshape(qPositions, 1, 1, qSeqLen, 1)
+	kvPositions := Iota(g, shapes.Make(dtypes.Int32, totalSeqLen), 0)
+	kvPositions = Reshape(kvPositions, 1, 1, 1, totalSeqLen)
+	mask := GreaterOrEqual(qPositions, kvPositions)
+
+	// Restrict to sliding window: attend only if qPos - kvPos < localWindowSize.
+	if localWindowSize > 0 {
+		dist := Sub(qPositions, kvPositions)
+		mask = LogicalAnd(mask, LessThan(dist, Scalar(g, dtypes.Int32, localWindowSize)))
+	}
+
+	builder := attention.ScaledDotProductAttention(query, attKey, attValue)
+	if scale > 0 {
+		builder = builder.WithScale(float64(scale))
+	}
+	output := builder.WithBooleanMask(mask).Done()
+
+	// Reshape output: (batch, num_heads, qSeqLen, head_size) -> (batch, qSeqLen, num_heads * head_size)
+	output = TransposeAllDims(output, 0, 2, 1, 3)
+	output = Reshape(output, batchSize, qSeqLen, numHeads*headSize)
+
+	// Multi-output: present_key and present_value for KV cache.
+	if len(node.Output) >= 2 && node.Output[1] != "" {
+		convertedOutputs[node.Output[1]] = presentKey
+	}
+	if len(node.Output) >= 3 && node.Output[2] != "" {
+		convertedOutputs[node.Output[2]] = presentValue
+	}
+
+	return output
+}
+
+// gqaRepeatHeads repeats KV heads to match the query head count for grouped query attention.
+// (batch, kvHeads, seq, dim) -> (batch, kvHeads*repeats, seq, dim)
+func gqaRepeatHeads(x *Node, batchSize, kvHeads, repeats, seqLen, headSize int) *Node {
+	x = Reshape(x, batchSize, kvHeads, 1, seqLen, headSize)
+	x = BroadcastToShape(x, shapes.Make(x.DType(), batchSize, kvHeads, repeats, seqLen, headSize))
+	return Reshape(x, batchSize, kvHeads*repeats, seqLen, headSize)
+}
+
 // convertSplit converts the corresponding ONNX node to GoMLX nodes.
 //
 // Split splits a tensor into multiple outputs along a specified axis.

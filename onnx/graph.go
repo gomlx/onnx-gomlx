@@ -566,6 +566,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertRotaryEmbedding(m, convertedOutputs, node, inputs)
 	case "MultiHeadAttention":
 		result = convertMultiHeadAttention(m, convertedOutputs, node, inputs)
+	case "GroupQueryAttention":
+		result = convertGroupQueryAttention(m, convertedOutputs, node, inputs)
 
 	// Multiple outputs ops:
 	case "Pad":

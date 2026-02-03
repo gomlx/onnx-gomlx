@@ -1065,6 +1065,118 @@ func TestMultiHeadAttention(t *testing.T) {
 	}, 1e-3)
 }
 
+func TestGroupQueryAttention(t *testing.T) {
+	// Basic GQA: batch=1, seq=2, num_heads=2, kv_num_heads=1, head_size=2
+	// Same Q/K/V for self-attention, no past cache.
+	graphtest.RunTestGraphFn(t, "GQA-basic", func(g *Graph) (inputs, outputs []*Node) {
+		// Q: (1, 2, 4) = batch=1, seq=2, num_heads=2 * head_size=2
+		q := Const(g, [][][]float32{{{1, 0, 0, 1}, {0, 1, 1, 0}}})
+		// K, V: (1, 2, 2) = batch=1, seq=2, kv_num_heads=1 * head_size=2
+		k := Const(g, [][][]float32{{{1, 0}, {0, 1}}})
+		v := Const(g, [][][]float32{{{1, 2}, {3, 4}}})
+
+		node := &protos.NodeProto{
+			OpType: "GroupQueryAttention",
+			Output: []string{"output", "present_key", "present_value"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "num_heads", Type: protos.AttributeProto_INT, I: 2},
+				{Name: "kv_num_heads", Type: protos.AttributeProto_INT, I: 1},
+			},
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{q, k, v}
+		result := convertGroupQueryAttention(nil, convertedOutputs, node, inputs)
+
+		outputs = []*Node{
+			result,
+			convertedOutputs["present_key"],
+			convertedOutputs["present_value"],
+		}
+		return
+	}, []any{
+		// With causal mask: token 0 attends to [0], token 1 attends to [0,1].
+		// KV head is replicated to both query heads.
+		[][][]float32{{{1.0, 2.0, 1.0, 2.0}, {2.3395, 3.3395, 1.6605, 2.6605}}},
+		// present_key: (1, 1, 2, 2) - same as input K reshaped
+		[][][][]float32{{{{1, 0}, {0, 1}}}},
+		// present_value: (1, 1, 2, 2)
+		[][][][]float32{{{{1, 2}, {3, 4}}}},
+	}, 1e-3)
+
+	// GQA with sliding window: only attend within window of 1.
+	graphtest.RunTestGraphFn(t, "GQA-sliding-window", func(g *Graph) (inputs, outputs []*Node) {
+		// batch=1, seq=3, num_heads=1, kv_num_heads=1, head_size=2
+		q := Const(g, [][][]float32{{{1, 0}, {0, 1}, {1, 1}}})
+		k := Const(g, [][][]float32{{{1, 0}, {0, 1}, {1, 1}}})
+		v := Const(g, [][][]float32{{{1, 0}, {0, 1}, {0.5, 0.5}}})
+
+		node := &protos.NodeProto{
+			OpType: "GroupQueryAttention",
+			Output: []string{"output", "present_key", "present_value"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "num_heads", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "kv_num_heads", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "local_window_size", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "scale", Type: protos.AttributeProto_FLOAT, F: 1.0},
+			},
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{q, k, v}
+		result := convertGroupQueryAttention(nil, convertedOutputs, node, inputs)
+
+		outputs = []*Node{result}
+		return
+	}, []any{
+		// With window=1, each token only attends to itself (causal + window).
+		// Token 0: attends to [0] only -> v[0] = [1, 0]
+		// Token 1: attends to [1] only -> v[1] = [0, 1]
+		// Token 2: attends to [2] only -> v[2] = [0.5, 0.5]
+		[][][]float32{{{1, 0}, {0, 1}, {0.5, 0.5}}},
+	}, 1e-3)
+
+	// GQA with KV cache: past_key/past_value prepended.
+	graphtest.RunTestGraphFn(t, "GQA-kv-cache", func(g *Graph) (inputs, outputs []*Node) {
+		// batch=1, current seq=1, num_heads=1, kv_num_heads=1, head_size=2
+		q := Const(g, [][][]float32{{{0, 1}}})             // new query token
+		k := Const(g, [][][]float32{{{1, 1}}})             // new key token
+		v := Const(g, [][][]float32{{{0.5, 0.5}}})         // new value token
+		pastK := Const(g, [][][][]float32{{{{1, 0}}}})     // 1 cached key
+		pastV := Const(g, [][][][]float32{{{{1, 0}}}})     // 1 cached value
+
+		node := &protos.NodeProto{
+			OpType: "GroupQueryAttention",
+			Output: []string{"output", "present_key", "present_value"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "num_heads", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "kv_num_heads", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "scale", Type: protos.AttributeProto_FLOAT, F: 1.0},
+			},
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{q, k, v, pastK, pastV}
+		result := convertGroupQueryAttention(nil, convertedOutputs, node, inputs)
+
+		outputs = []*Node{
+			result,
+			convertedOutputs["present_key"],
+			convertedOutputs["present_value"],
+		}
+		return
+	}, []any{
+		// Query [0,1] attends to keys [[1,0],[1,1]] (past + current).
+		// scores = [0*1+1*0, 0*1+1*1] = [0, 1], softmax = [0.2689, 0.7311]
+		// output = 0.2689*[1,0] + 0.7311*[0.5,0.5] = [0.6345, 0.3655]
+		[][][]float32{{{0.6345, 0.3655}}},
+		// present_key: past [1,0] + current [1,1]
+		[][][][]float32{{{{1, 0}, {1, 1}}}},
+		// present_value: past [1,0] + current [0.5,0.5]
+		[][][][]float32{{{{1, 0}, {0.5, 0.5}}}},
+	}, 1e-3)
+}
+
 func TestSplit(t *testing.T) {
 	// Test equal splits
 	graphtest.RunTestGraphFn(t, "Split-equal", func(g *Graph) (inputs, outputs []*Node) {
