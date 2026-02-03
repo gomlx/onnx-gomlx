@@ -1940,3 +1940,71 @@ func TestOnnxWhereMixedDTypes(t *testing.T) {
 		[]float32{1.0, 20.0, 3.0},
 	}, -1)
 }
+
+func TestConvertResize(t *testing.T) {
+	// Helper to build a Resize node and call convertResize.
+	// sizes and scales are placed in convertedOutputs as Const nodes so that
+	// materializeConstantExpression can resolve them.
+	runResize := func(t *testing.T, name string, buildFn func(g *Graph) (x *Node, node *protos.NodeProto, convertedOutputs map[string]*Node), want any) {
+		t.Helper()
+		graphtest.RunTestGraphFn(t, name, func(g *Graph) (inputs, outputs []*Node) {
+			x, node, convertedOutputs := buildFn(g)
+			model := &Model{
+				variableNameToValue: make(map[string]*protos.TensorProto),
+				nodeOutputToNode:    make(map[string]*protos.NodeProto),
+			}
+			inputs = []*Node{x}
+			outputs = []*Node{convertResize(model, convertedOutputs, node, []*Node{x})}
+			return
+		}, []any{want}, -1)
+	}
+
+	// Nearest upsample 2x with sizes input, shape [1,1,2,2] -> [1,1,4,4].
+	runResize(t, "Resize-nearest-sizes", func(g *Graph) (*Node, *protos.NodeProto, map[string]*Node) {
+		x := Const(g, [][][][]float32{{{{1, 2}, {3, 4}}}})
+		convertedOutputs := map[string]*Node{
+			"sizes": Const(g, []int64{1, 1, 4, 4}),
+		}
+		node := &protos.NodeProto{
+			OpType: "Resize",
+			Input:  []string{"X", "", "", "sizes"},
+			Output: []string{"Y"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "mode", Type: protos.AttributeProto_STRING, S: []byte("nearest")},
+				{Name: "coordinate_transformation_mode", Type: protos.AttributeProto_STRING, S: []byte("asymmetric")},
+			},
+		}
+		return x, node, convertedOutputs
+	}, [][][][]float32{{{{1, 1, 2, 2}, {1, 1, 2, 2}, {3, 3, 4, 4}, {3, 3, 4, 4}}}})
+
+	// Linear (bilinear) downsample with scales input, shape [1,1,4,4] -> [1,1,2,2].
+	runResize(t, "Resize-linear-scales", func(g *Graph) (*Node, *protos.NodeProto, map[string]*Node) {
+		x := Const(g, [][][][]float32{{{{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}, {13, 14, 15, 16}}}})
+		convertedOutputs := map[string]*Node{
+			"scales": Const(g, []float32{1.0, 1.0, 0.5, 0.5}),
+		}
+		node := &protos.NodeProto{
+			OpType: "Resize",
+			Input:  []string{"X", "", "scales"},
+			Output: []string{"Y"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "mode", Type: protos.AttributeProto_STRING, S: []byte("linear")},
+			},
+		}
+		return x, node, convertedOutputs
+	}, [][][][]float32{{{{3.5, 5.5}, {11.5, 13.5}}}})
+
+	// No-op resize: sizes match input dimensions.
+	runResize(t, "Resize-noop", func(g *Graph) (*Node, *protos.NodeProto, map[string]*Node) {
+		x := Const(g, [][][][]float32{{{{1, 2}, {3, 4}}}})
+		convertedOutputs := map[string]*Node{
+			"sizes": Const(g, []int64{1, 1, 2, 2}),
+		}
+		node := &protos.NodeProto{
+			OpType: "Resize",
+			Input:  []string{"X", "", "", "sizes"},
+			Output: []string{"Y"},
+		}
+		return x, node, convertedOutputs
+	}, [][][][]float32{{{{1, 2}, {3, 4}}}})
+}
