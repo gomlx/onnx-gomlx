@@ -2196,10 +2196,15 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 		seqLen = inputShape[1]
 		hiddenSize = inputShape[2]
 		if numHeads == 0 {
-			// When num_heads=0 with 3D input, treat as single head where
-			// the last dimension is already the head_size (common in models
-			// that reshape per-head before applying RoPE)
-			numHeads = 1
+			// Derive num_heads from cos_cache shape, matching ONNX Runtime behavior.
+			// cos_cache has shape (max_pos, rotary_dim/2), so head_size = rotary_dim/2 * 2.
+			// Then num_heads = hidden_size / head_size.
+			cosLastDim := cosCache.Shape().Dimensions[cosCache.Rank()-1]
+			headSize := cosLastDim * 2
+			numHeads = hiddenSize / headSize
+			if numHeads == 0 {
+				numHeads = 1
+			}
 		}
 		headSize := hiddenSize / numHeads
 		// Reshape from (batch, seq, hidden) to (batch, seq, num_heads, head_size)
@@ -2395,10 +2400,10 @@ func convertGroupQueryAttention(_ *Model, convertedOutputs map[string]*Node, nod
 	value := inputs[2]
 
 	var pastKey, pastValue *Node
-	if len(inputs) > 3 && inputs[3] != nil {
+	if len(inputs) > 3 && inputs[3] != nil && inputs[3].Shape().Dimensions[2] > 0 {
 		pastKey = inputs[3]
 	}
-	if len(inputs) > 4 && inputs[4] != nil {
+	if len(inputs) > 4 && inputs[4] != nil && inputs[4].Shape().Dimensions[2] > 0 {
 		pastValue = inputs[4]
 	}
 
@@ -2432,6 +2437,7 @@ func convertGroupQueryAttention(_ *Model, convertedOutputs map[string]*Node, nod
 	value = TransposeAllDims(value, 0, 2, 1, 3)
 
 	// Concatenate past KV cache along sequence axis to form present KV.
+	// Skip concatenation if past has zero sequence length (no cached tokens).
 	presentKey := key
 	presentValue := value
 	if pastKey != nil && pastValue != nil {

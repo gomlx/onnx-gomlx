@@ -983,6 +983,51 @@ func TestRotaryEmbedding(t *testing.T) {
 		// interleaved output = [real[0],imag[0],real[1],imag[1]] = [-0.5,1.5,-0.5,3.5]
 		[][][][]float32{{{{-0.5, 1.5, -0.5, 3.5}}}},
 	}, 1e-5)
+
+	// Test RotaryEmbedding with 3D input and num_heads derived from cos_cache shape.
+	// This exercises the code path where num_heads=0 (default) and is inferred as
+	// hidden_size / (cos_cache_last_dim * 2).
+	graphtest.RunTestGraphFn(t, "RotaryEmbedding-3D-derive-num-heads", func(g *Graph) (inputs, outputs []*Node) {
+		// Input: 3D (batch=1, seq=2, hidden_size=8)
+		// cos_cache last dim = 2, so head_size = 2*2 = 4, num_heads = 8/4 = 2
+		x := Const(g, [][][]float32{{{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0}}})
+
+		// cos_cache and sin_cache: (max_pos=2, rotary_dim/2=2)
+		// Position 0: cos=[1, 1], sin=[0, 0] (no rotation)
+		// Position 1: cos=[0, 1], sin=[1, 0]
+		cosCache := Const(g, [][]float32{{1.0, 1.0}, {0.0, 1.0}})
+		sinCache := Const(g, [][]float32{{0.0, 0.0}, {1.0, 0.0}})
+
+		positionIds := Const(g, [][]int64{{0, 1}})
+
+		node := &protos.NodeProto{
+			OpType: "RotaryEmbedding",
+			// num_heads is intentionally not set (defaults to 0)
+		}
+		inputs = []*Node{x, positionIds, cosCache, sinCache}
+		outputs = []*Node{
+			convertRotaryEmbedding(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// num_heads derived as 8 / (2*2) = 2, head_size = 4
+		// Reshaped to (1, 2, 2, 4) then transposed to (1, 2, 2, 4) [batch, heads, seq, head_size]
+		//
+		// Head 0, Position 0: x=[1,0,0,0], cos=[1,1], sin=[0,0]
+		//   x1=[1,0], x2=[0,0], real=[1,0], imag=[0,0] -> [1,0,0,0]
+		// Head 0, Position 1: x=[0,0,0,0], cos=[0,1], sin=[1,0]
+		//   x1=[0,0], x2=[0,0], real=[0,0], imag=[0,0] -> [0,0,0,0]
+		// Head 1, Position 0: x=[0,0,0,0], cos=[1,1], sin=[0,0]
+		//   x1=[0,0], x2=[0,0], real=[0,0], imag=[0,0] -> [0,0,0,0]
+		// Head 1, Position 1: x=[1,0,0,0], cos=[0,1], sin=[1,0]
+		//   x1=[1,0], x2=[0,0], real=[0,0], imag=[1,0] -> [0,0,1,0]
+		//
+		// Transposed back to (1, 2, 2, 4) [batch, seq, heads, head_size]
+		// Then reshaped to (1, 2, 8):
+		//   Seq 0: head0=[1,0,0,0] head1=[0,0,0,0] -> [1,0,0,0,0,0,0,0]
+		//   Seq 1: head0=[0,0,0,0] head1=[0,0,1,0] -> [0,0,0,0,0,0,1,0]
+		[][][]float32{{{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0}}},
+	}, 1e-5)
 }
 
 func TestMultiHeadAttention(t *testing.T) {
