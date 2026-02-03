@@ -552,6 +552,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertMaxPool(m, convertedOutputs, node, inputs)
 	case "GlobalAveragePool":
 		result = convertGlobalAveragePool(m, convertedOutputs, node, inputs)
+	case "Resize":
+		result = convertResize(m, convertedOutputs, node, inputs)
 	case "BatchNormalization":
 		result = convertBatchNormalization(m, convertedOutputs, node, inputs)
 	case "LayerNormalization":

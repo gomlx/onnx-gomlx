@@ -633,6 +633,19 @@ func tensorToInts(t *tensors.Tensor) []int {
 	return res
 }
 
+func tensorToFloat64s(t *tensors.Tensor) []float64 {
+	res := make([]float64, t.Size())
+	float64Type := reflect.TypeOf(float64(0))
+	t.ConstFlatData(func(flat any) {
+		valueOf := reflect.ValueOf(flat)
+		for ii := range valueOf.Len() {
+			elemV := valueOf.Index(ii)
+			res[ii] = elemV.Convert(float64Type).Interface().(float64)
+		}
+	})
+	return res
+}
+
 // convertPow, with special casing if the exponential is a known constant.
 func (m *Model) convertPow(convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	// defaultPow returns the generic Pow function:
@@ -1725,6 +1738,12 @@ func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodePr
 	pads := tensorToInts(padsT)
 
 	x := inputs[0]
+
+	// Empty pads tensor (e.g., from a zero-sized constant) means no padding.
+	if len(pads) == 0 {
+		return x
+	}
+
 	var constantValueNode *Node
 	if len(inputs) > 2 {
 		constantValueNode = inputs[2]
@@ -2639,4 +2658,118 @@ func convertArgMin(node *protos.NodeProto, inputs []*Node) *Node {
 	}
 
 	return indices
+}
+
+// convertResize converts an ONNX Resize node to GoMLX.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Resize.html
+//
+// Inputs: X, roi (unused), scales (optional), sizes (optional).
+// Either scales or sizes must be provided. If both are present, sizes takes priority.
+func convertResize(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	x := inputs[0]
+	inputDims := x.Shape().Dimensions
+
+	mode := getStringAttrOr(node, "mode", "nearest")
+	coordTransformMode := getStringAttrOr(node, "coordinate_transformation_mode", "half_pixel")
+
+	// Resolve target output sizes from either the "sizes" or "scales" input.
+	outputSizes := resizeOutputSizes(m, convertedOutputs, node, inputDims)
+
+	// Use NoInterpolation for dimensions that don't change.
+	for i := range outputSizes {
+		if outputSizes[i] == inputDims[i] {
+			outputSizes[i] = NoInterpolation
+		}
+	}
+
+	// Check if any dimension actually needs resizing.
+	needsWork := false
+	for _, s := range outputSizes {
+		if s != NoInterpolation {
+			needsWork = true
+			break
+		}
+	}
+	if !needsWork {
+		return x
+	}
+
+	config := Interpolate(x, outputSizes...)
+
+	switch mode {
+	case "nearest":
+		config.Nearest()
+	case "linear":
+		config.Bilinear()
+	case "cubic":
+		// GoMLX doesn't support cubic; bilinear is the closest available.
+		config.Bilinear()
+	default:
+		exceptions.Panicf("Resize: unsupported mode %q in %s", mode, nodeToString(node))
+	}
+
+	switch coordTransformMode {
+	case "half_pixel", "half_pixel_symmetric", "pytorch_half_pixel":
+		// Default is already halfPixelCenters=true, alignCorner=false.
+	case "align_corners":
+		config.HalfPixelCenters(false).AlignCorner(true)
+	case "asymmetric":
+		config.HalfPixelCenters(false)
+	case "tf_crop_and_resize":
+		exceptions.Panicf("Resize: coordinate_transformation_mode %q is not supported in %s",
+			coordTransformMode, nodeToString(node))
+	default:
+		config.HalfPixelCenters(false)
+	}
+
+	return config.Done()
+}
+
+// resizeOutputSizes resolves the target dimensions for a Resize op from either
+// the "sizes" input (index 3) or the "scales" input (index 2).
+func resizeOutputSizes(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputDims []int) []int {
+	rank := len(inputDims)
+
+	// Try sizes first (takes priority over scales per ONNX spec).
+	if len(node.Input) > 3 && node.Input[3] != "" {
+		sizesT, err := m.materializeConstantExpression(node.Input[3], convertedOutputs)
+		if err != nil {
+			panic(errors.WithMessagef(err, "while converting 'sizes' for node %s", nodeToString(node)))
+		}
+		if sizesT.Size() > 0 {
+			sizes := tensorToInts(sizesT)
+			if len(sizes) != rank {
+				exceptions.Panicf("Resize: sizes length (%d) != input rank (%d) in %s",
+					len(sizes), rank, nodeToString(node))
+			}
+			return sizes
+		}
+	}
+
+	// Fall back to scales.
+	if len(node.Input) > 2 && node.Input[2] != "" {
+		scalesT, err := m.materializeConstantExpression(node.Input[2], convertedOutputs)
+		if err != nil {
+			panic(errors.WithMessagef(err, "while converting 'scales' for node %s", nodeToString(node)))
+		}
+		if scalesT.Size() > 0 {
+			scales := tensorToFloat64s(scalesT)
+			if len(scales) != rank {
+				exceptions.Panicf("Resize: scales length (%d) != input rank (%d) in %s",
+					len(scales), rank, nodeToString(node))
+			}
+			out := make([]int, rank)
+			for i, s := range scales {
+				out[i] = max(int(float64(inputDims[i])*s), 1)
+			}
+			return out
+		}
+	}
+
+	// Neither provided — return input dimensions unchanged.
+	out := make([]int, rank)
+	copy(out, inputDims)
+	return out
 }
