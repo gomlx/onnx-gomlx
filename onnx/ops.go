@@ -1679,6 +1679,12 @@ func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodePr
 	pads := tensorToInts(padsT)
 
 	x := inputs[0]
+
+	// Empty pads tensor (e.g., from a zero-sized constant) means no padding.
+	if len(pads) == 0 {
+		return x
+	}
+
 	var constantValueNode *Node
 	if len(inputs) > 2 {
 		constantValueNode = inputs[2]
