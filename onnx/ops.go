@@ -2245,10 +2245,10 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 		sin = Reshape(sin, cosDims[0], 1, cosDims[1], cosDims[2])
 	}
 
-	// Apply rotation using pre-computed cos/sin via ApplyWithCosSin.
-	// ApplyWithCosSin handles splitting, rotation, recombination, and partial rotation
+	// Apply rotation using pre-computed cos/sin via RoPEWithCosSin.
+	// It handles splitting, rotation, recombination, and partial rotation
 	// (pass-through for dimensions beyond rotary_dim) automatically based on cos/sin dimensions.
-	result := pos.ApplyWithCosSin(x, cos, sin, interleaved)
+	result := pos.NewRoPEWithCosSin(cos, sin).WithInterleaved(interleaved).Apply(x, nil)
 
 	// If input was 3D, reshape back
 	if was3D {
