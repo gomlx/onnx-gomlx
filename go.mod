@@ -7,7 +7,7 @@ require (
 	github.com/daulet/tokenizers v1.23.0
 	github.com/gomlx/exceptions v0.0.3
 	github.com/gomlx/go-huggingface v0.3.1
-	github.com/gomlx/gomlx v0.26.1-0.20260201092540-7e0f97c4625b
+	github.com/gomlx/gomlx v0.26.1-0.20260207231546-0993195a7798
 	github.com/janpfeifer/go-benchmarks v0.1.1
 	github.com/janpfeifer/must v0.2.0
 	github.com/parquet-go/parquet-go v0.24.0
@@ -36,6 +36,6 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/exp v0.0.0-20260112195511-716be5621a96 // indirect
 	golang.org/x/sys v0.40.0 // indirect
-	golang.org/x/term v0.38.0 // indirect
+	golang.org/x/term v0.39.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
