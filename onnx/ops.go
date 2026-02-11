@@ -2363,7 +2363,7 @@ func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodePr
 	if scale <= 0 {
 		scaleValue = 1.0 / math.Sqrt(float64(headDim))
 	}
-	output, _ := attention.Core(nil, query, key, value, scaleValue, attentionMask, 0, attention.LayoutBHSD, false)
+	output, _ := attention.Core(nil, query, key, value, scaleValue, attentionMask, 0, attention.LayoutBHSD, false, false)
 
 	// Reshape back to 3D if input was 3D
 	if was3D {
@@ -2476,7 +2476,7 @@ func convertGroupQueryAttention(_ *Model, convertedOutputs map[string]*Node, nod
 		scaleValue = 1.0 / math.Sqrt(float64(headSize))
 	}
 	// Pass the boolean mask directly — Core auto-detects boolean masks and uses MaskedSoftmax.
-	output, _ := attention.Core(nil, query, attKey, attValue, scaleValue, mask, 0, attention.LayoutBHSD, false)
+	output, _ := attention.Core(nil, query, attKey, attValue, scaleValue, mask, 0, attention.LayoutBHSD, false, false)
 
 	// Reshape output: (batch, num_heads, qSeqLen, head_size) -> (batch, qSeqLen, num_heads * head_size)
 	output = TransposeAllDims(output, 0, 2, 1, 3)
