@@ -77,6 +77,43 @@ func TestONNXGather(t *testing.T) {
 			{{4.5, 5.9}},
 		},
 	}, -1)
+
+	// Test negative indices: -1 means last element, -2 means second-to-last, etc.
+	graphtest.RunTestGraphFn(t, "onnxGather(axis=0, negative indices)", func(g *Graph) (inputs, outputs []*Node) {
+		data := Const(g, [][]float32{{1.0, 1.2}, {2.3, 3.4}, {4.5, 5.7}})
+		// -1 -> 2 (last), -2 -> 1, -3 -> 0
+		indices := Const(g, []int32{-1, -2, -3})
+		inputs = []*Node{data, indices}
+		outputs = []*Node{onnxGather(data, indices, 0)}
+		return
+	}, []any{
+		// indices shape [3] -> output shape [3, 2]
+		[][]float32{
+			{4.5, 5.7}, // index -1 -> row 2
+			{2.3, 3.4}, // index -2 -> row 1
+			{1.0, 1.2}, // index -3 -> row 0
+		},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "onnxGather(axis=1, negative indices)", func(g *Graph) (inputs, outputs []*Node) {
+		data := Const(g, [][]float32{
+			{1.0, 1.2, 1.9},
+			{2.3, 3.4, 3.9},
+			{4.5, 5.7, 5.9},
+		})
+		// -1 -> 2 (last column)
+		indices := Const(g, []int32{-1})
+		inputs = []*Node{data, indices}
+		outputs = []*Node{onnxGather(data, indices, 1)}
+		return
+	}, []any{
+		// data shape [3, 3], indices shape [1] -> output shape [3, 1]
+		[][]float32{
+			{1.9}, // row 0, col -1 (last)
+			{3.9}, // row 1, col -1 (last)
+			{5.9}, // row 2, col -1 (last)
+		},
+	}, -1)
 }
 
 func TestONNXGatherND(t *testing.T) {
@@ -681,6 +718,507 @@ func TestLayerNormalization(t *testing.T) {
 			{{-1.2247, 0.0, 1.2247}, {-1.2247, 0.0, 1.2247}},
 			{{-1.2247, 0.0, 1.2247}, {-1.2247, 0.0, 1.2247}},
 		},
+	}, 1e-3)
+}
+
+func TestSimplifiedLayerNormalization(t *testing.T) {
+	// Test basic SimplifiedLayerNormalization (RMSNorm) with default axis (-1)
+	graphtest.RunTestGraphFn(t, "SimplifiedLayerNormalization-basic", func(g *Graph) (inputs, outputs []*Node) {
+		// Input tensor [2, 3]: normalize over last axis (axis=-1, which is axis 1)
+		x := Const(g, [][]float32{{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}})
+		scale := Const(g, []float32{1.0, 1.0, 1.0})
+
+		// Create a mock node to pass attributes
+		node := &protos.NodeProto{
+			OpType: "SimplifiedLayerNormalization",
+		}
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			convertSimplifiedLayerNormalization(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Expected: X / sqrt(mean(X^2) + epsilon) * scale
+		// For [1,2,3]: mean(x^2)=14/3≈4.667, rms=sqrt(4.667)≈2.16, normalized ≈ [0.463, 0.926, 1.389]
+		// For [4,5,6]: mean(x^2)=77/3≈25.67, rms=sqrt(25.67)≈5.066, normalized ≈ [0.789, 0.987, 1.184]
+		[][]float32{{0.4629, 0.9258, 1.3887}, {0.7895, 0.9869, 1.1843}},
+	}, 1e-3)
+
+	// Test with scale
+	graphtest.RunTestGraphFn(t, "SimplifiedLayerNormalization-scale", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}})
+		scale := Const(g, []float32{2.0, 2.0, 2.0})
+
+		node := &protos.NodeProto{
+			OpType: "SimplifiedLayerNormalization",
+		}
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			convertSimplifiedLayerNormalization(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Expected: (X / RMS) * 2
+		[][]float32{{0.9258, 1.8516, 2.7775}, {1.5790, 1.9737, 2.3685}},
+	}, 1e-3)
+
+	// Test 3D tensor (common in transformers: batch, sequence, features)
+	graphtest.RunTestGraphFn(t, "SimplifiedLayerNormalization-3D", func(g *Graph) (inputs, outputs []*Node) {
+		// Shape [2, 2, 3]: batch=2, seq_len=2, features=3
+		x := Const(g, [][][]float32{
+			{{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}},
+			{{7.0, 8.0, 9.0}, {10.0, 11.0, 12.0}},
+		})
+		scale := Const(g, []float32{1.0, 1.0, 1.0})
+
+		node := &protos.NodeProto{
+			OpType: "SimplifiedLayerNormalization",
+			Attribute: []*protos.AttributeProto{
+				{Name: "axis", Type: protos.AttributeProto_INT, I: -1}, // Last axis
+			},
+		}
+		inputs = []*Node{x, scale}
+		outputs = []*Node{
+			convertSimplifiedLayerNormalization(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Each feature vector should be RMS-normalized independently
+		[][][]float32{
+			{{0.4629, 0.9258, 1.3887}, {0.7895, 0.9869, 1.1843}},
+			{{0.8704, 0.9947, 1.1191}, {0.9071, 0.9978, 1.0885}},
+		},
+	}, 1e-3)
+}
+
+func TestReduceL2(t *testing.T) {
+	// Test basic ReduceL2 over all elements
+	graphtest.RunTestGraphFn(t, "ReduceL2-all", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{3.0, 4.0}})
+
+		node := &protos.NodeProto{
+			OpType: "ReduceL2",
+			Attribute: []*protos.AttributeProto{
+				{Name: "keepdims", Type: protos.AttributeProto_INT, I: 0},
+			},
+		}
+		inputs = []*Node{x}
+		outputs = []*Node{
+			convertReduceL2(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// sqrt(3^2 + 4^2) = sqrt(9 + 16) = sqrt(25) = 5
+		float32(5.0),
+	}, 1e-5)
+
+	// Test ReduceL2 over last axis with keepdims
+	graphtest.RunTestGraphFn(t, "ReduceL2-axis-keepdims", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{3.0, 4.0}, {5.0, 12.0}})
+
+		node := &protos.NodeProto{
+			OpType: "ReduceL2",
+			Attribute: []*protos.AttributeProto{
+				{Name: "axes", Type: protos.AttributeProto_INTS, Ints: []int64{1}},
+				{Name: "keepdims", Type: protos.AttributeProto_INT, I: 1},
+			},
+		}
+		inputs = []*Node{x}
+		outputs = []*Node{
+			convertReduceL2(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// sqrt(3^2 + 4^2) = 5, sqrt(5^2 + 12^2) = 13
+		[][]float32{{5.0}, {13.0}},
+	}, 1e-5)
+
+	// Test ReduceL2 without keepdims
+	graphtest.RunTestGraphFn(t, "ReduceL2-axis-no-keepdims", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{3.0, 4.0}, {5.0, 12.0}})
+
+		node := &protos.NodeProto{
+			OpType: "ReduceL2",
+			Attribute: []*protos.AttributeProto{
+				{Name: "axes", Type: protos.AttributeProto_INTS, Ints: []int64{1}},
+				{Name: "keepdims", Type: protos.AttributeProto_INT, I: 0},
+			},
+		}
+		inputs = []*Node{x}
+		outputs = []*Node{
+			convertReduceL2(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// sqrt(3^2 + 4^2) = 5, sqrt(5^2 + 12^2) = 13
+		[]float32{5.0, 13.0},
+	}, 1e-5)
+
+	// Test ReduceL2 noop_with_empty_axes
+	graphtest.RunTestGraphFn(t, "ReduceL2-noop", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{3.0, 4.0}, {5.0, 12.0}})
+
+		node := &protos.NodeProto{
+			OpType: "ReduceL2",
+			Attribute: []*protos.AttributeProto{
+				{Name: "noop_with_empty_axes", Type: protos.AttributeProto_INT, I: 1},
+			},
+		}
+		inputs = []*Node{x}
+		outputs = []*Node{
+			convertReduceL2(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// With noop_with_empty_axes=1 and no axes specified, return input unchanged
+		[][]float32{{3.0, 4.0}, {5.0, 12.0}},
+	}, 1e-5)
+}
+
+func TestRotaryEmbedding(t *testing.T) {
+	// Test basic RotaryEmbedding with 4D input (batch, heads, seq, head_size)
+	// Input order: [input, position_ids, cos_cache, sin_cache]
+	graphtest.RunTestGraphFn(t, "RotaryEmbedding-4D-basic", func(g *Graph) (inputs, outputs []*Node) {
+		// Input: (batch=1, heads=1, seq=2, head_size=4)
+		// For simplicity, use values where rotation is easy to verify
+		x := Const(g, [][][][]float32{{{{1.0, 0.0, 0.0, 0.0}, {0.0, 1.0, 0.0, 0.0}}}})
+
+		// cos_cache and sin_cache: (max_pos=2, head_size/2=2)
+		// Position 0: cos=[1, 1], sin=[0, 0] (no rotation)
+		// Position 1: cos=[0, 1], sin=[1, 0] (90 degree rotation on first pair)
+		cosCache := Const(g, [][]float32{{1.0, 1.0}, {0.0, 1.0}})
+		sinCache := Const(g, [][]float32{{0.0, 0.0}, {1.0, 0.0}})
+
+		// Sequential position_ids: [0, 1]
+		positionIds := Const(g, [][]int64{{0, 1}})
+
+		node := &protos.NodeProto{
+			OpType: "RotaryEmbedding",
+		}
+		// Inputs: [input, position_ids, cos_cache, sin_cache]
+		inputs = []*Node{x, positionIds, cosCache, sinCache}
+		outputs = []*Node{
+			convertRotaryEmbedding(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Position 0: x=[1,0,0,0], cos=[1,1], sin=[0,0]
+		//   x1=[1,0], x2=[0,0]
+		//   real = cos*x1 - sin*x2 = [1,1]*[1,0] - [0,0]*[0,0] = [1,0]
+		//   imag = sin*x1 + cos*x2 = [0,0]*[1,0] + [1,1]*[0,0] = [0,0]
+		//   output = [1,0,0,0]
+		// Position 1: x=[0,1,0,0], cos=[0,1], sin=[1,0]
+		//   x1=[0,1], x2=[0,0]
+		//   real = cos*x1 - sin*x2 = [0,1]*[0,1] - [1,0]*[0,0] = [0,1]
+		//   imag = sin*x1 + cos*x2 = [1,0]*[0,1] + [0,1]*[0,0] = [0,0]
+		//   output = [0,1,0,0]
+		[][][][]float32{{{{1.0, 0.0, 0.0, 0.0}, {0.0, 1.0, 0.0, 0.0}}}},
+	}, 1e-5)
+
+	// Test RotaryEmbedding with position_ids
+	graphtest.RunTestGraphFn(t, "RotaryEmbedding-with-position-ids", func(g *Graph) (inputs, outputs []*Node) {
+		// Input: (batch=1, heads=1, seq=2, head_size=4)
+		x := Const(g, [][][][]float32{{{{1.0, 2.0, 3.0, 4.0}, {5.0, 6.0, 7.0, 8.0}}}})
+
+		// cos_cache and sin_cache: (max_pos=3, head_size/2=2)
+		cosCache := Const(g, [][]float32{{1.0, 1.0}, {0.5, 0.5}, {0.0, 0.0}})
+		sinCache := Const(g, [][]float32{{0.0, 0.0}, {0.5, 0.5}, {1.0, 1.0}})
+
+		// position_ids: use positions [0, 2] instead of [0, 1]
+		positionIds := Const(g, [][]int64{{0, 2}})
+
+		node := &protos.NodeProto{
+			OpType: "RotaryEmbedding",
+		}
+		// Inputs: [input, position_ids, cos_cache, sin_cache]
+		inputs = []*Node{x, positionIds, cosCache, sinCache}
+		outputs = []*Node{
+			convertRotaryEmbedding(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Position 0: cos=[1,1], sin=[0,0]
+		//   x1=[1,2], x2=[3,4]
+		//   real = [1,2]*[1,1] - [3,4]*[0,0] = [1,2]
+		//   imag = [1,2]*[0,0] + [3,4]*[1,1] = [3,4]
+		//   output = [1,2,3,4]
+		// Position 2: cos=[0,0], sin=[1,1]
+		//   x1=[5,6], x2=[7,8]
+		//   real = [5,6]*[0,0] - [7,8]*[1,1] = [-7,-8]
+		//   imag = [5,6]*[1,1] + [7,8]*[0,0] = [5,6]
+		//   output = [-7,-8,5,6]
+		[][][][]float32{{{{1.0, 2.0, 3.0, 4.0}, {-7.0, -8.0, 5.0, 6.0}}}},
+	}, 1e-5)
+
+	// Test RotaryEmbedding with interleaved mode
+	graphtest.RunTestGraphFn(t, "RotaryEmbedding-interleaved", func(g *Graph) (inputs, outputs []*Node) {
+		// Input: (batch=1, heads=1, seq=1, head_size=4)
+		// With interleaved, x1=[x[0], x[2]] and x2=[x[1], x[3]]
+		x := Const(g, [][][][]float32{{{{1.0, 2.0, 3.0, 4.0}}}})
+
+		// cos_cache and sin_cache: (max_pos=1, head_size/2=2)
+		cosCache := Const(g, [][]float32{{0.5, 0.5}})
+		sinCache := Const(g, [][]float32{{0.5, 0.5}})
+
+		// Sequential position_ids: [0]
+		positionIds := Const(g, [][]int64{{0}})
+
+		node := &protos.NodeProto{
+			OpType: "RotaryEmbedding",
+			Attribute: []*protos.AttributeProto{
+				{Name: "interleaved", Type: protos.AttributeProto_INT, I: 1},
+			},
+		}
+		// Inputs: [input, position_ids, cos_cache, sin_cache]
+		inputs = []*Node{x, positionIds, cosCache, sinCache}
+		outputs = []*Node{
+			convertRotaryEmbedding(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// x1=[1,3] (even indices), x2=[2,4] (odd indices)
+		// cos=[0.5,0.5], sin=[0.5,0.5]
+		// real = [1,3]*[0.5,0.5] - [2,4]*[0.5,0.5] = [0.5,1.5] - [1,2] = [-0.5,-0.5]
+		// imag = [1,3]*[0.5,0.5] + [2,4]*[0.5,0.5] = [0.5,1.5] + [1,2] = [1.5,3.5]
+		// interleaved output = [real[0],imag[0],real[1],imag[1]] = [-0.5,1.5,-0.5,3.5]
+		[][][][]float32{{{{-0.5, 1.5, -0.5, 3.5}}}},
+	}, 1e-5)
+
+	// Test RotaryEmbedding with 3D input and num_heads derived from cos_cache shape.
+	// This exercises the code path where num_heads=0 (default) and is inferred as
+	// hidden_size / (cos_cache_last_dim * 2).
+	graphtest.RunTestGraphFn(t, "RotaryEmbedding-3D-derive-num-heads", func(g *Graph) (inputs, outputs []*Node) {
+		// Input: 3D (batch=1, seq=2, hidden_size=8)
+		// cos_cache last dim = 2, so head_size = 2*2 = 4, num_heads = 8/4 = 2
+		x := Const(g, [][][]float32{{{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0}}})
+
+		// cos_cache and sin_cache: (max_pos=2, rotary_dim/2=2)
+		// Position 0: cos=[1, 1], sin=[0, 0] (no rotation)
+		// Position 1: cos=[0, 1], sin=[1, 0]
+		cosCache := Const(g, [][]float32{{1.0, 1.0}, {0.0, 1.0}})
+		sinCache := Const(g, [][]float32{{0.0, 0.0}, {1.0, 0.0}})
+
+		positionIds := Const(g, [][]int64{{0, 1}})
+
+		node := &protos.NodeProto{
+			OpType: "RotaryEmbedding",
+			// num_heads is intentionally not set (defaults to 0)
+		}
+		inputs = []*Node{x, positionIds, cosCache, sinCache}
+		outputs = []*Node{
+			convertRotaryEmbedding(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// num_heads derived as 8 / (2*2) = 2, head_size = 4
+		// Reshaped to (1, 2, 2, 4) then transposed to (1, 2, 2, 4) [batch, heads, seq, head_size]
+		//
+		// Head 0, Position 0: x=[1,0,0,0], cos=[1,1], sin=[0,0]
+		//   x1=[1,0], x2=[0,0], real=[1,0], imag=[0,0] -> [1,0,0,0]
+		// Head 0, Position 1: x=[0,0,0,0], cos=[0,1], sin=[1,0]
+		//   x1=[0,0], x2=[0,0], real=[0,0], imag=[0,0] -> [0,0,0,0]
+		// Head 1, Position 0: x=[0,0,0,0], cos=[1,1], sin=[0,0]
+		//   x1=[0,0], x2=[0,0], real=[0,0], imag=[0,0] -> [0,0,0,0]
+		// Head 1, Position 1: x=[1,0,0,0], cos=[0,1], sin=[1,0]
+		//   x1=[1,0], x2=[0,0], real=[0,0], imag=[1,0] -> [0,0,1,0]
+		//
+		// Transposed back to (1, 2, 2, 4) [batch, seq, heads, head_size]
+		// Then reshaped to (1, 2, 8):
+		//   Seq 0: head0=[1,0,0,0] head1=[0,0,0,0] -> [1,0,0,0,0,0,0,0]
+		//   Seq 1: head0=[0,0,0,0] head1=[0,0,1,0] -> [0,0,0,0,0,0,1,0]
+		[][][]float32{{{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0}}},
+	}, 1e-5)
+}
+
+func TestMultiHeadAttention(t *testing.T) {
+	// Test basic multi-head attention with 4D input (batch, heads, seq, head_size)
+	graphtest.RunTestGraphFn(t, "MultiHeadAttention-4D-basic", func(g *Graph) (inputs, outputs []*Node) {
+		// Simple case: batch=1, heads=1, seq=2, head_size=2
+		// Q, K, V all same shape for self-attention
+		q := Const(g, [][][][]float32{{{{1.0, 0.0}, {0.0, 1.0}}}})
+		k := Const(g, [][][][]float32{{{{1.0, 0.0}, {0.0, 1.0}}}})
+		v := Const(g, [][][][]float32{{{{1.0, 2.0}, {3.0, 4.0}}}})
+
+		node := &protos.NodeProto{
+			OpType: "MultiHeadAttention",
+		}
+		inputs = []*Node{q, k, v}
+		outputs = []*Node{
+			convertMultiHeadAttention(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Q @ K^T (scaled by 1/sqrt(2) ≈ 0.707):
+		//   [[1,0],[0,1]] @ [[1,0],[0,1]]^T = [[1,0],[0,1]]
+		//   scaled: [[0.707,0],[0,0.707]]
+		// softmax over last dim:
+		//   row 0: softmax([0.707, 0]) ≈ [0.66, 0.34]
+		//   row 1: softmax([0, 0.707]) ≈ [0.34, 0.66]
+		// output = attn @ V
+		[][][][]float32{{{{1.6605, 2.6605}, {2.3395, 3.3395}}}},
+	}, 1e-3)
+
+	// Test with 3D input (batch, seq, hidden) and num_heads attribute
+	graphtest.RunTestGraphFn(t, "MultiHeadAttention-3D", func(g *Graph) (inputs, outputs []*Node) {
+		// batch=1, seq=2, hidden=4, num_heads=2, head_size=2
+		q := Const(g, [][][]float32{{{1.0, 0.0, 0.0, 1.0}, {0.0, 1.0, 1.0, 0.0}}})
+		k := Const(g, [][][]float32{{{1.0, 0.0, 0.0, 1.0}, {0.0, 1.0, 1.0, 0.0}}})
+		v := Const(g, [][][]float32{{{1.0, 2.0, 3.0, 4.0}, {5.0, 6.0, 7.0, 8.0}}})
+
+		node := &protos.NodeProto{
+			OpType: "MultiHeadAttention",
+			Attribute: []*protos.AttributeProto{
+				{Name: "num_heads", Type: protos.AttributeProto_INT, I: 2},
+			},
+		}
+		inputs = []*Node{q, k, v}
+		outputs = []*Node{
+			convertMultiHeadAttention(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Output shape should be (batch=1, seq=2, hidden=4)
+		// With 2 heads, each processes half of the hidden dimension
+		[][][]float32{{{2.3210, 3.3210, 4.3210, 5.3210}, {3.6790, 4.6790, 5.6790, 6.6790}}},
+	}, 1e-3)
+
+	// Test with attention mask
+	graphtest.RunTestGraphFn(t, "MultiHeadAttention-with-mask", func(g *Graph) (inputs, outputs []*Node) {
+		// batch=1, heads=1, seq=2, head_size=2
+		q := Const(g, [][][][]float32{{{{1.0, 0.0}, {0.0, 1.0}}}})
+		k := Const(g, [][][][]float32{{{{1.0, 0.0}, {0.0, 1.0}}}})
+		v := Const(g, [][][][]float32{{{{1.0, 2.0}, {3.0, 4.0}}}})
+
+		// Attention mask: mask out second position for first query
+		// Shape (1, 1, 2, 2): large negative masks out attention
+		mask := Const(g, [][][][]float32{{{{0.0, -10000.0}, {0.0, 0.0}}}})
+
+		node := &protos.NodeProto{
+			OpType: "MultiHeadAttention",
+		}
+		inputs = []*Node{q, k, v, mask}
+		outputs = []*Node{
+			convertMultiHeadAttention(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// With mask, first query can only attend to first key
+		// softmax([0.707, -inf]) ≈ [1.0, 0.0]
+		// output row 0 = [1, 0] @ V = [1, 2]
+		// Second query unchanged
+		[][][][]float32{{{{1.0, 2.0}, {2.3395, 3.3395}}}},
+	}, 1e-3)
+}
+
+func TestGroupQueryAttention(t *testing.T) {
+	// Basic GQA: batch=1, seq=2, num_heads=2, kv_num_heads=1, head_size=2
+	// Same Q/K/V for self-attention, no past cache.
+	graphtest.RunTestGraphFn(t, "GQA-basic", func(g *Graph) (inputs, outputs []*Node) {
+		// Q: (1, 2, 4) = batch=1, seq=2, num_heads=2 * head_size=2
+		q := Const(g, [][][]float32{{{1, 0, 0, 1}, {0, 1, 1, 0}}})
+		// K, V: (1, 2, 2) = batch=1, seq=2, kv_num_heads=1 * head_size=2
+		k := Const(g, [][][]float32{{{1, 0}, {0, 1}}})
+		v := Const(g, [][][]float32{{{1, 2}, {3, 4}}})
+
+		node := &protos.NodeProto{
+			OpType: "GroupQueryAttention",
+			Output: []string{"output", "present_key", "present_value"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "num_heads", Type: protos.AttributeProto_INT, I: 2},
+				{Name: "kv_num_heads", Type: protos.AttributeProto_INT, I: 1},
+			},
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{q, k, v}
+		result := convertGroupQueryAttention(nil, convertedOutputs, node, inputs)
+
+		outputs = []*Node{
+			result,
+			convertedOutputs["present_key"],
+			convertedOutputs["present_value"],
+		}
+		return
+	}, []any{
+		// With causal mask: token 0 attends to [0], token 1 attends to [0,1].
+		// KV head is replicated to both query heads.
+		[][][]float32{{{1.0, 2.0, 1.0, 2.0}, {2.3395, 3.3395, 1.6605, 2.6605}}},
+		// present_key: (1, 1, 2, 2) - same as input K reshaped
+		[][][][]float32{{{{1, 0}, {0, 1}}}},
+		// present_value: (1, 1, 2, 2)
+		[][][][]float32{{{{1, 2}, {3, 4}}}},
+	}, 1e-3)
+
+	// GQA with sliding window: only attend within window of 1.
+	graphtest.RunTestGraphFn(t, "GQA-sliding-window", func(g *Graph) (inputs, outputs []*Node) {
+		// batch=1, seq=3, num_heads=1, kv_num_heads=1, head_size=2
+		q := Const(g, [][][]float32{{{1, 0}, {0, 1}, {1, 1}}})
+		k := Const(g, [][][]float32{{{1, 0}, {0, 1}, {1, 1}}})
+		v := Const(g, [][][]float32{{{1, 0}, {0, 1}, {0.5, 0.5}}})
+
+		node := &protos.NodeProto{
+			OpType: "GroupQueryAttention",
+			Output: []string{"output", "present_key", "present_value"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "num_heads", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "kv_num_heads", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "local_window_size", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "scale", Type: protos.AttributeProto_FLOAT, F: 1.0},
+			},
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{q, k, v}
+		result := convertGroupQueryAttention(nil, convertedOutputs, node, inputs)
+
+		outputs = []*Node{result}
+		return
+	}, []any{
+		// With window=1, each token only attends to itself (causal + window).
+		// Token 0: attends to [0] only -> v[0] = [1, 0]
+		// Token 1: attends to [1] only -> v[1] = [0, 1]
+		// Token 2: attends to [2] only -> v[2] = [0.5, 0.5]
+		[][][]float32{{{1, 0}, {0, 1}, {0.5, 0.5}}},
+	}, 1e-3)
+
+	// GQA with KV cache: past_key/past_value prepended.
+	graphtest.RunTestGraphFn(t, "GQA-kv-cache", func(g *Graph) (inputs, outputs []*Node) {
+		// batch=1, current seq=1, num_heads=1, kv_num_heads=1, head_size=2
+		q := Const(g, [][][]float32{{{0, 1}}})             // new query token
+		k := Const(g, [][][]float32{{{1, 1}}})             // new key token
+		v := Const(g, [][][]float32{{{0.5, 0.5}}})         // new value token
+		pastK := Const(g, [][][][]float32{{{{1, 0}}}})     // 1 cached key
+		pastV := Const(g, [][][][]float32{{{{1, 0}}}})     // 1 cached value
+
+		node := &protos.NodeProto{
+			OpType: "GroupQueryAttention",
+			Output: []string{"output", "present_key", "present_value"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "num_heads", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "kv_num_heads", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "scale", Type: protos.AttributeProto_FLOAT, F: 1.0},
+			},
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{q, k, v, pastK, pastV}
+		result := convertGroupQueryAttention(nil, convertedOutputs, node, inputs)
+
+		outputs = []*Node{
+			result,
+			convertedOutputs["present_key"],
+			convertedOutputs["present_value"],
+		}
+		return
+	}, []any{
+		// Query [0,1] attends to keys [[1,0],[1,1]] (past + current).
+		// scores = [0*1+1*0, 0*1+1*1] = [0, 1], softmax = [0.2689, 0.7311]
+		// output = 0.2689*[1,0] + 0.7311*[0.5,0.5] = [0.6345, 0.3655]
+		[][][]float32{{{0.6345, 0.3655}}},
+		// present_key: past [1,0] + current [1,1]
+		[][][][]float32{{{{1, 0}, {1, 1}}}},
+		// present_value: past [1,0] + current [0.5,0.5]
+		[][][][]float32{{{{1, 0}, {0.5, 0.5}}}},
 	}, 1e-3)
 }
 

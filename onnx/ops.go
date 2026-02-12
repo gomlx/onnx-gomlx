@@ -2,6 +2,7 @@ package onnx
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 
@@ -12,6 +13,10 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	timage "github.com/gomlx/gomlx/pkg/core/tensors/images"
+	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/pkg/ml/layers"
+	"github.com/gomlx/gomlx/pkg/ml/layers/attention"
+	"github.com/gomlx/gomlx/pkg/ml/layers/attention/pos"
 	"github.com/gomlx/gomlx/pkg/ml/layers/lstm"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
@@ -123,12 +128,20 @@ func (m *Model) convertMatMul(lhs, rhs *Node) *Node {
 // https://onnx.ai/onnx/operators/onnx__Clip.html
 //
 // Notice max/min values are optional, hence the special conversion code.
+// Optional inputs in ONNX are represented as empty strings, which result in nil Nodes.
 func (m *Model) convertClip(_ *protos.NodeProto, inputs []*Node) *Node {
-	if len(inputs) == 1 {
+	// Check for nil inputs (optional parameters in ONNX can be empty string)
+	hasMin := len(inputs) > 1 && inputs[1] != nil
+	hasMax := len(inputs) > 2 && inputs[2] != nil
+
+	if !hasMin && !hasMax {
 		return inputs[0]
 	}
-	if len(inputs) == 2 {
+	if hasMin && !hasMax {
 		return m.convertBinaryOp(Max, inputs[0], inputs[1])
+	}
+	if !hasMin && hasMax {
+		return m.convertBinaryOp(Min, inputs[0], inputs[2])
 	}
 	return m.convertBinaryOp(Min, inputs[2], m.convertBinaryOp(Max, inputs[0], inputs[1]))
 }
@@ -318,8 +331,22 @@ func convertGather(node *protos.NodeProto, inputs []*Node) *Node {
 	return onnxGather(inputs[0], inputs[1], gatherAxis)
 }
 
+// normalizeNegativeIndices converts negative indices to positive ones by adding the axis size.
+// ONNX allows negative indices where -1 means the last element, -2 the second-to-last, etc.
+func normalizeNegativeIndices(indices *Node, axisSize int) *Node {
+	g := indices.Graph()
+	zero := ScalarZero(g, indices.DType())
+	axisSizeNode := Scalar(g, indices.DType(), axisSize)
+	isNegative := LessThan(indices, zero)
+	return Where(isNegative, Add(indices, axisSizeNode), indices)
+}
+
 func onnxGather(data, indices *Node, gatherAxis int) *Node {
-	expandedIndices := ExpandAxes(indices, -1)
+	// Normalize negative indices: ONNX allows -1 for last element, -2 for second-to-last, etc.
+	axisSize := data.Shape().Dim(gatherAxis)
+	normalizedIndices := normalizeNegativeIndices(indices, axisSize)
+
+	expandedIndices := ExpandAxes(normalizedIndices, -1)
 	if gatherAxis == 0 {
 		// Trivial case, like GoMLX version.
 		return Gather(data, expandedIndices)
@@ -447,6 +474,10 @@ func onnxGatherElements(data *Node, indices *Node, gatherAxis int) *Node {
 		}
 	}
 
+	// Normalize negative indices: ONNX allows -1 for last element, -2 for second-to-last, etc.
+	axisSize := data.Shape().Dim(gatherAxis)
+	normalizedIndices := normalizeNegativeIndices(indices, axisSize)
+
 	// fullIndicesParts is a slice with one value per axis of the data to gather.
 	// Each part will be shaped [indicesSize, 1], and it will eventually be concatenated
 	// to shape [indicesSize, <data.Rank()>].
@@ -458,7 +489,7 @@ func onnxGatherElements(data *Node, indices *Node, gatherAxis int) *Node {
 		var part *Node
 		if axis == gatherAxis {
 			// On the gatherAxis, the index is the one given by the caller.
-			part = Reshape(indices, indicesSize, 1)
+			part = Reshape(normalizedIndices, indicesSize, 1)
 		} else {
 			// On all axes that we are not gathering, the indices are the same in input and output.
 			part = Iota(g, iotaShape, axis)
@@ -873,6 +904,36 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		effectiveSteps[axis] = step
 	}
 
+	// Check if any axis produces an empty slice (start >= end for positive step,
+	// or start <= end for negative step). Per the ONNX spec, this should produce
+	// a zero-length result along that axis, but GoMLX's Slice doesn't support
+	// start == dimSize, so we handle it here.
+	emptySlice := false
+	outputDims := make([]int, rank)
+	for i := 0; i < rank; i++ {
+		start := effectiveStarts[i]
+		end := effectiveEnds[i]
+		step := effectiveSteps[i]
+		if step > 0 {
+			if start >= end {
+				emptySlice = true
+				outputDims[i] = 0
+			} else {
+				outputDims[i] = (end - start + step - 1) / step
+			}
+		} else {
+			if start <= end {
+				emptySlice = true
+				outputDims[i] = 0
+			} else {
+				outputDims[i] = (start - end + (-step) - 1) / (-step)
+			}
+		}
+	}
+	if emptySlice {
+		return Zeros(operand.Graph(), shapes.Make(operand.DType(), outputDims...))
+	}
+
 	specs := make([]SliceAxisSpec, rank)
 	for i := 0; i < rank; i++ {
 		specs[i] = AxisRange(effectiveStarts[i], effectiveEnds[i]).Stride(effectiveSteps[i])
@@ -946,6 +1007,66 @@ func convertReduceSum(m *Model, convertedOutputs map[string]*Node, node *protos.
 // https://onnx.ai/onnx/operators/onnx__ReduceProd.html
 func convertReduceProd(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	return convertReduce(m, convertedOutputs, node, inputs, "ReduceProd", ReduceMultiply, ReduceAllMultiply)
+}
+
+// convertReduceL2 converts a ONNX node to a GoMLX node.
+//
+// ReduceL2 computes the L2 norm (sqrt(sum(x^2))) of the input tensor's elements along the provided axes.
+// This is commonly used in normalization operations like Snowflake Arctic embeddings.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__ReduceL2.html
+func convertReduceL2(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	operand := inputs[0]
+	keepDims := getIntAttrOr(node, "keepdims", 1) > 0
+	noOpIfEmpty := getIntAttrOr(node, "noop_with_empty_axes", 0) > 0
+
+	var axes []int
+	if len(inputs) > 1 {
+		if !inputs[1].DType().IsInt() {
+			exceptions.Panicf("ReduceL2: axes must be integer, got %s for node %s", inputs[1].DType(), nodeToString(node))
+		}
+
+		axesT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+		if err != nil {
+			panic(errors.WithMessagef(err, "while converting 'axes' for ReduceL2 node %s", nodeToString(node)))
+		}
+		axes = tensorToInts(axesT)
+	}
+
+	axesFromAttr := getIntsAttrOr(node, "axes", nil)
+	if len(axesFromAttr) > 0 {
+		if len(axes) > 0 {
+			exceptions.Panicf("ReduceL2(operand, [axes]): axes and axes attribute cannot be used together for node %s", nodeToString(node))
+		}
+		axes = axesFromAttr
+	}
+
+	// Adjust negative axes to positive.
+	for i, axis := range axes {
+		axes[i] = MustAdjustAxis(axis, operand)
+	}
+
+	// Compute L2 norm: sqrt(sum(x^2))
+	squared := Square(operand)
+
+	if len(axes) == 0 {
+		if noOpIfEmpty {
+			return Identity(operand)
+		} else {
+			res := Sqrt(ReduceAllSum(squared))
+			if keepDims {
+				res = ExpandLeftToRank(res, operand.Rank())
+			}
+			return res
+		}
+	}
+
+	if !keepDims {
+		return Sqrt(ReduceSum(squared, axes...))
+	} else {
+		return Sqrt(ReduceAndKeep(squared, ReduceSum, axes...))
+	}
 }
 
 // convertReduce is a generic helper for reduce operations.
@@ -1964,6 +2085,422 @@ func convertLayerNormalization(_ *Model, _ map[string]*Node, node *protos.NodePr
 	return result
 }
 
+// convertSimplifiedLayerNormalization converts the corresponding ONNX node to GoMLX nodes.
+//
+// SimplifiedLayerNormalization (also known as RMSNorm) normalizes the input using the
+// root mean square without centering (no mean subtraction). This is commonly used in
+// Gemma-based models and other modern LLMs.
+//
+// The formula is: Y = X / sqrt(mean(X^2) + epsilon) * scale
+//
+// This is a Microsoft ONNX Runtime contrib op. The official ONNX equivalent is
+// RMSNormalization (opset 23+).
+//
+// See ONNX documentation for RMSNormalization in:
+// https://onnx.ai/onnx/operators/onnx__RMSNormalization.html
+func convertSimplifiedLayerNormalization(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// Inputs: [X, Scale]
+	// X: input tensor
+	// Scale (gamma): scale parameter
+	x := inputs[0]
+	scale := inputs[1]
+
+	// Attributes
+	axis := getIntAttrOr(node, "axis", -1)
+	epsilon := getFloatAttrOr(node, "epsilon", 1e-5)
+
+	// Normalize axis to positive value
+	inputRank := x.Rank()
+	if axis < 0 {
+		axis = inputRank + axis
+	}
+
+	// Calculate axes to reduce over (from axis to the end)
+	axes := make([]int, inputRank-axis)
+	for i := range axes {
+		axes[i] = axis + i
+	}
+
+	// Use GoMLX's RMSNorm without its learnable scale (we apply the ONNX-provided scale ourselves).
+	normalized := layers.RMSNorm(context.New(), x).
+		WithScale(false).
+		WithEpsilon(float64(epsilon)).
+		WithNormalizationAxes(axes...).
+		Done()
+
+	// Reshape scale to match input rank for broadcasting
+	// Scale has shape matching the normalized dimensions
+	// Need to add leading 1s to match the input rank
+	if scale.Rank() < inputRank {
+		scaleShape := make([]int, inputRank)
+		for i := 0; i < axis; i++ {
+			scaleShape[i] = 1
+		}
+		scaleDims := scale.Shape().Dimensions
+		scaleRank := len(scaleDims)
+		for i := axis; i < inputRank; i++ {
+			scaleIdx := i - axis
+			if scaleIdx >= scaleRank {
+				exceptions.Panicf("SimplifiedLayerNormalization: scale tensor has insufficient dimensions (rank=%d) for input rank=%d and axis=%d",
+					scaleRank, inputRank, axis)
+			}
+			scaleShape[i] = scaleDims[scaleIdx]
+		}
+		scale = Reshape(scale, scaleShape...)
+	}
+
+	// Apply the ONNX-provided scale (gamma)
+	return Mul(normalized, scale)
+}
+
+// convertRotaryEmbedding converts the corresponding ONNX node to GoMLX nodes.
+//
+// RotaryEmbedding implements rotary positional embeddings (RoPE) which encode position
+// information by rotating the embedding vectors. This is commonly used in modern LLMs
+// like Gemma, Llama, and other transformer-based models.
+//
+// The rotation formula is:
+//
+//	real = cos * x1 - sin * x2
+//	imag = sin * x1 + cos * x2
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__RotaryEmbedding.html
+func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// Inputs (per ONNX custom op used by HuggingFace optimum):
+	// - input: 4D (batch, num_heads, seq_len, head_size) or 3D (batch, seq_len, hidden_size)
+	// - position_ids: position indices for cache lookup (may be nil if optional)
+	// - cos_cache: cosine values for rotation
+	// - sin_cache: sine values for rotation
+	x := inputs[0]
+	var positionIds *Node
+	if len(inputs) > 1 && inputs[1] != nil {
+		positionIds = inputs[1]
+	}
+	cosCache := inputs[2]
+	sinCache := inputs[3]
+
+	// Attributes
+	interleaved := getIntAttrOr(node, "interleaved", 0) != 0
+	numHeads := getIntAttrOr(node, "num_heads", 0)
+
+
+	inputRank := x.Rank()
+	inputShape := x.Shape().Dimensions
+
+	// Handle 3D input by reshaping to 4D
+	var was3D bool
+	var batchSize, seqLen, hiddenSize int
+	if inputRank == 3 {
+		was3D = true
+		batchSize = inputShape[0]
+		seqLen = inputShape[1]
+		hiddenSize = inputShape[2]
+		if numHeads == 0 {
+			// Derive num_heads from cos_cache shape, matching ONNX Runtime behavior.
+			// cos_cache has shape (max_pos, rotary_dim/2), so head_size = rotary_dim/2 * 2.
+			// Then num_heads = hidden_size / head_size.
+			cosLastDim := cosCache.Shape().Dimensions[cosCache.Rank()-1]
+			headSize := cosLastDim * 2
+			numHeads = hiddenSize / headSize
+			if numHeads == 0 {
+				numHeads = 1
+			}
+		}
+		headSize := hiddenSize / numHeads
+		// Reshape from (batch, seq, hidden) to (batch, seq, num_heads, head_size)
+		// Then transpose to (batch, num_heads, seq, head_size)
+		x = Reshape(x, batchSize, seqLen, numHeads, headSize)
+		x = TransposeAllDims(x, 0, 2, 1, 3)
+	}
+
+	// Now x is 4D: (batch, num_heads, seq_len, head_size)
+
+	// Get cos and sin values
+	// If position_ids provided, use them to index into 2D cache
+	// Otherwise, cache is already 3D with shape (batch, seq_len, dim/2)
+	var cos, sin *Node
+
+	if positionIds != nil {
+		// cos_cache/sin_cache shape: (max_pos+1, rotary_dim/2)
+		// Gather using position_ids to get (batch, seq_len, rotary_dim/2)
+		cos = onnxGather(cosCache, positionIds, 0)
+		sin = onnxGather(sinCache, positionIds, 0)
+	} else {
+		// cos_cache/sin_cache shape: (batch, seq_len, rotary_dim/2) or similar
+		cos = cosCache
+		sin = sinCache
+	}
+
+	// Reshape cos/sin for broadcasting with x
+	// cos/sin: (..., rotary_dim/2) -> need to broadcast to (batch, num_heads, seq_len, rotary_dim/2)
+	cosRank := cos.Rank()
+	if cosRank == 2 {
+		// (seq_len, dim/2) -> (1, 1, seq_len, dim/2)
+		cos = ExpandLeftToRank(cos, 4)
+		sin = ExpandLeftToRank(sin, 4)
+	} else if cosRank == 3 {
+		// (batch, seq_len, dim/2) -> (batch, 1, seq_len, dim/2)
+		cosDims := cos.Shape().Dimensions
+		cos = Reshape(cos, cosDims[0], 1, cosDims[1], cosDims[2])
+		sin = Reshape(sin, cosDims[0], 1, cosDims[1], cosDims[2])
+	}
+
+	// Apply rotation using pre-computed cos/sin via RoPEWithCosSin.
+	// It handles splitting, rotation, recombination, and partial rotation
+	// (pass-through for dimensions beyond rotary_dim) automatically based on cos/sin dimensions.
+	result := pos.NewRoPEWithCosSin(cos, sin).WithInterleaved(interleaved).Apply(x, nil, x.Rank()-2)
+
+	// If input was 3D, reshape back
+	if was3D {
+		// Transpose from (batch, num_heads, seq, head_size) to (batch, seq, num_heads, head_size)
+		result = TransposeAllDims(result, 0, 2, 1, 3)
+		// Reshape to (batch, seq, hidden)
+		result = Reshape(result, batchSize, seqLen, hiddenSize)
+	}
+
+	return result
+}
+
+// convertMultiHeadAttention converts the corresponding ONNX node to GoMLX nodes.
+//
+// MultiHeadAttention implements scaled dot-product multi-head attention commonly used
+// in transformer models. This is a Microsoft ONNX Runtime contrib op.
+//
+// The computation is:
+//  1. Reshape Q, K, V from (batch, seq, hidden) to (batch, num_heads, seq, head_size)
+//  2. Compute attention scores: scores = Q @ K^T * scale
+//  3. Apply attention mask (if provided)
+//  4. Softmax over the last dimension
+//  5. Compute output: output = softmax(scores) @ V
+//  6. Reshape back to (batch, seq, hidden)
+//
+// See ONNX Runtime contrib ops documentation.
+func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// Inputs (com.microsoft contrib op):
+	// - query: (batch, q_seq_len, hidden_size) or (batch, num_heads, q_seq_len, head_size)
+	// - key: (batch, kv_seq_len, hidden_size) or (batch, num_heads, kv_seq_len, head_size)
+	// - value: (batch, kv_seq_len, v_hidden_size) or (batch, num_heads, kv_seq_len, v_head_size)
+	// - bias (optional): combined bias for Q, K, V projections
+	// - key_padding_mask (optional): (batch, kv_seq_len) mask for padding
+	// - attention_mask (optional): (batch, 1, q_seq_len, kv_seq_len) or broadcastable
+	query := inputs[0]
+	key := inputs[1]
+	value := inputs[2]
+
+	// Optional inputs - check bounds and nil
+	var attentionMask *Node
+	// Attention mask can be at different positions depending on the model
+	// Common positions: input[3] (after value) or input[5] (after bias and key_padding_mask)
+	for i := 3; i < len(inputs); i++ {
+		if inputs[i] != nil {
+			inp := inputs[i]
+			// Attention mask is typically float and has rank >= 2
+			if !inp.DType().IsInt() && inp.Rank() >= 2 {
+				attentionMask = inp
+				break
+			}
+		}
+	}
+
+	// Attributes
+	numHeads := getIntAttrOr(node, "num_heads", 0)
+	scale := getFloatAttrOr(node, "scale", 0)
+
+	// Determine input format and reshape if needed
+	queryRank := query.Rank()
+	queryShape := query.Shape().Dimensions
+
+	var batchSize, qSeqLen int
+	var was3D bool
+
+	if queryRank == 3 {
+		// 3D input: (batch, seq, hidden)
+		was3D = true
+		batchSize = queryShape[0]
+		qSeqLen = queryShape[1]
+		hiddenSize := queryShape[2]
+
+		if numHeads == 0 {
+			exceptions.Panicf("MultiHeadAttention: num_heads attribute required for 3D input")
+		}
+		headSize := hiddenSize / numHeads
+
+		// Reshape Q, K, V to 4D: (batch, seq, hidden) -> (batch, num_heads, seq, head_size)
+		query = Reshape(query, batchSize, qSeqLen, numHeads, headSize)
+		query = TransposeAllDims(query, 0, 2, 1, 3) // (batch, num_heads, seq, head_size)
+
+		keyShape := key.Shape().Dimensions
+		kvSeqLen := keyShape[1]
+		key = Reshape(key, batchSize, kvSeqLen, numHeads, headSize)
+		key = TransposeAllDims(key, 0, 2, 1, 3)
+
+		valueShape := value.Shape().Dimensions
+		vHeadSize := valueShape[2] / numHeads
+		value = Reshape(value, batchSize, kvSeqLen, numHeads, vHeadSize)
+		value = TransposeAllDims(value, 0, 2, 1, 3)
+	}
+
+	// Reshape attention mask to be broadcastable to (batch, num_heads, q_seq, kv_seq)
+	if attentionMask != nil {
+		maskRank := attentionMask.Rank()
+		if maskRank == 2 {
+			// (batch, kv_seq) -> (batch, 1, 1, kv_seq)
+			attentionMask = ExpandLeftToRank(attentionMask, 4)
+			attentionMask = TransposeAllDims(attentionMask, 0, 2, 3, 1)
+		} else if maskRank == 3 {
+			// (batch, q_seq, kv_seq) -> (batch, 1, q_seq, kv_seq)
+			maskDims := attentionMask.Shape().Dimensions
+			attentionMask = Reshape(attentionMask, maskDims[0], 1, maskDims[1], maskDims[2])
+		}
+	}
+
+	// Compute attention using attention.Core.
+	// query, key, value are already in [batch, heads, seq, dim] layout (LayoutBHSD).
+	// attentionMask here is a float additive mask (already reshaped above), so Core adds it to scores.
+	headDim := query.Shape().Dimensions[3]
+	scaleValue := float64(scale)
+	if scale <= 0 {
+		scaleValue = 1.0 / math.Sqrt(float64(headDim))
+	}
+	output, _ := attention.Core(nil, query, key, value, scaleValue, attentionMask, 0, attention.LayoutBHSD, false, false)
+
+	// Reshape back to 3D if input was 3D
+	if was3D {
+		// Transpose: (batch, num_heads, q_seq, head_size) -> (batch, q_seq, num_heads, head_size)
+		output = TransposeAllDims(output, 0, 2, 1, 3)
+		// Reshape: (batch, q_seq, num_heads, head_size) -> (batch, q_seq, hidden_size)
+		vHeadSize := output.Shape().Dimensions[3]
+		output = Reshape(output, batchSize, qSeqLen, numHeads*vHeadSize)
+	}
+
+	return output
+}
+
+// convertGroupQueryAttention converts the corresponding ONNX node to GoMLX nodes.
+//
+// GroupQueryAttention implements grouped query attention (GQA) with fewer KV heads
+// than query heads, optional KV cache, and optional sliding window masking.
+// This is a Microsoft ONNX Runtime contrib op.
+//
+// See ONNX Runtime contrib ops documentation for GroupQueryAttention.
+func convertGroupQueryAttention(_ *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// Inputs (com.microsoft contrib op):
+	// 0: query  - (batch, seq_len, num_heads * head_size)
+	// 1: key    - (batch, kv_seq_len, kv_num_heads * head_size)
+	// 2: value  - (batch, kv_seq_len, kv_num_heads * head_size)
+	// 3: past_key   - (batch, kv_num_heads, past_seq_len, head_size) or empty
+	// 4: past_value - (batch, kv_num_heads, past_seq_len, head_size) or empty
+	// 5: seqlens_k  - optional
+	// 6: total_sequence_length - optional
+	// 7: cos_cache  - optional (unused when do_rotary=0)
+	// 8: sin_cache  - optional (unused when do_rotary=0)
+	query := inputs[0]
+	key := inputs[1]
+	value := inputs[2]
+
+	var pastKey, pastValue *Node
+	if len(inputs) > 3 && inputs[3] != nil && inputs[3].Shape().Dimensions[2] > 0 {
+		pastKey = inputs[3]
+	}
+	if len(inputs) > 4 && inputs[4] != nil && inputs[4].Shape().Dimensions[2] > 0 {
+		pastValue = inputs[4]
+	}
+
+	numHeads := getIntAttrOr(node, "num_heads", 0)
+	kvNumHeads := getIntAttrOr(node, "kv_num_heads", 0)
+	scale := getFloatAttrOr(node, "scale", 0)
+	localWindowSize := getIntAttrOr(node, "local_window_size", -1)
+
+	if numHeads == 0 {
+		exceptions.Panicf("GroupQueryAttention: num_heads attribute is required")
+	}
+	if kvNumHeads == 0 {
+		exceptions.Panicf("GroupQueryAttention: kv_num_heads attribute is required")
+	}
+
+	queryShape := query.Shape().Dimensions
+	batchSize := queryShape[0]
+	qSeqLen := queryShape[1]
+	headSize := queryShape[2] / numHeads
+
+	// Reshape Q, K, V from 3D packed to 4D: (batch, seq, heads*dim) -> (batch, heads, seq, dim)
+	query = Reshape(query, batchSize, qSeqLen, numHeads, headSize)
+	query = TransposeAllDims(query, 0, 2, 1, 3)
+
+	keyShape := key.Shape().Dimensions
+	kvSeqLen := keyShape[1]
+	key = Reshape(key, batchSize, kvSeqLen, kvNumHeads, headSize)
+	key = TransposeAllDims(key, 0, 2, 1, 3)
+
+	value = Reshape(value, batchSize, kvSeqLen, kvNumHeads, headSize)
+	value = TransposeAllDims(value, 0, 2, 1, 3)
+
+	// Concatenate past KV cache along sequence axis to form present KV.
+	// Skip concatenation if past has zero sequence length (no cached tokens).
+	presentKey := key
+	presentValue := value
+	if pastKey != nil && pastValue != nil {
+		presentKey = Concatenate([]*Node{pastKey, key}, 2)
+		presentValue = Concatenate([]*Node{pastValue, value}, 2)
+	}
+
+	totalSeqLen := presentKey.Shape().Dimensions[2]
+
+	// Expand KV heads to match query heads for GQA via reshape+broadcast.
+	attKey := presentKey
+	attValue := presentValue
+	if kvNumHeads != numHeads {
+		repeats := numHeads / kvNumHeads
+		attKey = gqaRepeatHeads(presentKey, batchSize, kvNumHeads, repeats, totalSeqLen, headSize)
+		attValue = gqaRepeatHeads(presentValue, batchSize, kvNumHeads, repeats, totalSeqLen, headSize)
+	}
+
+	// Build causal mask: query at absolute position qPos can attend to kvPos <= qPos.
+	g := query.Graph()
+	qPositions := Iota(g, shapes.Make(dtypes.Int32, qSeqLen), 0)
+	qPositions = AddScalar(qPositions, float64(totalSeqLen-qSeqLen))
+	qPositions = Reshape(qPositions, 1, 1, qSeqLen, 1)
+	kvPositions := Iota(g, shapes.Make(dtypes.Int32, totalSeqLen), 0)
+	kvPositions = Reshape(kvPositions, 1, 1, 1, totalSeqLen)
+	mask := GreaterOrEqual(qPositions, kvPositions)
+
+	// Restrict to sliding window: attend only if qPos - kvPos < localWindowSize.
+	if localWindowSize > 0 {
+		dist := Sub(qPositions, kvPositions)
+		mask = LogicalAnd(mask, LessThan(dist, Scalar(g, dtypes.Int32, localWindowSize)))
+	}
+
+	scaleValue := float64(scale)
+	if scale <= 0 {
+		scaleValue = 1.0 / math.Sqrt(float64(headSize))
+	}
+	// Pass the boolean mask directly — Core auto-detects boolean masks and uses MaskedSoftmax.
+	output, _ := attention.Core(nil, query, attKey, attValue, scaleValue, mask, 0, attention.LayoutBHSD, false, false)
+
+	// Reshape output: (batch, num_heads, qSeqLen, head_size) -> (batch, qSeqLen, num_heads * head_size)
+	output = TransposeAllDims(output, 0, 2, 1, 3)
+	output = Reshape(output, batchSize, qSeqLen, numHeads*headSize)
+
+	// Multi-output: present_key and present_value for KV cache.
+	if len(node.Output) >= 2 && node.Output[1] != "" {
+		convertedOutputs[node.Output[1]] = presentKey
+	}
+	if len(node.Output) >= 3 && node.Output[2] != "" {
+		convertedOutputs[node.Output[2]] = presentValue
+	}
+
+	return output
+}
+
+// gqaRepeatHeads repeats KV heads to match the query head count for grouped query attention.
+// (batch, kvHeads, seq, dim) -> (batch, kvHeads*repeats, seq, dim)
+func gqaRepeatHeads(x *Node, batchSize, kvHeads, repeats, seqLen, headSize int) *Node {
+	x = Reshape(x, batchSize, kvHeads, 1, seqLen, headSize)
+	x = BroadcastToShape(x, shapes.Make(x.DType(), batchSize, kvHeads, repeats, seqLen, headSize))
+	return Reshape(x, batchSize, kvHeads*repeats, seqLen, headSize)
+}
+
 // convertSplit converts the corresponding ONNX node to GoMLX nodes.
 //
 // Split splits a tensor into multiple outputs along a specified axis.
@@ -2455,8 +2992,16 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 	}
 
 	cond := inputs[0]
-	if !cond.IsScalar() || cond.DType() != dtypes.Bool {
+	if cond.DType() != dtypes.Bool {
 		exceptions.Panicf("If: condition must be a boolean scalar, got %s", cond.Shape())
+	}
+	if !cond.IsScalar() {
+		// ONNX allows single-element tensors (e.g. shape [1]) as the condition.
+		if cond.Shape().Size() == 1 {
+			cond = Reshape(cond)
+		} else {
+			exceptions.Panicf("If: condition must be a boolean scalar or single-element tensor, got %s", cond.Shape())
+		}
 	}
 
 	// Get the then_branch and else_branch sub-graphs from attributes
