@@ -7,6 +7,7 @@ import (
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
+	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
 	"github.com/gomlx/gomlx/pkg/support/sets"
@@ -76,7 +77,15 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 		if inputN == nil {
 			staticValue := m.inputsAsConstants[inputName]
 			if staticValue != nil {
-				inputN = Const(g, staticValue)
+				// Check if the static value is a zero-size tensor (e.g., empty KV cache).
+				// Zero-size tensors cannot be represented as constants in some backends (e.g., XLA),
+				// so we leave them as nil in convertedOutputs. Op converters must handle nil inputs.
+				if t, ok := staticValue.(*tensors.Tensor); ok && t.Shape().Size() == 0 {
+					convertedOutputs[inputName] = nil
+				} else {
+					inputN = Const(g, staticValue)
+					convertedOutputs[inputName] = inputN
+				}
 			} else {
 				missingInputs.Insert(inputName)
 				continue
@@ -85,8 +94,8 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 			if _, found := m.inputsAsConstants[inputName]; found {
 				repeatedInputs.Insert(inputName)
 			}
+			convertedOutputs[inputName] = inputN
 		}
-		convertedOutputs[inputName] = inputN
 	}
 	for givenName := range inputs {
 		if _, found := convertedOutputs[givenName]; !found {
@@ -103,10 +112,34 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 			missingInputs, unknownInputs, repeatedInputs)
 	}
 
-	// Validate the input shapes.
-	err := m.ValidateInputs(sliceMap(m.InputsNames, func(inputName string) shapes.Shape { return convertedOutputs[inputName].Shape() })...)
-	if err != nil {
-		panic(err)
+	// Validate the input shapes, skipping nil entries from zero-size constants.
+	var validShapes []shapes.Shape
+	var validIndices []int
+	for idx, inputName := range m.InputsNames {
+		if n := convertedOutputs[inputName]; n != nil {
+			validShapes = append(validShapes, n.Shape())
+			validIndices = append(validIndices, idx)
+		}
+	}
+	// Build a temporary model view with only the non-nil inputs for validation.
+	if len(validShapes) < len(m.InputsNames) {
+		tmpModel := &Model{
+			InputsNames:  make([]string, len(validIndices)),
+			InputsShapes: make([]DynamicShape, len(validIndices)),
+		}
+		for i, idx := range validIndices {
+			tmpModel.InputsNames[i] = m.InputsNames[idx]
+			tmpModel.InputsShapes[i] = m.InputsShapes[idx]
+		}
+		err := tmpModel.ValidateInputs(validShapes...)
+		if err != nil {
+			panic(err)
+		}
+	} else {
+		err := m.ValidateInputs(validShapes...)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	// Convert variables: create the GoMLX nodes corresponding to the ONNX model variables.
@@ -571,6 +604,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertMaxPool(m, convertedOutputs, node, inputs)
 	case "GlobalAveragePool":
 		result = convertGlobalAveragePool(m, convertedOutputs, node, inputs)
+	case "Resize":
+		result = convertResize(m, convertedOutputs, node, inputs)
 	case "BatchNormalization":
 		result = convertBatchNormalization(m, convertedOutputs, node, inputs)
 	case "LayerNormalization":
@@ -581,6 +616,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertRotaryEmbedding(m, convertedOutputs, node, inputs)
 	case "MultiHeadAttention":
 		result = convertMultiHeadAttention(m, convertedOutputs, node, inputs)
+	case "GroupQueryAttention":
+		result = convertGroupQueryAttention(m, convertedOutputs, node, inputs)
 
 	// Multiple outputs ops:
 	case "Pad":

@@ -2,6 +2,7 @@ package onnx
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 
@@ -658,6 +659,19 @@ func tensorToInts(t *tensors.Tensor) []int {
 		for ii := range valueOf.Len() {
 			elemV := valueOf.Index(ii)
 			res[ii] = elemV.Convert(intType).Interface().(int)
+		}
+	})
+	return res
+}
+
+func tensorToFloat64s(t *tensors.Tensor) []float64 {
+	res := make([]float64, t.Size())
+	float64Type := reflect.TypeOf(float64(0))
+	t.ConstFlatData(func(flat any) {
+		valueOf := reflect.ValueOf(flat)
+		for ii := range valueOf.Len() {
+			elemV := valueOf.Index(ii)
+			res[ii] = elemV.Convert(float64Type).Interface().(float64)
 		}
 	})
 	return res
@@ -1845,6 +1859,12 @@ func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodePr
 	pads := tensorToInts(padsT)
 
 	x := inputs[0]
+
+	// Empty pads tensor (e.g., from a zero-sized constant) means no padding.
+	if len(pads) == 0 {
+		return x
+	}
+
 	var constantValueNode *Node
 	if len(inputs) > 2 {
 		constantValueNode = inputs[2]
@@ -2177,10 +2197,15 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 		seqLen = inputShape[1]
 		hiddenSize = inputShape[2]
 		if numHeads == 0 {
-			// When num_heads=0 with 3D input, treat as single head where
-			// the last dimension is already the head_size (common in models
-			// that reshape per-head before applying RoPE)
-			numHeads = 1
+			// Derive num_heads from cos_cache shape, matching ONNX Runtime behavior.
+			// cos_cache has shape (max_pos, rotary_dim/2), so head_size = rotary_dim/2 * 2.
+			// Then num_heads = hidden_size / head_size.
+			cosLastDim := cosCache.Shape().Dimensions[cosCache.Rank()-1]
+			headSize := cosLastDim * 2
+			numHeads = hiddenSize / headSize
+			if numHeads == 0 {
+				numHeads = 1
+			}
 		}
 		headSize := hiddenSize / numHeads
 		// Reshape from (batch, seq, hidden) to (batch, seq, num_heads, head_size)
@@ -2221,10 +2246,10 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 		sin = Reshape(sin, cosDims[0], 1, cosDims[1], cosDims[2])
 	}
 
-	// Apply rotation using pre-computed cos/sin via ApplyWithCosSin.
-	// ApplyWithCosSin handles splitting, rotation, recombination, and partial rotation
+	// Apply rotation using pre-computed cos/sin via RoPEWithCosSin.
+	// It handles splitting, rotation, recombination, and partial rotation
 	// (pass-through for dimensions beyond rotary_dim) automatically based on cos/sin dimensions.
-	result := pos.ApplyWithCosSin(x, cos, sin, interleaved)
+	result := pos.NewRoPEWithCosSin(cos, sin).WithInterleaved(interleaved).Apply(x, nil, x.Rank()-2)
 
 	// If input was 3D, reshape back
 	if was3D {
@@ -2330,29 +2355,15 @@ func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodePr
 		}
 	}
 
-	// Use fused SDPA if the backend supports it, otherwise fall through
-	// to the decomposed path below.
-	if query.Graph().Backend().Capabilities().Operations[backends.OpTypeFusedMultiHeadSDPA] {
-		numKVHeads := numHeads
-		output := FusedMultiHeadSDPA(query, key, value, attentionMask, numHeads, numKVHeads, float64(scale), false)
-		if was3D {
-			output = TransposeAllDims(output, 0, 2, 1, 3)
-			vHeadSize := output.Shape().Dimensions[3]
-			output = Reshape(output, batchSize, qSeqLen, numHeads*vHeadSize)
-		}
-		return output
+	// Compute attention using attention.Core.
+	// query, key, value are already in [batch, heads, seq, dim] layout (LayoutBHSD).
+	// attentionMask here is a float additive mask (already reshaped above), so Core adds it to scores.
+	headDim := query.Shape().Dimensions[3]
+	scaleValue := float64(scale)
+	if scale <= 0 {
+		scaleValue = 1.0 / math.Sqrt(float64(headDim))
 	}
-
-	// Decomposed fallback for backends without fused SDPA support.
-	// query, key, value are already in [batch, heads, seq, dim] layout.
-	builder := attention.ScaledDotProductAttention(query, key, value)
-	if scale > 0 {
-		builder = builder.WithScale(float64(scale))
-	}
-	if attentionMask != nil {
-		builder = builder.WithAdditiveMask(attentionMask)
-	}
-	output := builder.Done()
+	output, _ := attention.Core(nil, query, key, value, scaleValue, attentionMask, 0, attention.LayoutBHSD, false, false)
 
 	// Reshape back to 3D if input was 3D
 	if was3D {
@@ -2364,6 +2375,130 @@ func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodePr
 	}
 
 	return output
+}
+
+// convertGroupQueryAttention converts the corresponding ONNX node to GoMLX nodes.
+//
+// GroupQueryAttention implements grouped query attention (GQA) with fewer KV heads
+// than query heads, optional KV cache, and optional sliding window masking.
+// This is a Microsoft ONNX Runtime contrib op.
+//
+// See ONNX Runtime contrib ops documentation for GroupQueryAttention.
+func convertGroupQueryAttention(_ *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// Inputs (com.microsoft contrib op):
+	// 0: query  - (batch, seq_len, num_heads * head_size)
+	// 1: key    - (batch, kv_seq_len, kv_num_heads * head_size)
+	// 2: value  - (batch, kv_seq_len, kv_num_heads * head_size)
+	// 3: past_key   - (batch, kv_num_heads, past_seq_len, head_size) or empty
+	// 4: past_value - (batch, kv_num_heads, past_seq_len, head_size) or empty
+	// 5: seqlens_k  - optional
+	// 6: total_sequence_length - optional
+	// 7: cos_cache  - optional (unused when do_rotary=0)
+	// 8: sin_cache  - optional (unused when do_rotary=0)
+	query := inputs[0]
+	key := inputs[1]
+	value := inputs[2]
+
+	var pastKey, pastValue *Node
+	if len(inputs) > 3 && inputs[3] != nil && inputs[3].Shape().Dimensions[2] > 0 {
+		pastKey = inputs[3]
+	}
+	if len(inputs) > 4 && inputs[4] != nil && inputs[4].Shape().Dimensions[2] > 0 {
+		pastValue = inputs[4]
+	}
+
+	numHeads := getIntAttrOr(node, "num_heads", 0)
+	kvNumHeads := getIntAttrOr(node, "kv_num_heads", 0)
+	scale := getFloatAttrOr(node, "scale", 0)
+	localWindowSize := getIntAttrOr(node, "local_window_size", -1)
+
+	if numHeads == 0 {
+		exceptions.Panicf("GroupQueryAttention: num_heads attribute is required")
+	}
+	if kvNumHeads == 0 {
+		exceptions.Panicf("GroupQueryAttention: kv_num_heads attribute is required")
+	}
+
+	queryShape := query.Shape().Dimensions
+	batchSize := queryShape[0]
+	qSeqLen := queryShape[1]
+	headSize := queryShape[2] / numHeads
+
+	// Reshape Q, K, V from 3D packed to 4D: (batch, seq, heads*dim) -> (batch, heads, seq, dim)
+	query = Reshape(query, batchSize, qSeqLen, numHeads, headSize)
+	query = TransposeAllDims(query, 0, 2, 1, 3)
+
+	keyShape := key.Shape().Dimensions
+	kvSeqLen := keyShape[1]
+	key = Reshape(key, batchSize, kvSeqLen, kvNumHeads, headSize)
+	key = TransposeAllDims(key, 0, 2, 1, 3)
+
+	value = Reshape(value, batchSize, kvSeqLen, kvNumHeads, headSize)
+	value = TransposeAllDims(value, 0, 2, 1, 3)
+
+	// Concatenate past KV cache along sequence axis to form present KV.
+	// Skip concatenation if past has zero sequence length (no cached tokens).
+	presentKey := key
+	presentValue := value
+	if pastKey != nil && pastValue != nil {
+		presentKey = Concatenate([]*Node{pastKey, key}, 2)
+		presentValue = Concatenate([]*Node{pastValue, value}, 2)
+	}
+
+	totalSeqLen := presentKey.Shape().Dimensions[2]
+
+	// Expand KV heads to match query heads for GQA via reshape+broadcast.
+	attKey := presentKey
+	attValue := presentValue
+	if kvNumHeads != numHeads {
+		repeats := numHeads / kvNumHeads
+		attKey = gqaRepeatHeads(presentKey, batchSize, kvNumHeads, repeats, totalSeqLen, headSize)
+		attValue = gqaRepeatHeads(presentValue, batchSize, kvNumHeads, repeats, totalSeqLen, headSize)
+	}
+
+	// Build causal mask: query at absolute position qPos can attend to kvPos <= qPos.
+	g := query.Graph()
+	qPositions := Iota(g, shapes.Make(dtypes.Int32, qSeqLen), 0)
+	qPositions = AddScalar(qPositions, float64(totalSeqLen-qSeqLen))
+	qPositions = Reshape(qPositions, 1, 1, qSeqLen, 1)
+	kvPositions := Iota(g, shapes.Make(dtypes.Int32, totalSeqLen), 0)
+	kvPositions = Reshape(kvPositions, 1, 1, 1, totalSeqLen)
+	mask := GreaterOrEqual(qPositions, kvPositions)
+
+	// Restrict to sliding window: attend only if qPos - kvPos < localWindowSize.
+	if localWindowSize > 0 {
+		dist := Sub(qPositions, kvPositions)
+		mask = LogicalAnd(mask, LessThan(dist, Scalar(g, dtypes.Int32, localWindowSize)))
+	}
+
+	scaleValue := float64(scale)
+	if scale <= 0 {
+		scaleValue = 1.0 / math.Sqrt(float64(headSize))
+	}
+	// Pass the boolean mask directly — Core auto-detects boolean masks and uses MaskedSoftmax.
+	output, _ := attention.Core(nil, query, attKey, attValue, scaleValue, mask, 0, attention.LayoutBHSD, false, false)
+
+	// Reshape output: (batch, num_heads, qSeqLen, head_size) -> (batch, qSeqLen, num_heads * head_size)
+	output = TransposeAllDims(output, 0, 2, 1, 3)
+	output = Reshape(output, batchSize, qSeqLen, numHeads*headSize)
+
+	// Multi-output: present_key and present_value for KV cache.
+	if len(node.Output) >= 2 && node.Output[1] != "" {
+		convertedOutputs[node.Output[1]] = presentKey
+	}
+	if len(node.Output) >= 3 && node.Output[2] != "" {
+		convertedOutputs[node.Output[2]] = presentValue
+	}
+
+	return output
+}
+
+// gqaRepeatHeads repeats KV heads to match the query head count for grouped query attention.
+// (batch, kvHeads, seq, dim) -> (batch, kvHeads*repeats, seq, dim)
+func gqaRepeatHeads(x *Node, batchSize, kvHeads, repeats, seqLen, headSize int) *Node {
+	x = Reshape(x, batchSize, kvHeads, 1, seqLen, headSize)
+	x = BroadcastToShape(x, shapes.Make(x.DType(), batchSize, kvHeads, repeats, seqLen, headSize))
+	return Reshape(x, batchSize, kvHeads*repeats, seqLen, headSize)
 }
 
 // convertSplit converts the corresponding ONNX node to GoMLX nodes.
@@ -3068,4 +3203,118 @@ func convertArgMin(node *protos.NodeProto, inputs []*Node) *Node {
 	}
 
 	return indices
+}
+
+// convertResize converts an ONNX Resize node to GoMLX.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Resize.html
+//
+// Inputs: X, roi (unused), scales (optional), sizes (optional).
+// Either scales or sizes must be provided. If both are present, sizes takes priority.
+func convertResize(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	x := inputs[0]
+	inputDims := x.Shape().Dimensions
+
+	mode := getStringAttrOr(node, "mode", "nearest")
+	coordTransformMode := getStringAttrOr(node, "coordinate_transformation_mode", "half_pixel")
+
+	// Resolve target output sizes from either the "sizes" or "scales" input.
+	outputSizes := resizeOutputSizes(m, convertedOutputs, node, inputDims)
+
+	// Use NoInterpolation for dimensions that don't change.
+	for i := range outputSizes {
+		if outputSizes[i] == inputDims[i] {
+			outputSizes[i] = NoInterpolation
+		}
+	}
+
+	// Check if any dimension actually needs resizing.
+	needsWork := false
+	for _, s := range outputSizes {
+		if s != NoInterpolation {
+			needsWork = true
+			break
+		}
+	}
+	if !needsWork {
+		return x
+	}
+
+	config := Interpolate(x, outputSizes...)
+
+	switch mode {
+	case "nearest":
+		config.Nearest()
+	case "linear":
+		config.Bilinear()
+	case "cubic":
+		// GoMLX doesn't support cubic; bilinear is the closest available.
+		config.Bilinear()
+	default:
+		exceptions.Panicf("Resize: unsupported mode %q in %s", mode, nodeToString(node))
+	}
+
+	switch coordTransformMode {
+	case "half_pixel", "half_pixel_symmetric", "pytorch_half_pixel":
+		// Default is already halfPixelCenters=true, alignCorner=false.
+	case "align_corners":
+		config.HalfPixelCenters(false).AlignCorner(true)
+	case "asymmetric":
+		config.HalfPixelCenters(false)
+	case "tf_crop_and_resize":
+		exceptions.Panicf("Resize: coordinate_transformation_mode %q is not supported in %s",
+			coordTransformMode, nodeToString(node))
+	default:
+		config.HalfPixelCenters(false)
+	}
+
+	return config.Done()
+}
+
+// resizeOutputSizes resolves the target dimensions for a Resize op from either
+// the "sizes" input (index 3) or the "scales" input (index 2).
+func resizeOutputSizes(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputDims []int) []int {
+	rank := len(inputDims)
+
+	// Try sizes first (takes priority over scales per ONNX spec).
+	if len(node.Input) > 3 && node.Input[3] != "" {
+		sizesT, err := m.materializeConstantExpression(node.Input[3], convertedOutputs)
+		if err != nil {
+			panic(errors.WithMessagef(err, "while converting 'sizes' for node %s", nodeToString(node)))
+		}
+		if sizesT.Size() > 0 {
+			sizes := tensorToInts(sizesT)
+			if len(sizes) != rank {
+				exceptions.Panicf("Resize: sizes length (%d) != input rank (%d) in %s",
+					len(sizes), rank, nodeToString(node))
+			}
+			return sizes
+		}
+	}
+
+	// Fall back to scales.
+	if len(node.Input) > 2 && node.Input[2] != "" {
+		scalesT, err := m.materializeConstantExpression(node.Input[2], convertedOutputs)
+		if err != nil {
+			panic(errors.WithMessagef(err, "while converting 'scales' for node %s", nodeToString(node)))
+		}
+		if scalesT.Size() > 0 {
+			scales := tensorToFloat64s(scalesT)
+			if len(scales) != rank {
+				exceptions.Panicf("Resize: scales length (%d) != input rank (%d) in %s",
+					len(scales), rank, nodeToString(node))
+			}
+			out := make([]int, rank)
+			for i, s := range scales {
+				out[i] = max(int(float64(inputDims[i])*s), 1)
+			}
+			return out
+		}
+	}
+
+	// Neither provided — return input dimensions unchanged.
+	out := make([]int, rank)
+	copy(out, inputDims)
+	return out
 }

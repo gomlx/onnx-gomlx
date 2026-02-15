@@ -983,6 +983,51 @@ func TestRotaryEmbedding(t *testing.T) {
 		// interleaved output = [real[0],imag[0],real[1],imag[1]] = [-0.5,1.5,-0.5,3.5]
 		[][][][]float32{{{{-0.5, 1.5, -0.5, 3.5}}}},
 	}, 1e-5)
+
+	// Test RotaryEmbedding with 3D input and num_heads derived from cos_cache shape.
+	// This exercises the code path where num_heads=0 (default) and is inferred as
+	// hidden_size / (cos_cache_last_dim * 2).
+	graphtest.RunTestGraphFn(t, "RotaryEmbedding-3D-derive-num-heads", func(g *Graph) (inputs, outputs []*Node) {
+		// Input: 3D (batch=1, seq=2, hidden_size=8)
+		// cos_cache last dim = 2, so head_size = 2*2 = 4, num_heads = 8/4 = 2
+		x := Const(g, [][][]float32{{{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0}}})
+
+		// cos_cache and sin_cache: (max_pos=2, rotary_dim/2=2)
+		// Position 0: cos=[1, 1], sin=[0, 0] (no rotation)
+		// Position 1: cos=[0, 1], sin=[1, 0]
+		cosCache := Const(g, [][]float32{{1.0, 1.0}, {0.0, 1.0}})
+		sinCache := Const(g, [][]float32{{0.0, 0.0}, {1.0, 0.0}})
+
+		positionIds := Const(g, [][]int64{{0, 1}})
+
+		node := &protos.NodeProto{
+			OpType: "RotaryEmbedding",
+			// num_heads is intentionally not set (defaults to 0)
+		}
+		inputs = []*Node{x, positionIds, cosCache, sinCache}
+		outputs = []*Node{
+			convertRotaryEmbedding(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// num_heads derived as 8 / (2*2) = 2, head_size = 4
+		// Reshaped to (1, 2, 2, 4) then transposed to (1, 2, 2, 4) [batch, heads, seq, head_size]
+		//
+		// Head 0, Position 0: x=[1,0,0,0], cos=[1,1], sin=[0,0]
+		//   x1=[1,0], x2=[0,0], real=[1,0], imag=[0,0] -> [1,0,0,0]
+		// Head 0, Position 1: x=[0,0,0,0], cos=[0,1], sin=[1,0]
+		//   x1=[0,0], x2=[0,0], real=[0,0], imag=[0,0] -> [0,0,0,0]
+		// Head 1, Position 0: x=[0,0,0,0], cos=[1,1], sin=[0,0]
+		//   x1=[0,0], x2=[0,0], real=[0,0], imag=[0,0] -> [0,0,0,0]
+		// Head 1, Position 1: x=[1,0,0,0], cos=[0,1], sin=[1,0]
+		//   x1=[1,0], x2=[0,0], real=[0,0], imag=[1,0] -> [0,0,1,0]
+		//
+		// Transposed back to (1, 2, 2, 4) [batch, seq, heads, head_size]
+		// Then reshaped to (1, 2, 8):
+		//   Seq 0: head0=[1,0,0,0] head1=[0,0,0,0] -> [1,0,0,0,0,0,0,0]
+		//   Seq 1: head0=[0,0,0,0] head1=[0,0,1,0] -> [0,0,0,0,0,0,1,0]
+		[][][]float32{{{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0}}},
+	}, 1e-5)
 }
 
 func TestMultiHeadAttention(t *testing.T) {
@@ -1062,6 +1107,118 @@ func TestMultiHeadAttention(t *testing.T) {
 		// output row 0 = [1, 0] @ V = [1, 2]
 		// Second query unchanged
 		[][][][]float32{{{{1.0, 2.0}, {2.3395, 3.3395}}}},
+	}, 1e-3)
+}
+
+func TestGroupQueryAttention(t *testing.T) {
+	// Basic GQA: batch=1, seq=2, num_heads=2, kv_num_heads=1, head_size=2
+	// Same Q/K/V for self-attention, no past cache.
+	graphtest.RunTestGraphFn(t, "GQA-basic", func(g *Graph) (inputs, outputs []*Node) {
+		// Q: (1, 2, 4) = batch=1, seq=2, num_heads=2 * head_size=2
+		q := Const(g, [][][]float32{{{1, 0, 0, 1}, {0, 1, 1, 0}}})
+		// K, V: (1, 2, 2) = batch=1, seq=2, kv_num_heads=1 * head_size=2
+		k := Const(g, [][][]float32{{{1, 0}, {0, 1}}})
+		v := Const(g, [][][]float32{{{1, 2}, {3, 4}}})
+
+		node := &protos.NodeProto{
+			OpType: "GroupQueryAttention",
+			Output: []string{"output", "present_key", "present_value"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "num_heads", Type: protos.AttributeProto_INT, I: 2},
+				{Name: "kv_num_heads", Type: protos.AttributeProto_INT, I: 1},
+			},
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{q, k, v}
+		result := convertGroupQueryAttention(nil, convertedOutputs, node, inputs)
+
+		outputs = []*Node{
+			result,
+			convertedOutputs["present_key"],
+			convertedOutputs["present_value"],
+		}
+		return
+	}, []any{
+		// With causal mask: token 0 attends to [0], token 1 attends to [0,1].
+		// KV head is replicated to both query heads.
+		[][][]float32{{{1.0, 2.0, 1.0, 2.0}, {2.3395, 3.3395, 1.6605, 2.6605}}},
+		// present_key: (1, 1, 2, 2) - same as input K reshaped
+		[][][][]float32{{{{1, 0}, {0, 1}}}},
+		// present_value: (1, 1, 2, 2)
+		[][][][]float32{{{{1, 2}, {3, 4}}}},
+	}, 1e-3)
+
+	// GQA with sliding window: only attend within window of 1.
+	graphtest.RunTestGraphFn(t, "GQA-sliding-window", func(g *Graph) (inputs, outputs []*Node) {
+		// batch=1, seq=3, num_heads=1, kv_num_heads=1, head_size=2
+		q := Const(g, [][][]float32{{{1, 0}, {0, 1}, {1, 1}}})
+		k := Const(g, [][][]float32{{{1, 0}, {0, 1}, {1, 1}}})
+		v := Const(g, [][][]float32{{{1, 0}, {0, 1}, {0.5, 0.5}}})
+
+		node := &protos.NodeProto{
+			OpType: "GroupQueryAttention",
+			Output: []string{"output", "present_key", "present_value"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "num_heads", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "kv_num_heads", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "local_window_size", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "scale", Type: protos.AttributeProto_FLOAT, F: 1.0},
+			},
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{q, k, v}
+		result := convertGroupQueryAttention(nil, convertedOutputs, node, inputs)
+
+		outputs = []*Node{result}
+		return
+	}, []any{
+		// With window=1, each token only attends to itself (causal + window).
+		// Token 0: attends to [0] only -> v[0] = [1, 0]
+		// Token 1: attends to [1] only -> v[1] = [0, 1]
+		// Token 2: attends to [2] only -> v[2] = [0.5, 0.5]
+		[][][]float32{{{1, 0}, {0, 1}, {0.5, 0.5}}},
+	}, 1e-3)
+
+	// GQA with KV cache: past_key/past_value prepended.
+	graphtest.RunTestGraphFn(t, "GQA-kv-cache", func(g *Graph) (inputs, outputs []*Node) {
+		// batch=1, current seq=1, num_heads=1, kv_num_heads=1, head_size=2
+		q := Const(g, [][][]float32{{{0, 1}}})             // new query token
+		k := Const(g, [][][]float32{{{1, 1}}})             // new key token
+		v := Const(g, [][][]float32{{{0.5, 0.5}}})         // new value token
+		pastK := Const(g, [][][][]float32{{{{1, 0}}}})     // 1 cached key
+		pastV := Const(g, [][][][]float32{{{{1, 0}}}})     // 1 cached value
+
+		node := &protos.NodeProto{
+			OpType: "GroupQueryAttention",
+			Output: []string{"output", "present_key", "present_value"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "num_heads", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "kv_num_heads", Type: protos.AttributeProto_INT, I: 1},
+				{Name: "scale", Type: protos.AttributeProto_FLOAT, F: 1.0},
+			},
+		}
+
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{q, k, v, pastK, pastV}
+		result := convertGroupQueryAttention(nil, convertedOutputs, node, inputs)
+
+		outputs = []*Node{
+			result,
+			convertedOutputs["present_key"],
+			convertedOutputs["present_value"],
+		}
+		return
+	}, []any{
+		// Query [0,1] attends to keys [[1,0],[1,1]] (past + current).
+		// scores = [0*1+1*0, 0*1+1*1] = [0, 1], softmax = [0.2689, 0.7311]
+		// output = 0.2689*[1,0] + 0.7311*[0.5,0.5] = [0.6345, 0.3655]
+		[][][]float32{{{0.6345, 0.3655}}},
+		// present_key: past [1,0] + current [1,1]
+		[][][][]float32{{{{1, 0}, {1, 1}}}},
+		// present_value: past [1,0] + current [0.5,0.5]
+		[][][][]float32{{{{1, 0}, {0.5, 0.5}}}},
 	}, 1e-3)
 }
 
@@ -1939,4 +2096,72 @@ func TestOnnxWhereMixedDTypes(t *testing.T) {
 		// Result should be promoted to Float32
 		[]float32{1.0, 20.0, 3.0},
 	}, -1)
+}
+
+func TestConvertResize(t *testing.T) {
+	// Helper to build a Resize node and call convertResize.
+	// sizes and scales are placed in convertedOutputs as Const nodes so that
+	// materializeConstantExpression can resolve them.
+	runResize := func(t *testing.T, name string, buildFn func(g *Graph) (x *Node, node *protos.NodeProto, convertedOutputs map[string]*Node), want any) {
+		t.Helper()
+		graphtest.RunTestGraphFn(t, name, func(g *Graph) (inputs, outputs []*Node) {
+			x, node, convertedOutputs := buildFn(g)
+			model := &Model{
+				variableNameToValue: make(map[string]*protos.TensorProto),
+				nodeOutputToNode:    make(map[string]*protos.NodeProto),
+			}
+			inputs = []*Node{x}
+			outputs = []*Node{convertResize(model, convertedOutputs, node, []*Node{x})}
+			return
+		}, []any{want}, -1)
+	}
+
+	// Nearest upsample 2x with sizes input, shape [1,1,2,2] -> [1,1,4,4].
+	runResize(t, "Resize-nearest-sizes", func(g *Graph) (*Node, *protos.NodeProto, map[string]*Node) {
+		x := Const(g, [][][][]float32{{{{1, 2}, {3, 4}}}})
+		convertedOutputs := map[string]*Node{
+			"sizes": Const(g, []int64{1, 1, 4, 4}),
+		}
+		node := &protos.NodeProto{
+			OpType: "Resize",
+			Input:  []string{"X", "", "", "sizes"},
+			Output: []string{"Y"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "mode", Type: protos.AttributeProto_STRING, S: []byte("nearest")},
+				{Name: "coordinate_transformation_mode", Type: protos.AttributeProto_STRING, S: []byte("asymmetric")},
+			},
+		}
+		return x, node, convertedOutputs
+	}, [][][][]float32{{{{1, 1, 2, 2}, {1, 1, 2, 2}, {3, 3, 4, 4}, {3, 3, 4, 4}}}})
+
+	// Linear (bilinear) downsample with scales input, shape [1,1,4,4] -> [1,1,2,2].
+	runResize(t, "Resize-linear-scales", func(g *Graph) (*Node, *protos.NodeProto, map[string]*Node) {
+		x := Const(g, [][][][]float32{{{{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}, {13, 14, 15, 16}}}})
+		convertedOutputs := map[string]*Node{
+			"scales": Const(g, []float32{1.0, 1.0, 0.5, 0.5}),
+		}
+		node := &protos.NodeProto{
+			OpType: "Resize",
+			Input:  []string{"X", "", "scales"},
+			Output: []string{"Y"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "mode", Type: protos.AttributeProto_STRING, S: []byte("linear")},
+			},
+		}
+		return x, node, convertedOutputs
+	}, [][][][]float32{{{{3.5, 5.5}, {11.5, 13.5}}}})
+
+	// No-op resize: sizes match input dimensions.
+	runResize(t, "Resize-noop", func(g *Graph) (*Node, *protos.NodeProto, map[string]*Node) {
+		x := Const(g, [][][][]float32{{{{1, 2}, {3, 4}}}})
+		convertedOutputs := map[string]*Node{
+			"sizes": Const(g, []int64{1, 1, 2, 2}),
+		}
+		node := &protos.NodeProto{
+			OpType: "Resize",
+			Input:  []string{"X", "", "", "sizes"},
+			Output: []string{"Y"},
+		}
+		return x, node, convertedOutputs
+	}, [][][][]float32{{{{1, 2}, {3, 4}}}})
 }
