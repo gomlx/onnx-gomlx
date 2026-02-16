@@ -30,6 +30,7 @@ github.com/daulet/tokenizers v1.23.0 h1:I+TUWtonvT7WStFew4gpT6ahSgnt2Go90rBBawtn
 github.com/daulet/tokenizers v1.23.0/go.mod h1:tGnMdZthXdcWY6DGD07IygpwJqiPvG85FQUnhs/wSCs=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/go-logr/logr v1.4.3 h1:CjnDlHq8ikf6E492q6eKboGOC0T8CDaOvkHCIg8idEI=
@@ -46,6 +47,8 @@ github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88 h1:3FAQ+KA5WY/AzZ62
 github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88/go.mod h1:K/hj2IVnPJPuyypawBeTju2IgaP/CUlf1ziOZzPiWjw=
 github.com/gomlx/gomlx v0.26.1-0.20260211111746-dd3d906b02a6 h1:maRkL8WZmb51bJBy8xUHp6uBDgT163IWCvcGDGxxLlQ=
 github.com/gomlx/gomlx v0.26.1-0.20260211111746-dd3d906b02a6/go.mod h1:QNFysZmAivUEi0iJAtO0NIMRbX/Q/Nle2fqTBvpz2Fg=
+github.com/gomlx/gomlx v0.26.1-0.20260215082710-429182c8560c h1:MFCOj6T6mki36VgjCaECjP1b7XZHzHdqDjptsHOmV40=
+github.com/gomlx/gomlx v0.26.1-0.20260215082710-429182c8560c/go.mod h1:QNFysZmAivUEi0iJAtO0NIMRbX/Q/Nle2fqTBvpz2Fg=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
@@ -83,6 +86,7 @@ github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
 github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/rivo/uniseg v0.2.0/go.mod h1:J6wj4VEh+S6ZtnVlnTBMWIodfgj8LQOQFoIToxlJtxc=
 github.com/rivo/uniseg v0.4.7 h1:WUdvkW8uEhrYfLC4ZzdpI2ztxP1I582+49Oc5Mq64VQ=
 github.com/rivo/uniseg v0.4.7/go.mod h1:FN3SvrM+Zdj16jyLfmOkMNblXMcoc8DfTHruCPUcx88=
