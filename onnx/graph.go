@@ -180,6 +180,12 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 		return
 	}
 
+	// Check if this output belongs to a fusion group.
+	if fg := m.isFusionGroupOutput(nodeOutputName); fg != nil {
+		m.ensureFusionGroupConverted(ctx, g, fg, convertedOutputs)
+		return
+	}
+
 	// Is it the output of a variable?
 	if _, found := m.variableNameToValue[nodeOutputName]; found {
 		if ctx == nil {
@@ -533,7 +539,7 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "Flatten":
 		result = convertFlatten(node, inputs)
 	case "DequantizeLinear":
-		result = convertDequantizeLinear(node, inputs)
+		result = m.convertDequantizeLinear(convertedOutputs, node, inputs)
 	case "QuantizeLinear":
 		result = convertQuantizeLinear(node, inputs)
 	case "MatMulInteger":

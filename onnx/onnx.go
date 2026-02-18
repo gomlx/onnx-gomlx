@@ -52,6 +52,12 @@ type Model struct {
 	// externalDataReader manages memory-mapped external data files for efficient tensor loading.
 	// It is initialized lazily when external data is first accessed.
 	externalDataReader *ExternalDataReader
+
+	// detectedFusions maps output names to detected fusion candidates (SDPA, QKV Dense, Dense+Gelu).
+	// Populated by detectFusionPatterns during Parse. The GoMLX wrapper functions
+	// (attention.Core, attention.QKVProjection, nn.Dense) handle fused-vs-decomposed
+	// fallback internally, so all detected fusions are always active.
+	detectedFusions map[string]FusionCandidate
 }
 
 // Parse parses an ONNX model into an internal representation that can be used to build a GoMLX graph.
@@ -118,6 +124,10 @@ func Parse(contents []byte) (*Model, error) {
 			m.nodeOutputToNode[outputName] = node
 		}
 	}
+
+	// Detect fusible patterns (SDPA, QKV Dense) for potential acceleration.
+	m.detectFusionPatterns()
+
 	return m, nil
 }
 
