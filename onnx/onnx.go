@@ -53,14 +53,11 @@ type Model struct {
 	// It is initialized lazily when external data is first accessed.
 	externalDataReader *ExternalDataReader
 
-	// detectedFusionGroups maps root output names to detected fusion patterns (SDPA, QKV Dense).
-	// Populated by detectFusionPatterns during Parse. This is the immutable set of all detected
-	// patterns; it is never modified after detection.
-	detectedFusionGroups map[string]*FusionGroup
-
-	// activeFusionGroups is the subset of detectedFusionGroups that the current backend supports.
-	// It is rebuilt from detectedFusionGroups at the start of each CallGraph invocation.
-	activeFusionGroups map[string]*FusionGroup
+	// detectedFusions maps output names to detected fusion candidates (SDPA, QKV Dense, Dense+Gelu).
+	// Populated by detectFusionPatterns during Parse. The GoMLX wrapper functions
+	// (attention.Core, attention.QKVProjection, nn.Dense) handle fused-vs-decomposed
+	// fallback internally, so all detected fusions are always active.
+	detectedFusions map[string]FusionCandidate
 }
 
 // Parse parses an ONNX model into an internal representation that can be used to build a GoMLX graph.

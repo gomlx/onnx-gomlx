@@ -180,12 +180,14 @@ func TestDetectSDPAPattern(t *testing.T) {
 	graph := makeSDPAGraph(nil)
 	m := buildTestModel(t, graph)
 
-	require.Len(t, m.detectedFusionGroups, 1, "expected 1 fusion group")
-	fg := m.detectedFusionGroups["output"]
-	require.NotNil(t, fg, "expected fusion group for 'output'")
-	assert.Equal(t, FusionSDPA, fg.Type)
+	require.Len(t, m.detectedFusions, 1, "expected 1 fusion")
+	cand := m.detectedFusions["output"]
+	require.NotNil(t, cand, "expected fusion for 'output'")
+	assert.Equal(t, "SDPA", cand.Name())
 
-	p := fg.Params.(*SDPAParams)
+	sdpa, ok := cand.(*sdpaCandidate)
+	require.True(t, ok)
+	p := sdpa.params
 	assert.Equal(t, "Q", p.QInputName)
 	assert.Equal(t, "K", p.KInputName)
 	assert.Equal(t, "V", p.VInputName)
@@ -201,13 +203,14 @@ func TestDetectSDPAPatternWithMask(t *testing.T) {
 	graph := makeSDPAGraph([]int64{4, 4})
 	m := buildTestModel(t, graph)
 
-	require.Len(t, m.detectedFusionGroups, 1)
-	fg := m.detectedFusionGroups["output"]
-	require.NotNil(t, fg)
-	assert.Equal(t, FusionSDPA, fg.Type)
+	require.Len(t, m.detectedFusions, 1)
+	cand := m.detectedFusions["output"]
+	require.NotNil(t, cand)
+	assert.Equal(t, "SDPA", cand.Name())
 
-	p := fg.Params.(*SDPAParams)
-	assert.Equal(t, "mask", p.MaskInputName)
+	sdpa, ok := cand.(*sdpaCandidate)
+	require.True(t, ok)
+	assert.Equal(t, "mask", sdpa.params.MaskInputName)
 }
 
 // TestSDPAWithRank4Mask tests that SDPA fusion works with rank-4 masks (broadcast via strides).
@@ -215,12 +218,13 @@ func TestSDPAWithRank4Mask(t *testing.T) {
 	graph := makeSDPAGraph([]int64{1, 1, 4, 4})
 	m := buildTestModel(t, graph)
 
-	require.Len(t, m.detectedFusionGroups, 1, "expected 1 fusion group for rank-4 mask")
-	fg := m.detectedFusionGroups["output"]
-	require.NotNil(t, fg)
+	require.Len(t, m.detectedFusions, 1, "expected 1 fusion for rank-4 mask")
+	cand := m.detectedFusions["output"]
+	require.NotNil(t, cand)
 
-	p := fg.Params.(*SDPAParams)
-	assert.Equal(t, "mask", p.MaskInputName)
+	sdpa, ok := cand.(*sdpaCandidate)
+	require.True(t, ok)
+	assert.Equal(t, "mask", sdpa.params.MaskInputName)
 }
 
 // TestSDPASkippedForRank5Mask tests that SDPA fusion is skipped when mask rank > 4.
@@ -228,7 +232,7 @@ func TestSDPASkippedForRank5Mask(t *testing.T) {
 	graph := makeSDPAGraph([]int64{1, 1, 1, 4, 4})
 	m := buildTestModel(t, graph)
 
-	assert.Len(t, m.detectedFusionGroups, 0, "expected no fusion groups for rank-5 mask")
+	assert.Len(t, m.detectedFusions, 0, "expected no fusions for rank-5 mask")
 }
 
 // makePreScaledSDPAGraph builds a pre-scaled SDPA graph (Snowflake arctic-embed style):
@@ -296,12 +300,14 @@ func TestDetectPreScaledSDPAPattern(t *testing.T) {
 	graph := makePreScaledSDPAGraph()
 	m := buildTestModel(t, graph)
 
-	require.Len(t, m.detectedFusionGroups, 1, "expected 1 fusion group for pre-scaled SDPA")
-	fg := m.detectedFusionGroups["output"]
-	require.NotNil(t, fg)
-	assert.Equal(t, FusionSDPA, fg.Type)
+	require.Len(t, m.detectedFusions, 1, "expected 1 fusion for pre-scaled SDPA")
+	cand := m.detectedFusions["output"]
+	require.NotNil(t, cand)
+	assert.Equal(t, "SDPA", cand.Name())
 
-	p := fg.Params.(*SDPAParams)
+	sdpa, ok := cand.(*sdpaCandidate)
+	require.True(t, ok)
+	p := sdpa.params
 	assert.Equal(t, "Q_t", p.QInputName)
 	assert.Equal(t, "K_raw", p.KInputName)
 	assert.Equal(t, "V", p.VInputName)
@@ -337,19 +343,21 @@ func TestDetectQKVDensePattern(t *testing.T) {
 
 	m := buildTestModel(t, graph)
 
-	require.True(t, len(m.detectedFusionGroups) >= 1, "expected at least 1 fusion group")
+	require.True(t, len(m.detectedFusions) >= 1, "expected at least 1 fusion")
 
-	fgQ := m.detectedFusionGroups["q_out"]
-	fgK := m.detectedFusionGroups["k_out"]
-	fgV := m.detectedFusionGroups["v_out"]
-	require.NotNil(t, fgQ)
-	require.NotNil(t, fgK)
-	require.NotNil(t, fgV)
-	assert.Equal(t, fgQ, fgK, "Q and K should point to the same fusion group")
-	assert.Equal(t, fgQ, fgV, "Q and V should point to the same fusion group")
-	assert.Equal(t, FusionQKVDense, fgQ.Type)
+	candQ := m.detectedFusions["q_out"]
+	candK := m.detectedFusions["k_out"]
+	candV := m.detectedFusions["v_out"]
+	require.NotNil(t, candQ)
+	require.NotNil(t, candK)
+	require.NotNil(t, candV)
+	assert.Equal(t, candQ, candK, "Q and K should point to the same fusion candidate")
+	assert.Equal(t, candQ, candV, "Q and V should point to the same fusion candidate")
+	assert.Equal(t, "QKVDense", candQ.Name())
 
-	p := fgQ.Params.(*QKVDenseParams)
+	qkv, ok := candQ.(*qkvDenseCandidate)
+	require.True(t, ok)
+	p := qkv.params
 	assert.Equal(t, "x", p.SharedInputName)
 	assert.Equal(t, 32, p.QDim)
 	assert.Equal(t, 16, p.KVDim)
@@ -391,11 +399,13 @@ func TestDetectQKVDenseWithBias(t *testing.T) {
 
 	m := buildTestModel(t, graph)
 
-	fg := m.detectedFusionGroups["q_biased"]
-	require.NotNil(t, fg)
-	assert.Equal(t, FusionQKVDense, fg.Type)
+	cand := m.detectedFusions["q_biased"]
+	require.NotNil(t, cand)
+	assert.Equal(t, "QKVDense", cand.Name())
 
-	p := fg.Params.(*QKVDenseParams)
+	qkv, ok := cand.(*qkvDenseCandidate)
+	require.True(t, ok)
+	p := qkv.params
 	assert.Equal(t, "Bq", p.BiasQName)
 	assert.Equal(t, "Bk", p.BiasKName)
 	assert.Equal(t, "Bv", p.BiasVName)
@@ -408,10 +418,10 @@ func TestDetectQKVDenseWithBias(t *testing.T) {
 func TestDisableFusion(t *testing.T) {
 	graph := makeSDPAGraph(nil)
 	m := buildTestModel(t, graph)
-	require.NotEmpty(t, m.detectedFusionGroups)
+	require.NotEmpty(t, m.detectedFusions)
 
 	m.DisableFusion()
-	assert.Empty(t, m.detectedFusionGroups)
+	assert.Empty(t, m.detectedFusions)
 }
 
 // TestSDPAFusionIntegration runs the fused SDPA path and compares with unfused output.
@@ -543,11 +553,13 @@ func TestDetectDenseGeluPattern(t *testing.T) {
 
 	m := buildTestModel(t, graph)
 
-	fg := m.detectedFusionGroups["gelu_out"]
-	require.NotNil(t, fg, "expected fusion group for 'gelu_out'")
-	assert.Equal(t, FusionDenseGelu, fg.Type)
+	cand := m.detectedFusions["gelu_out"]
+	require.NotNil(t, cand, "expected fusion for 'gelu_out'")
+	assert.Equal(t, "DenseGelu", cand.Name())
 
-	p := fg.Params.(*DenseGeluParams)
+	dg, ok := cand.(*denseGeluCandidate)
+	require.True(t, ok)
+	p := dg.params
 	assert.Equal(t, "x", p.XInputName)
 	assert.Equal(t, "W", p.WeightName)
 	assert.Equal(t, "B", p.BiasName)
@@ -577,11 +589,13 @@ func TestDetectDenseGeluNoBias(t *testing.T) {
 
 	m := buildTestModel(t, graph)
 
-	fg := m.detectedFusionGroups["gelu_out"]
-	require.NotNil(t, fg, "expected fusion group for 'gelu_out'")
-	assert.Equal(t, FusionDenseGelu, fg.Type)
+	cand := m.detectedFusions["gelu_out"]
+	require.NotNil(t, cand, "expected fusion for 'gelu_out'")
+	assert.Equal(t, "DenseGelu", cand.Name())
 
-	p := fg.Params.(*DenseGeluParams)
+	dg, ok := cand.(*denseGeluCandidate)
+	require.True(t, ok)
+	p := dg.params
 	assert.Equal(t, "x", p.XInputName)
 	assert.Equal(t, "W", p.WeightName)
 	assert.Equal(t, "", p.BiasName)

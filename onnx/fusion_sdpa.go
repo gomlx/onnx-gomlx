@@ -5,21 +5,78 @@ import (
 
 	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
 	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/pkg/ml/layers/attention"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 )
 
-// detectSDPAPatterns scans the ONNX graph for decomposed scaled dot-product attention:
+// SDPAParams holds parameters for fused scaled dot-product attention.
+type SDPAParams struct {
+	QInputName, KInputName, VInputName string
+	MaskInputName                      string  // empty if no mask
+	Scale                              float64 // 1/sqrt(headDim)
+	NumHeads                           int
+	NumKVHeads                         int
+	// KNeedsHeadsFirst is true when K is in [batch, kvLen, numKVHeads, headDim] layout
+	// and needs a [0,2,1,3] transpose to become [batch, numKVHeads, kvLen, headDim].
+	KNeedsHeadsFirst bool
+}
+
+// sdpaCandidate implements FusionCandidate for scaled dot-product attention.
+type sdpaCandidate struct {
+	params          *SDPAParams
+	outputName      string
+	internalOutputs map[string]bool
+	externalInputs  []string
+}
+
+func (c *sdpaCandidate) Name() string                    { return "SDPA" }
+func (c *sdpaCandidate) Score() float32                   { return 100.0 }
+func (c *sdpaCandidate) OutputNames() []string            { return []string{c.outputName} }
+func (c *sdpaCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
+func (c *sdpaCandidate) ExternalInputs() []string         { return c.externalInputs }
+
+func (c *sdpaCandidate) Emit(ctx *context.Context, g *Graph, convertedOutputs map[string]*Node) {
+	p := c.params
+
+	q := convertedOutputs[p.QInputName]
+	k := convertedOutputs[p.KInputName]
+	v := convertedOutputs[p.VInputName]
+
+	// When K is in [batch, kvLen, numKVHeads, headDim] (e.g. from Snowflake-style models),
+	// transpose to [batch, numKVHeads, kvLen, headDim] as expected by attention.Core.
+	if p.KNeedsHeadsFirst {
+		k = TransposeAllDims(k, 0, 2, 1, 3)
+	}
+
+	var mask *Node
+	if p.MaskInputName != "" {
+		mask = convertedOutputs[p.MaskInputName]
+	}
+
+	output, _ := attention.Core(ctx, q, k, v, p.Scale, mask, 0, attention.LayoutBHSD, false, false)
+	convertedOutputs[c.outputName] = output
+}
+
+func init() {
+	RegisterFusionDetector(detectSDPACandidates)
+}
+
+// detectSDPACandidates scans the ONNX graph for decomposed scaled dot-product attention:
 //
 //	MatMul(Q, K^T) → Div/Mul(·, scale) → [Add(·, mask)] → Softmax(·, axis=-1) → MatMul(·, V)
 //
-// and registers FusionGroups for each match.
-func (m *Model) detectSDPAPatterns(graph *protos.GraphProto, consumers map[string][]*protos.NodeProto) {
+// and returns FusionCandidates for each match.
+func detectSDPACandidates(m *Model, graph *protos.GraphProto, consumers map[string][]*protos.NodeProto) []FusionCandidate {
+	var candidates []FusionCandidate
 	for _, node := range graph.Node {
 		if node.OpType != "MatMul" {
 			continue
 		}
-		m.tryMatchSDPA(graph, consumers, node)
+		if cand := m.tryMatchSDPA(graph, consumers, node); cand != nil {
+			candidates = append(candidates, cand)
+		}
 	}
+	return candidates
 }
 
 // tryMatchSDPA attempts to match an SDPA chain starting from matmul1 (the Q@K^T multiplication).
@@ -30,14 +87,14 @@ func (m *Model) detectSDPAPatterns(graph *protos.GraphProto, consumers map[strin
 //
 // In the pre-scaled pattern, both Q and K inputs to MatMul1 come from Mul(·, scalar)
 // with the same scalar constant, and the effective scale is scalar².
-func (m *Model) tryMatchSDPA(graph *protos.GraphProto, consumers map[string][]*protos.NodeProto, matmul1 *protos.NodeProto) {
+func (m *Model) tryMatchSDPA(graph *protos.GraphProto, consumers map[string][]*protos.NodeProto, matmul1 *protos.NodeProto) *sdpaCandidate {
 	if len(matmul1.Output) == 0 {
-		return
+		return nil
 	}
 	m1Out := matmul1.Output[0]
 
 	if len(matmul1.Input) < 2 {
-		return
+		return nil
 	}
 
 	// Try to match K^T: either direct Transpose, or Mul(Transpose(...), scalar).
@@ -48,14 +105,14 @@ func (m *Model) tryMatchSDPA(graph *protos.GraphProto, consumers map[string][]*p
 		// Try pre-scaled K: Mul(Transpose(...), scalar)
 		kPreScaleMulNode, kTransposeNode, kInputName, kNeedsHeadsFirst = m.matchPreScaledKTranspose(matmul1.Input[1])
 		if kTransposeNode == nil {
-			return
+			return nil
 		}
 	}
 
 	// Follow chain from MatMul1 output.
 	scaleConsumer := soleConsumer(consumers, m1Out)
 	if scaleConsumer == nil {
-		return
+		return nil
 	}
 
 	var scale float64
@@ -75,30 +132,30 @@ func (m *Model) tryMatchSDPA(graph *protos.GraphProto, consumers map[string][]*p
 			scale = postScale
 			scaleNode = scaleConsumer
 		} else {
-			return
+			return nil
 		}
 	case "Add", "Softmax":
 		// No post-scale node. Check for pre-scaled Q/K pattern.
 		if kPreScaleMulNode == nil {
-			return // K wasn't pre-scaled, and there's no post-scale → not SDPA
+			return nil // K wasn't pre-scaled, and there's no post-scale → not SDPA
 		}
 		scale = m.extractPreScale(matmul1.Input[0], kPreScaleMulNode)
 		if scale == 0 {
-			return
+			return nil
 		}
 		// afterScaleOut is the MatMul output itself (no separate scale node).
 		afterScaleOut = m1Out
 	default:
-		return
+		return nil
 	}
 	if scale == 0 {
-		return
+		return nil
 	}
 
 	// For post-scale pattern, advance past the scale node.
 	if scaleNode != nil {
 		if len(scaleNode.Output) == 0 {
-			return
+			return nil
 		}
 		afterScaleOut = scaleNode.Output[0]
 	}
@@ -112,7 +169,7 @@ func (m *Model) tryMatchSDPA(graph *protos.GraphProto, consumers map[string][]*p
 		nextNode = scaleConsumer
 	}
 	if nextNode == nil {
-		return
+		return nil
 	}
 
 	var maskInputName string
@@ -125,45 +182,45 @@ func (m *Model) tryMatchSDPA(graph *protos.GraphProto, consumers map[string][]*p
 		// Mask add: one of the Add inputs is afterScaleOut, the other is the mask.
 		maskInputName = otherAddInput(addNode, afterScaleOut)
 		if maskInputName == "" {
-			return
+			return nil
 		}
 		if !m.isMaskRankAcceptable(graph, maskInputName) {
-			return
+			return nil
 		}
 		if len(addNode.Output) == 0 {
-			return
+			return nil
 		}
 		softmaxNode = soleConsumer(consumers, addNode.Output[0])
 		if softmaxNode == nil || softmaxNode.OpType != "Softmax" {
-			return
+			return nil
 		}
 	case "Softmax":
 		softmaxNode = nextNode
 	default:
-		return
+		return nil
 	}
 
 	// Verify softmax axis is -1 (last axis).
 	softmaxAxis := getIntAttrOr(softmaxNode, "axis", -1)
 	if softmaxAxis != -1 {
-		return
+		return nil
 	}
 
 	if len(softmaxNode.Output) == 0 {
-		return
+		return nil
 	}
 	softmaxOut := softmaxNode.Output[0]
 
 	// Final MatMul: Softmax output @ V
 	matmul2 := soleConsumer(consumers, softmaxOut)
 	if matmul2 == nil || matmul2.OpType != "MatMul" {
-		return
+		return nil
 	}
 	if len(matmul2.Input) < 2 || len(matmul2.Output) == 0 {
-		return
+		return nil
 	}
 	if matmul2.Input[0] != softmaxOut {
-		return
+		return nil
 	}
 	vInputName := matmul2.Input[1]
 	rootOutput := matmul2.Output[0]
@@ -177,7 +234,6 @@ func (m *Model) tryMatchSDPA(graph *protos.GraphProto, consumers map[string][]*p
 	internalOutputs := map[string]bool{
 		m1Out:      true,
 		softmaxOut: true,
-		rootOutput: true,
 	}
 	if scaleNode != nil {
 		internalNodes[scaleNode] = true
@@ -191,14 +247,8 @@ func (m *Model) tryMatchSDPA(graph *protos.GraphProto, consumers map[string][]*p
 	}
 
 	// Verify no internal output is consumed outside the group.
-	internalOutputsExclRoot := make(map[string]bool)
-	for k, v := range internalOutputs {
-		if k != rootOutput {
-			internalOutputsExclRoot[k] = v
-		}
-	}
-	if hasExternalConsumers(internalOutputsExclRoot, consumers, internalNodes) {
-		return
+	if hasExternalConsumers(internalOutputs, consumers, internalNodes) {
+		return nil
 	}
 
 	// Extract numHeads from Q and K shapes.
@@ -239,12 +289,11 @@ func (m *Model) tryMatchSDPA(graph *protos.GraphProto, consumers map[string][]*p
 		externalInputs = append(externalInputs, maskInputName)
 	}
 
-	fg := &FusionGroup{
-		Type:                FusionSDPA,
-		RootOutputName:      rootOutput,
-		InternalOutputNames: internalOutputs,
-		ExternalInputNames:  externalInputs,
-		Params: &SDPAParams{
+	return &sdpaCandidate{
+		outputName:      rootOutput,
+		internalOutputs: internalOutputs,
+		externalInputs:  externalInputs,
+		params: &SDPAParams{
 			QInputName:       qInputName,
 			KInputName:       kInputName,
 			VInputName:       vInputName,
@@ -255,8 +304,6 @@ func (m *Model) tryMatchSDPA(graph *protos.GraphProto, consumers map[string][]*p
 			KNeedsHeadsFirst: kNeedsHeadsFirst,
 		},
 	}
-
-	m.detectedFusionGroups[rootOutput] = fg
 }
 
 // matchKTranspose checks if inputName comes from a Transpose node that swaps the last two axes.
@@ -608,27 +655,4 @@ func extractDimsFromValueInfo(vi *protos.ValueInfoProto) []int {
 		}
 	}
 	return dims
-}
-
-// emitSDPA emits a FusedMultiHeadSDPA op for the given fusion group.
-func (m *Model) emitSDPA(_ *context.Context, g *Graph, fg *FusionGroup, convertedOutputs map[string]*Node) {
-	p := fg.Params.(*SDPAParams)
-
-	q := convertedOutputs[p.QInputName]
-	k := convertedOutputs[p.KInputName]
-	v := convertedOutputs[p.VInputName]
-
-	// When K is in [batch, kvLen, numKVHeads, headDim] (e.g. from Snowflake-style models),
-	// transpose to [batch, numKVHeads, kvLen, headDim] as expected by FusedMultiHeadSDPA.
-	if p.KNeedsHeadsFirst {
-		k = TransposeAllDims(k, 0, 2, 1, 3)
-	}
-
-	var mask *Node
-	if p.MaskInputName != "" {
-		mask = convertedOutputs[p.MaskInputName]
-	}
-
-	result := FusedMultiHeadSDPA(q, k, v, mask, p.NumHeads, p.NumKVHeads, p.Scale, false)
-	convertedOutputs[fg.RootOutputName] = result
 }

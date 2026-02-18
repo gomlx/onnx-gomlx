@@ -3,12 +3,71 @@ package onnx
 import (
 	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
 	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/pkg/ml/layers/attention"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 )
 
-// detectQKVDensePatterns scans for three MatMul nodes sharing the same first input (x)
+// QKVDenseParams holds parameters for fused QKV projection.
+type QKVDenseParams struct {
+	SharedInputName                       string
+	WQName, WKName, WVName                string
+	BiasQName, BiasKName, BiasVName       string
+	QOutputName, KOutputName, VOutputName string
+	QDim, KVDim                           int
+}
+
+// qkvDenseCandidate implements FusionCandidate for fused QKV projection.
+type qkvDenseCandidate struct {
+	params          *QKVDenseParams
+	internalOutputs map[string]bool
+	externalInputs  []string
+}
+
+func (c *qkvDenseCandidate) Name() string       { return "QKVDense" }
+func (c *qkvDenseCandidate) Score() float32      { return 80.0 }
+func (c *qkvDenseCandidate) OutputNames() []string {
+	return []string{c.params.QOutputName, c.params.KOutputName, c.params.VOutputName}
+}
+func (c *qkvDenseCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
+func (c *qkvDenseCandidate) ExternalInputs() []string         { return c.externalInputs }
+
+func (c *qkvDenseCandidate) Emit(_ *context.Context, g *Graph, convertedOutputs map[string]*Node) {
+	p := c.params
+
+	x := convertedOutputs[p.SharedInputName]
+	wQ := convertedOutputs[p.WQName]
+	wK := convertedOutputs[p.WKName]
+	wV := convertedOutputs[p.WVName]
+
+	// ONNX MatMul computes x @ W where W is [inFeatures, outDim].
+	// QKVProjection expects wQKV shape [inFeatures, qDim+2*kvDim] — same ONNX convention.
+	// Concatenate along the last axis (output dimension).
+	wQKV := Concatenate([]*Node{wQ, wK, wV}, -1)
+
+	var biasQ, biasK, biasV *Node
+	if p.BiasQName != "" {
+		biasQ = convertedOutputs[p.BiasQName]
+	}
+	if p.BiasKName != "" {
+		biasK = convertedOutputs[p.BiasKName]
+	}
+	if p.BiasVName != "" {
+		biasV = convertedOutputs[p.BiasVName]
+	}
+
+	q, k, v := attention.QKVProjection(x, wQKV, biasQ, biasK, biasV, p.QDim, p.KVDim)
+	convertedOutputs[p.QOutputName] = q
+	convertedOutputs[p.KOutputName] = k
+	convertedOutputs[p.VOutputName] = v
+}
+
+func init() {
+	RegisterFusionDetector(detectQKVDenseCandidates)
+}
+
+// detectQKVDenseCandidates scans for three MatMul nodes sharing the same first input (x)
 // with constant weight second inputs, optionally followed by bias Add nodes.
-func (m *Model) detectQKVDensePatterns(graph *protos.GraphProto, consumers map[string][]*protos.NodeProto) {
+func detectQKVDenseCandidates(m *Model, graph *protos.GraphProto, consumers map[string][]*protos.NodeProto) []FusionCandidate {
 	// Group MatMul nodes by their first input.
 	matmulsByInput := make(map[string][]*protos.NodeProto)
 	for _, node := range graph.Node {
@@ -22,16 +81,20 @@ func (m *Model) detectQKVDensePatterns(graph *protos.GraphProto, consumers map[s
 		matmulsByInput[firstInput] = append(matmulsByInput[firstInput], node)
 	}
 
+	var candidates []FusionCandidate
 	for sharedInput, matmuls := range matmulsByInput {
 		if len(matmuls) != 3 {
 			continue
 		}
-		m.tryMatchQKVDense(graph, consumers, sharedInput, matmuls)
+		if cand := m.tryMatchQKVDense(graph, consumers, sharedInput, matmuls); cand != nil {
+			candidates = append(candidates, cand)
+		}
 	}
+	return candidates
 }
 
 // tryMatchQKVDense attempts to match a QKV Dense fusion pattern from 3 MatMul nodes sharing input x.
-func (m *Model) tryMatchQKVDense(graph *protos.GraphProto, consumers map[string][]*protos.NodeProto, sharedInput string, matmuls []*protos.NodeProto) {
+func (m *Model) tryMatchQKVDense(graph *protos.GraphProto, consumers map[string][]*protos.NodeProto, sharedInput string, matmuls []*protos.NodeProto) *qkvDenseCandidate {
 	// All three MatMuls must have constant weight (second input).
 	type projection struct {
 		matmul     *protos.NodeProto
@@ -45,14 +108,14 @@ func (m *Model) tryMatchQKVDense(graph *protos.GraphProto, consumers map[string]
 	for i, mm := range matmuls {
 		weightName := mm.Input[1]
 		if !m.isConstant(weightName) {
-			return
+			return nil
 		}
 		dim := m.getWeightOutputDim(graph, weightName)
 		if dim <= 0 {
-			return
+			return nil
 		}
 		if len(mm.Output) == 0 {
-			return
+			return nil
 		}
 
 		projs[i] = projection{
@@ -92,7 +155,7 @@ func (m *Model) tryMatchQKVDense(graph *protos.GraphProto, consumers map[string]
 	}
 
 	if hasExternalConsumers(internalOutputs, consumers, internalNodes) {
-		return
+		return nil
 	}
 
 	// Determine Q, K, V ordering. We use dim sizes: Q typically has the largest dim,
@@ -119,7 +182,7 @@ func (m *Model) tryMatchQKVDense(graph *protos.GraphProto, consumers map[string]
 
 	// kvDim must be equal for K and V.
 	if kProj.dim != vProj.dim {
-		return
+		return nil
 	}
 
 	params := &QKVDenseParams{
@@ -137,17 +200,6 @@ func (m *Model) tryMatchQKVDense(graph *protos.GraphProto, consumers map[string]
 		KVDim:           kProj.dim,
 	}
 
-	// Register a fusion group for each of the three outputs.
-	// The "root" is the Q output; K and V outputs are also part of the group.
-	// We register all three output names so they can all be intercepted.
-	allInternalOutputs := make(map[string]bool)
-	for k, v := range internalOutputs {
-		allInternalOutputs[k] = v
-	}
-	allInternalOutputs[qProj.outputName] = true
-	allInternalOutputs[kProj.outputName] = true
-	allInternalOutputs[vProj.outputName] = true
-
 	externalInputs := []string{sharedInput, qProj.weightName, kProj.weightName, vProj.weightName}
 	if qProj.biasName != "" {
 		externalInputs = append(externalInputs, qProj.biasName)
@@ -159,18 +211,11 @@ func (m *Model) tryMatchQKVDense(graph *protos.GraphProto, consumers map[string]
 		externalInputs = append(externalInputs, vProj.biasName)
 	}
 
-	fg := &FusionGroup{
-		Type:                FusionQKVDense,
-		RootOutputName:      qProj.outputName,
-		InternalOutputNames: allInternalOutputs,
-		ExternalInputNames:  externalInputs,
-		Params:              params,
+	return &qkvDenseCandidate{
+		params:          params,
+		internalOutputs: internalOutputs,
+		externalInputs:  externalInputs,
 	}
-
-	// Register the group under all three output names so any of them triggers the fusion.
-	m.detectedFusionGroups[qProj.outputName] = fg
-	m.detectedFusionGroups[kProj.outputName] = fg
-	m.detectedFusionGroups[vProj.outputName] = fg
 }
 
 // isConstant checks if a name refers to a constant (initializer or Constant node output).
@@ -194,68 +239,4 @@ func (m *Model) getWeightOutputDim(graph *protos.GraphProto, weightName string) 
 	}
 	// Weight shape is [inFeatures, outFeatures] for standard MatMul.
 	return dims[len(dims)-1]
-}
-
-// emitQKVDense emits a FusedQKVDense op for the given fusion group.
-func (m *Model) emitQKVDense(ctx *context.Context, g *Graph, fg *FusionGroup, convertedOutputs map[string]*Node) {
-	p := fg.Params.(*QKVDenseParams)
-
-	x := convertedOutputs[p.SharedInputName]
-	wQ := convertedOutputs[p.WQName]
-	wK := convertedOutputs[p.WKName]
-	wV := convertedOutputs[p.WVName]
-
-	// ONNX MatMul computes x @ W where W is [inFeatures, outDim].
-	// FusedQKVDense expects wQKV shape [inFeatures, qDim+2*kvDim] — same ONNX convention.
-	// Concatenate along the last axis (output dimension).
-	wQKV := Concatenate([]*Node{wQ, wK, wV}, -1)
-
-	var biasQ, biasK, biasV *Node
-	if p.BiasQName != "" {
-		biasQ = convertedOutputs[p.BiasQName]
-	}
-	if p.BiasKName != "" {
-		biasK = convertedOutputs[p.BiasKName]
-	}
-	if p.BiasVName != "" {
-		biasV = convertedOutputs[p.BiasVName]
-	}
-
-	q, k, v := FusedQKVDense(x, wQKV, biasQ, biasK, biasV, p.QDim, p.KVDim)
-	convertedOutputs[p.QOutputName] = q
-	convertedOutputs[p.KOutputName] = k
-	convertedOutputs[p.VOutputName] = v
-}
-
-// ensureFusionGroupConverted ensures all external inputs of a fusion group are converted,
-// then emits the fused op. This is called when any output of the group is requested.
-func (m *Model) ensureFusionGroupConverted(ctx *context.Context, g *Graph, fg *FusionGroup, convertedOutputs map[string]*Node) {
-	// Check if already emitted (any output already in convertedOutputs).
-	if _, done := convertedOutputs[fg.RootOutputName]; done {
-		return
-	}
-
-	// Convert all external inputs first.
-	for _, inputName := range fg.ExternalInputNames {
-		m.recursiveCallGraph(ctx, g, inputName, convertedOutputs)
-	}
-
-	// Emit the fused op.
-	m.emitFusionGroup(ctx, g, fg, convertedOutputs)
-}
-
-// isFusionGroupOutput checks if nodeOutputName is an output of any active fusion group.
-// Returns the fusion group if found, nil otherwise.
-func (m *Model) isFusionGroupOutput(nodeOutputName string) *FusionGroup {
-	if m.activeFusionGroups == nil {
-		return nil
-	}
-	return m.activeFusionGroups[nodeOutputName]
-}
-
-// DisableFusion clears all detected fusion groups, forcing normal (unfused) conversion.
-func (m *Model) DisableFusion() *Model {
-	m.detectedFusionGroups = nil
-	m.activeFusionGroups = nil
-	return m
 }
