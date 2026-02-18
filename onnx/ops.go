@@ -2447,16 +2447,8 @@ func convertGroupQueryAttention(_ *Model, convertedOutputs map[string]*Node, nod
 
 	totalSeqLen := presentKey.Shape().Dimensions[2]
 
-	// Expand KV heads to match query heads for GQA via reshape+broadcast.
-	attKey := presentKey
-	attValue := presentValue
-	if kvNumHeads != numHeads {
-		repeats := numHeads / kvNumHeads
-		attKey = gqaRepeatHeads(presentKey, batchSize, kvNumHeads, repeats, totalSeqLen, headSize)
-		attValue = gqaRepeatHeads(presentValue, batchSize, kvNumHeads, repeats, totalSeqLen, headSize)
-	}
-
 	// Build causal mask: query at absolute position qPos can attend to kvPos <= qPos.
+	// The mask has shape [1, 1, qSeqLen, totalSeqLen], broadcastable to [batch, numHeads, qSeq, kvSeq].
 	g := query.Graph()
 	qPositions := Iota(g, shapes.Make(dtypes.Int32, qSeqLen), 0)
 	qPositions = AddScalar(qPositions, float64(totalSeqLen-qSeqLen))
@@ -2476,7 +2468,8 @@ func convertGroupQueryAttention(_ *Model, convertedOutputs map[string]*Node, nod
 		scaleValue = 1.0 / math.Sqrt(float64(headSize))
 	}
 	// Pass the boolean mask directly — Core auto-detects boolean masks and uses MaskedSoftmax.
-	output, _ := attention.Core(nil, query, attKey, attValue, scaleValue, mask, 0, attention.LayoutBHSD, false, false)
+	// K/V retain their original numKVHeads; Core handles GQA head mapping natively.
+	output, _ := attention.Core(nil, query, presentKey, presentValue, scaleValue, mask, 0, attention.LayoutBHSD, false, false)
 
 	// Reshape output: (batch, num_heads, qSeqLen, head_size) -> (batch, qSeqLen, num_heads * head_size)
 	output = TransposeAllDims(output, 0, 2, 1, 3)
@@ -2491,14 +2484,6 @@ func convertGroupQueryAttention(_ *Model, convertedOutputs map[string]*Node, nod
 	}
 
 	return output
-}
-
-// gqaRepeatHeads repeats KV heads to match the query head count for grouped query attention.
-// (batch, kvHeads, seq, dim) -> (batch, kvHeads*repeats, seq, dim)
-func gqaRepeatHeads(x *Node, batchSize, kvHeads, repeats, seqLen, headSize int) *Node {
-	x = Reshape(x, batchSize, kvHeads, 1, seqLen, headSize)
-	x = BroadcastToShape(x, shapes.Make(x.DType(), batchSize, kvHeads, repeats, seqLen, headSize))
-	return Reshape(x, batchSize, kvHeads*repeats, seqLen, headSize)
 }
 
 // convertSplit converts the corresponding ONNX node to GoMLX nodes.
