@@ -3303,17 +3303,3 @@ func resizeOutputSizes(m *Model, convertedOutputs map[string]*Node, node *protos
 	copy(out, inputDims)
 	return out
 }
-
-// onnxHardSwish implementation: x * max(0, min(1, alpha * x + beta))
-// alpha = 1/6, beta = 0.5
-func onnxHardSwish(x *Node) *Node {
-	g := x.Graph()
-	dtype := x.DType()
-	alpha := Scalar(g, dtype, 1.0/6.0)
-	beta := Scalar(g, dtype, 0.5)
-	zero := Scalar(g, dtype, 0.0)
-	one := Scalar(g, dtype, 1.0)
-
-	return Mul(x, Min(Max(Add(Mul(x, alpha), beta), zero), one))
-}
-

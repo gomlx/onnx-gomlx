@@ -2166,19 +2166,3 @@ func TestConvertResize(t *testing.T) {
 	}, [][][][]float32{{{{1, 2}, {3, 4}}}})
 }
 
-func TestHardSwish(t *testing.T) {
-	graphtest.RunTestGraphFn(t, "HardSwish", func(g *Graph) (inputs, outputs []*Node) {
-		// Test values:
-		// -4.0: alpha*x+beta = -4/6+0.5 = -0.666+0.5 = -0.166 -> clamped to 0 -> result 0
-		// 0.0: alpha*x+beta = 0.5 -> result 0 * 0.5 = 0
-		// 3.0: alpha*x+beta = 3/6+0.5 = 1.0 -> result 3.0 * 1.0 = 3.0
-		// -1.5: alpha*x+beta = -1.5/6+0.5 = -0.25+0.5 = 0.25 -> result -1.5 * 0.25 = -0.375
-		x := Const(g, []float32{-4.0, 0.0, 3.0, -1.5})
-		inputs = []*Node{x}
-		outputs = []*Node{onnxHardSwish(x)}
-		return
-	}, []any{
-		[]float32{0.0, 0.0, 3.0, -0.375},
-	}, 1e-6)
-}
-

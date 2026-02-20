@@ -495,7 +495,7 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "Sigmoid":
 		result = Sigmoid(inputs[0])
 	case "HardSwish":
-		result = onnxHardSwish(inputs[0])
+		result = activations.HardSwish(inputs[0])
 
 	// Ops with equivalents:
 	case "MatMul":
