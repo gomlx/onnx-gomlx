@@ -279,22 +279,38 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 		}
 	}
 
-	// Temporarily add sub-graph nodes to the model's nodeOutputToNode map
-	// This is needed for materializeConstantExpression to work with sub-graph nodes
+	// Temporarily add sub-graph nodes to the model's nodeOutputToNode map.
+	// This is needed for materializeConstantExpression to work with sub-graph nodes.
+	// Save original entries so we can restore them (sub-graph outputs may shadow parent names).
+	savedNodeOutputToNode := make(map[string]*protos.NodeProto)
+	savedVarNameToValue := make(map[string]*protos.TensorProto)
 	for outputName, node := range subGraphNodeOutputToNode {
+		if orig, found := m.nodeOutputToNode[outputName]; found {
+			savedNodeOutputToNode[outputName] = orig
+		}
 		m.nodeOutputToNode[outputName] = node
 	}
-
-	// Consolidated cleanup: remove all temporary entries from model's maps when done
-	// Using a single defer with recovery handling to ensure cleanup always happens
-	defer func() {
-		// Clean up sub-graph initializers from model's variableNameToValue map
-		for initName := range subGraphInitializers {
-			delete(m.variableNameToValue, initName)
+	for initName := range subGraphInitializers {
+		if orig, found := m.variableNameToValue[initName]; found {
+			savedVarNameToValue[initName] = orig
 		}
-		// Clean up sub-graph nodes from model's nodeOutputToNode map
+	}
+
+	// Consolidated cleanup: restore original entries or remove temporary ones.
+	defer func() {
+		for initName := range subGraphInitializers {
+			if orig, found := savedVarNameToValue[initName]; found {
+				m.variableNameToValue[initName] = orig
+			} else {
+				delete(m.variableNameToValue, initName)
+			}
+		}
 		for outputName := range subGraphNodeOutputToNode {
-			delete(m.nodeOutputToNode, outputName)
+			if orig, found := savedNodeOutputToNode[outputName]; found {
+				m.nodeOutputToNode[outputName] = orig
+			} else {
+				delete(m.nodeOutputToNode, outputName)
+			}
 		}
 	}()
 
@@ -438,6 +454,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = m.convertBinaryOp(Mul, inputs[0], inputs[1])
 	case "Div":
 		result = m.convertBinaryOp(Div, inputs[0], inputs[1])
+	case "Mod":
+		result = m.convertMod(node, inputs)
 	case "Pow":
 		result = m.convertPow(convertedOutputs, node, inputs)
 	case "And":
@@ -463,15 +481,15 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "GreaterOrEqual":
 		result = m.convertBinaryOp(GreaterOrEqual, inputs[0], inputs[1])
 
-	// Unary operators
+	// Unary operators (float/complex required)
 	case "Sqrt":
-		result = Sqrt(inputs[0])
+		result = Sqrt(m.ensureFloat(inputs[0]))
 	case "Exp":
-		result = Exp(inputs[0])
+		result = Exp(m.ensureFloat(inputs[0]))
 	case "Log":
-		result = Log(inputs[0])
+		result = Log(m.ensureFloat(inputs[0]))
 	case "Erf":
-		result = Erf(inputs[0])
+		result = Erf(m.ensureFloat(inputs[0]))
 	case "Relu":
 		result = activations.Relu(inputs[0])
 	case "Gelu":
@@ -493,13 +511,13 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "BitwiseNot":
 		result = BitwiseNot(inputs[0])
 	case "Tanh":
-		result = Tanh(inputs[0])
+		result = Tanh(m.ensureFloat(inputs[0]))
 	case "Sin":
-		result = Sin(inputs[0])
+		result = Sin(m.ensureFloat(inputs[0]))
 	case "Cos":
-		result = Cos(inputs[0])
+		result = Cos(m.ensureFloat(inputs[0]))
 	case "Sigmoid":
-		result = Sigmoid(inputs[0])
+		result = Sigmoid(m.ensureFloat(inputs[0]))
 	case "HardSwish":
 		result = activations.HardSwish(inputs[0])
 	case "IsNaN":
@@ -531,7 +549,7 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "Shape":
 		result = convertShape(node, inputs)
 	case "Concat":
-		result = convertConcat(node, inputs)
+		result = m.convertConcat(node, inputs)
 	case "Softmax":
 		result = convertSoftmax(node, inputs)
 	case "Cast":

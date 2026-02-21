@@ -2166,3 +2166,83 @@ func TestConvertResize(t *testing.T) {
 	}, [][][][]float32{{{{1, 2}, {3, 4}}}})
 }
 
+func TestMod(t *testing.T) {
+	// fmod=1 (C-style): result sign follows the dividend.
+	graphtest.RunTestGraphFn(t, "Mod(fmod=1, int)", func(g *Graph) (inputs, outputs []*Node) {
+		lhs := Const(g, []int32{7, -7, 7, -7})
+		rhs := Const(g, []int32{3, 3, -3, -3})
+		node := &protos.NodeProto{
+			OpType: "Mod",
+			Attribute: []*protos.AttributeProto{
+				{Name: "fmod", Type: protos.AttributeProto_INT, I: 1},
+			},
+		}
+		m := createTestModelWithDTypePromoConfig(false, false)
+		inputs = []*Node{lhs, rhs}
+		outputs = []*Node{m.convertMod(node, inputs)}
+		return
+	}, []any{
+		[]int32{1, -1, 1, -1},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "Mod(fmod=1, float)", func(g *Graph) (inputs, outputs []*Node) {
+		lhs := Const(g, []float32{7, -7, 7, -7})
+		rhs := Const(g, []float32{3, 3, -3, -3})
+		node := &protos.NodeProto{
+			OpType: "Mod",
+			Attribute: []*protos.AttributeProto{
+				{Name: "fmod", Type: protos.AttributeProto_INT, I: 1},
+			},
+		}
+		m := createTestModelWithDTypePromoConfig(false, false)
+		inputs = []*Node{lhs, rhs}
+		outputs = []*Node{m.convertMod(node, inputs)}
+		return
+	}, []any{
+		[]float32{1, -1, 1, -1},
+	}, -1)
+
+	// fmod=0 (default, Python-style): result sign follows the divisor.
+	graphtest.RunTestGraphFn(t, "Mod(fmod=0, int)", func(g *Graph) (inputs, outputs []*Node) {
+		lhs := Const(g, []int32{7, -7, 7, -7})
+		rhs := Const(g, []int32{3, 3, -3, -3})
+		node := &protos.NodeProto{OpType: "Mod"}
+		m := createTestModelWithDTypePromoConfig(false, false)
+		inputs = []*Node{lhs, rhs}
+		outputs = []*Node{m.convertMod(node, inputs)}
+		return
+	}, []any{
+		[]int32{1, 2, -2, -1},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "Mod(fmod=0, float)", func(g *Graph) (inputs, outputs []*Node) {
+		lhs := Const(g, []float32{7, -7, 7, -7})
+		rhs := Const(g, []float32{3, 3, -3, -3})
+		node := &protos.NodeProto{OpType: "Mod"}
+		m := createTestModelWithDTypePromoConfig(false, false)
+		inputs = []*Node{lhs, rhs}
+		outputs = []*Node{m.convertMod(node, inputs)}
+		return
+	}, []any{
+		[]float32{1, 2, -2, -1},
+	}, -1)
+
+	// Broadcasting: scalar divisor
+	graphtest.RunTestGraphFn(t, "Mod(broadcast)", func(g *Graph) (inputs, outputs []*Node) {
+		lhs := Const(g, []int32{10, 11, 12})
+		rhs := Const(g, int32(3))
+		node := &protos.NodeProto{
+			OpType: "Mod",
+			Attribute: []*protos.AttributeProto{
+				{Name: "fmod", Type: protos.AttributeProto_INT, I: 1},
+			},
+		}
+		m := createTestModelWithDTypePromoConfig(false, false)
+		inputs = []*Node{lhs, rhs}
+		outputs = []*Node{m.convertMod(node, inputs)}
+		return
+	}, []any{
+		[]int32{1, 2, 0},
+	}, -1)
+}
+
