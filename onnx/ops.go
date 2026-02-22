@@ -105,12 +105,11 @@ func (m *Model) checkOrPromoteDTypes(lhs, rhs *Node) (*Node, *Node) {
 }
 
 // ensureFloat casts an integer node to Float32 when dtype promotion is enabled.
-// ONNX Runtime silently promotes integers to float for math ops like Sqrt, Exp, etc.
-// Without promotion enabled, this is a no-op (GoMLX will error on the invalid dtype).
+// ensureFloat promotes integer inputs to Float32 for float-only ops (Sqrt, Exp, etc.).
+// This is always required for integer inputs regardless of allowDTypePromotion,
+// since these ops are mathematically defined only on float types. ONNX Runtime
+// does this silently.
 func (m *Model) ensureFloat(n *Node) *Node {
-	if !m.allowDTypePromotion {
-		return n
-	}
 	if n.DType().IsFloat() || n.DType().IsComplex() {
 		return n
 	}
@@ -762,9 +761,19 @@ func (m *Model) convertPow(convertedOutputs map[string]*Node, node *protos.NodeP
 	case 1:
 		return inputs[0]
 	case 0.5:
-		return Sqrt(m.ensureFloat(inputs[0]))
+		x := inputs[0]
+		result := Sqrt(m.ensureFloat(x))
+		if x.DType().IsInt() {
+			result = ConvertDType(result, x.DType())
+		}
+		return result
 	case -0.5:
-		return Reciprocal(Sqrt(m.ensureFloat(inputs[0])))
+		x := inputs[0]
+		result := Reciprocal(Sqrt(m.ensureFloat(x)))
+		if x.DType().IsInt() {
+			result = ConvertDType(result, x.DType())
+		}
+		return result
 	case -1:
 		return Reciprocal(inputs[0])
 	case -2:

@@ -501,9 +501,17 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "Sign":
 		result = Sign(inputs[0])
 	case "Ceil":
-		result = Ceil(inputs[0])
+		if inputs[0].DType().IsInt() {
+			result = Identity(inputs[0])
+		} else {
+			result = Ceil(inputs[0])
+		}
 	case "Floor":
-		result = Floor(inputs[0])
+		if inputs[0].DType().IsInt() {
+			result = Identity(inputs[0])
+		} else {
+			result = Floor(inputs[0])
+		}
 	case "Identity":
 		result = Identity(inputs[0])
 	case "Not":
