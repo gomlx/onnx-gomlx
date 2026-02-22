@@ -42,10 +42,10 @@ github.com/gomlx/exceptions v0.0.3 h1:HKnTgEjj4jlmhr8zVFkTP9qmV1ey7ypYYosQ8GzXWu
 github.com/gomlx/exceptions v0.0.3/go.mod h1:uHL0TQwJ0xaV2/snJOJV6hSE4yRmhhfymuYgNredGxU=
 github.com/gomlx/go-huggingface v0.3.1 h1:kMXA0ecTKywh4xo3WpklCDqUPmyg4ihsyftgCZNYGaA=
 github.com/gomlx/go-huggingface v0.3.1/go.mod h1:j1cd4gD0A2pwdYHZfkPMYfYr1C+KHCc2YA1kTEBWlTo=
-github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88 h1:3FAQ+KA5WY/AzZ62JGg1AbkCgtSiYAZpZV37IaxdGws=
-github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88/go.mod h1:K/hj2IVnPJPuyypawBeTju2IgaP/CUlf1ziOZzPiWjw=
-github.com/gomlx/gomlx v0.26.1-0.20260211111746-dd3d906b02a6 h1:maRkL8WZmb51bJBy8xUHp6uBDgT163IWCvcGDGxxLlQ=
-github.com/gomlx/gomlx v0.26.1-0.20260211111746-dd3d906b02a6/go.mod h1:QNFysZmAivUEi0iJAtO0NIMRbX/Q/Nle2fqTBvpz2Fg=
+github.com/gomlx/go-xla v0.1.5-0.20260219173412-338774b2e7a7 h1:lZSXhh4/1962rXKwEvnhkRPYXPFe0zWn57JzZaQgEOQ=
+github.com/gomlx/go-xla v0.1.5-0.20260219173412-338774b2e7a7/go.mod h1:gwv58mA3ih33rgue4CuZ/ERxj5P2ZKKSFaD0s6Rt090=
+github.com/gomlx/gomlx v0.26.1-0.20260220075116-8da82ca8aaad h1:5sVrSlklIfVDaAm4GhfHHIkmeNeWgifI0T5OeoFP//c=
+github.com/gomlx/gomlx v0.26.1-0.20260220075116-8da82ca8aaad/go.mod h1:qh8htE4nkodsshIvgIiqkwW2IIzbOkJBT3QXI4i93Z8=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=

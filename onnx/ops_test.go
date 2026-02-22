@@ -2165,3 +2165,4 @@ func TestConvertResize(t *testing.T) {
 		return x, node, convertedOutputs
 	}, [][][][]float32{{{{1, 2}, {3, 4}}}})
 }
+
