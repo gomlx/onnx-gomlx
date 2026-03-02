@@ -3054,7 +3054,7 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__If.html
-func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func convertIf(ctx *context.Context, m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	if len(inputs) != 1 {
 		exceptions.Panicf("If: expected exactly 1 input (condition), got %d", len(inputs))
 	}
@@ -3097,10 +3097,10 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 
 	// Convert then_branch sub-graph
 	// Note: convertSubGraph will update convertedOutputs with any main model nodes it converts
-	thenResults := m.convertSubGraph(g, thenGraph, convertedOutputs)
+	thenResults := m.convertSubGraph(ctx, g, thenGraph, convertedOutputs)
 
 	// Convert else_branch sub-graph (will see nodes converted by then_branch via convertedOutputs)
-	elseResults := m.convertSubGraph(g, elseGraph, convertedOutputs)
+	elseResults := m.convertSubGraph(ctx, g, elseGraph, convertedOutputs)
 
 	// Both branches must produce the same number of outputs
 	if len(thenResults) != len(elseResults) {

@@ -241,7 +241,7 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 // convertSubGraph converts an ONNX sub-graph (used in control flow ops like If) to GoMLX nodes.
 // It takes the parent graph g and the sub-graph proto, along with the current convertedOutputs mapping.
 // Returns a slice of output nodes from the sub-graph in the order they appear in the sub-graph's output list.
-func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, parentConvertedOutputs map[string]*Node) []*Node {
+func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *protos.GraphProto, parentConvertedOutputs map[string]*Node) []*Node {
 	// Create a new local context for the sub-graph
 	// Note: Sub-graphs in ONNX can reference outputs from the parent graph
 	localConvertedOutputs := make(map[string]*Node)
@@ -364,7 +364,7 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 					convertSubGraphOutput(inputName)
 				}
 				// Now convert this main model node and add to local outputs
-				m.convertNode(nil, g, mainNode, localConvertedOutputs)
+				m.convertNode(ctx, g, mainNode, localConvertedOutputs)
 
 				// Also add to parent outputs so other branches/sub-graphs can reuse it
 				parentConvertedOutputs[outputName] = localConvertedOutputs[outputName]
@@ -399,7 +399,7 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 		}
 
 		// Now convert this node
-		m.convertNode(nil, g, node, localConvertedOutputs)
+		m.convertNode(ctx, g, node, localConvertedOutputs)
 	}
 
 	// Convert all output nodes recursively (which will convert their dependencies)
@@ -440,7 +440,7 @@ func opRequiresContext(opType string) bool {
 // See the definitions in:
 // . https://openxla.org/xla/broadcasting
 // . https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
-func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto, convertedOutputs map[string]*Node) {
+func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodeProto, convertedOutputs map[string]*Node) {
 	if node.Overload != "" {
 		exceptions.Panicf("overload %q to in-model function in ONNX model not implemented in node %q", node.Overload, node.Name)
 	}
@@ -652,7 +652,7 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 
 	// Control flow ops:
 	case "If":
-		result = convertIf(m, convertedOutputs, node, inputs)
+		result = convertIf(ctx, m, convertedOutputs, node, inputs)
 
 	// Sorting/ranking ops:
 	case "TopK":
