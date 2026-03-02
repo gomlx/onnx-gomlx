@@ -1274,15 +1274,20 @@ func nonZeroMaskAny(valuesAny any) []bool {
 func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	g := inputs[0].Graph()
 
-	valueAttr := getNodeAttr(node, "value", true)
-	assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
-
-	tensor, err := tensorToGoMLXWithBaseDir(m.backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
-	if err != nil {
-		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
-		panic(err)
+	var valueN *Node
+	valueAttr := getNodeAttr(node, "value", false)
+	if valueAttr != nil {
+		assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
+		tensor, err := tensorToGoMLXWithBaseDir(m.backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
+		if err != nil {
+			err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
+			panic(err)
+		}
+		valueN = Const(g, tensor)
+	} else {
+		// Default per ONNX spec: scalar float32 zero
+		valueN = Scalar(g, dtypes.Float32, 0)
 	}
-	valueN := Const(g, tensor)
 
 	dimsN := inputs[0]
 	if !dimsN.DType().IsInt() {
@@ -1574,7 +1579,7 @@ func convertScatterND(_ *Model, _ map[string]*Node, node *protos.NodeProto, inpu
 
 	q := indices.Rank()
 	if !(q >= 1) {
-		exceptions.Panicf("ScatterND: indices must have rank >= 1, got %d", r)
+		exceptions.Panicf("ScatterND: indices must have rank >= 1, got %d", q)
 	}
 
 	v := q + r - indices.Shape().Dimensions[len(indices.Shape().Dimensions)-1] - 1
@@ -1644,10 +1649,10 @@ func convertLSTM(_ *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 
 	// Attributes:
 	activationAlpha := getFloatAttrOr(node, "activation_alpha", 0.01)
-	activationBeta := getFloatsAttrOr(node, "activation_alpha", nil)
+	activationBeta := getFloatsAttrOr(node, "activation_beta", nil)
 	activations := getStringsAttrOr(node, "activations", nil)
 	if activations != nil {
-		exceptions.Panicf("LSTM custom activaitons is not supported yet -- pls open an issue on github.com/gomlx/onnx-gomlx")
+		exceptions.Panicf("LSTM custom activations is not supported yet -- pls open an issue on github.com/gomlx/onnx-gomlx")
 	}
 	_, _ = activationAlpha, activationBeta
 	clip := getFloatAttrOr(node, "clip", 0)
@@ -2133,6 +2138,10 @@ func convertLayerNormalization(_ *Model, _ map[string]*Node, node *protos.NodePr
 		// Copy the scale/bias dimensions for the normalized axes
 		scaleDims := scale.Shape().Dimensions
 		scaleRank := len(scaleDims)
+		var biasDims []int
+		if bias != nil {
+			biasDims = bias.Shape().Dimensions
+		}
 		for i := axis; i < inputRank; i++ {
 			// Check bounds to prevent index out of bounds
 			scaleIdx := i - axis
@@ -2142,7 +2151,7 @@ func convertLayerNormalization(_ *Model, _ map[string]*Node, node *protos.NodePr
 			}
 			scaleShape[i] = scaleDims[scaleIdx]
 			if bias != nil {
-				biasShape[i] = scaleDims[scaleIdx]
+				biasShape[i] = biasDims[scaleIdx]
 			}
 		}
 		scale = Reshape(scale, scaleShape...)
@@ -2432,8 +2441,8 @@ func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodePr
 		maskRank := attentionMask.Rank()
 		if maskRank == 2 {
 			// (batch, kv_seq) -> (batch, 1, 1, kv_seq)
-			attentionMask = ExpandLeftToRank(attentionMask, 4)
-			attentionMask = TransposeAllDims(attentionMask, 0, 2, 3, 1)
+			maskDims := attentionMask.Shape().Dimensions
+			attentionMask = Reshape(attentionMask, maskDims[0], 1, 1, maskDims[1])
 		} else if maskRank == 3 {
 			// (batch, q_seq, kv_seq) -> (batch, 1, q_seq, kv_seq)
 			maskDims := attentionMask.Shape().Dimensions
@@ -3115,13 +3124,8 @@ func convertIf(ctx *context.Context, m *Model, convertedOutputs map[string]*Node
 		thenOut := thenResults[i]
 		elseOut := elseResults[i]
 
-		// Apply ONNX broadcasting rules to ensure compatible shapes
-		broadcasted := onnxBroadcastToCommonShape([]*Node{cond, thenOut, elseOut})
-		condBroadcast := broadcasted[0]
-		thenOut = broadcasted[1]
-		elseOut = broadcasted[2]
-
-		results[i] = Where(condBroadcast, thenOut, elseOut)
+		// Use onnxWhere which handles both ONNX broadcasting and dtype promotion
+		results[i] = m.onnxWhere([]*Node{cond, thenOut, elseOut})
 	}
 
 	// Store additional outputs in convertedOutputs
