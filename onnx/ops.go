@@ -1494,7 +1494,7 @@ func onnxCumSum(operand *Node, axis int, exclusive, reverse bool) *Node {
 	if reverse {
 		operand = Reverse(operand, adjustedAxis)
 	}
-	output := CumSum(operand, axis)
+	output := CumSum(operand, adjustedAxis)
 	if exclusive {
 		output = ShiftWithScalar(output, adjustedAxis, ShiftDirRight, 1, 0)
 	}
@@ -2129,33 +2129,31 @@ func convertLayerNormalization(_ *Model, _ map[string]*Node, node *protos.NodePr
 	// Need to add leading 1s to match the input rank
 	if scale.Rank() < inputRank {
 		scaleShape := make([]int, inputRank)
-		biasShape := make([]int, inputRank)
 		// Set leading dimensions to 1
 		for i := 0; i < axis; i++ {
 			scaleShape[i] = 1
-			biasShape[i] = 1
 		}
-		// Copy the scale/bias dimensions for the normalized axes
+		// Copy the scale dimensions for the normalized axes
 		scaleDims := scale.Shape().Dimensions
 		scaleRank := len(scaleDims)
-		var biasDims []int
-		if bias != nil {
-			biasDims = bias.Shape().Dimensions
-		}
 		for i := axis; i < inputRank; i++ {
-			// Check bounds to prevent index out of bounds
 			scaleIdx := i - axis
 			if scaleIdx >= scaleRank {
 				exceptions.Panicf("LayerNormalization: scale tensor has insufficient dimensions (rank=%d) for input rank=%d and axis=%d",
 					scaleRank, inputRank, axis)
 			}
 			scaleShape[i] = scaleDims[scaleIdx]
-			if bias != nil {
-				biasShape[i] = biasDims[scaleIdx]
-			}
 		}
 		scale = Reshape(scale, scaleShape...)
 		if bias != nil {
+			biasDims := bias.Shape().Dimensions
+			biasShape := make([]int, inputRank)
+			for i := 0; i < axis; i++ {
+				biasShape[i] = 1
+			}
+			for i := axis; i < inputRank; i++ {
+				biasShape[i] = biasDims[i-axis]
+			}
 			bias = Reshape(bias, biasShape...)
 		}
 	}
@@ -2268,9 +2266,12 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 	// - position_ids: position indices for cache lookup (may be nil if optional)
 	// - cos_cache: cosine values for rotation
 	// - sin_cache: sine values for rotation
+	if len(inputs) < 4 {
+		exceptions.Panicf("RotaryEmbedding: expected at least 4 inputs (input, position_ids, cos_cache, sin_cache), got %d", len(inputs))
+	}
 	x := inputs[0]
 	var positionIds *Node
-	if len(inputs) > 1 && inputs[1] != nil {
+	if inputs[1] != nil {
 		positionIds = inputs[1]
 	}
 	cosCache := inputs[2]
@@ -2495,10 +2496,10 @@ func convertGroupQueryAttention(_ *Model, convertedOutputs map[string]*Node, nod
 	value := inputs[2]
 
 	var pastKey, pastValue *Node
-	if len(inputs) > 3 && inputs[3] != nil && inputs[3].Shape().Dimensions[2] > 0 {
+	if len(inputs) > 3 && inputs[3] != nil && inputs[3].Rank() > 2 && inputs[3].Shape().Dimensions[2] > 0 {
 		pastKey = inputs[3]
 	}
-	if len(inputs) > 4 && inputs[4] != nil && inputs[4].Shape().Dimensions[2] > 0 {
+	if len(inputs) > 4 && inputs[4] != nil && inputs[4].Rank() > 2 && inputs[4].Shape().Dimensions[2] > 0 {
 		pastValue = inputs[4]
 	}
 
