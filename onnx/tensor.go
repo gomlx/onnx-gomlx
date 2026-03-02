@@ -1,6 +1,8 @@
 package onnx
 
 import (
+	"encoding/binary"
+	"math"
 	"strconv"
 
 	"github.com/gomlx/exceptions"
@@ -12,6 +14,7 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
+	"github.com/x448/float16"
 )
 
 // DefaultDeviceNum is the device number used in local graph operations
@@ -392,4 +395,208 @@ func TensorValueToONNX(t *tensors.Tensor, proto *protos.TensorProto) (err error)
 		return checkAndCopyTensorToProto(t, proto, proto.Uint64Data)
 	}
 	return errors.Errorf("tensor %q shaped %s has no supported format of data in the ONNX model!?", proto.Name, shape)
+}
+
+// TensorProtoToScalar extracts a scalar float64 from a TensorProto.
+// Returns 0 if the tensor is not a scalar or the data type is unsupported.
+func TensorProtoToScalar(tp *protos.TensorProto) float64 {
+	// Must be scalar (empty dims or [1]).
+	totalElements := int64(1)
+	for _, d := range tp.Dims {
+		totalElements *= d
+	}
+	if totalElements != 1 {
+		return 0
+	}
+
+	switch tp.DataType {
+	case int32(protos.TensorProto_FLOAT):
+		if len(tp.FloatData) > 0 {
+			return float64(tp.FloatData[0])
+		}
+		if len(tp.RawData) >= 4 {
+			bits := uint32(tp.RawData[0]) | uint32(tp.RawData[1])<<8 | uint32(tp.RawData[2])<<16 | uint32(tp.RawData[3])<<24
+			return float64(math.Float32frombits(bits))
+		}
+	case int32(protos.TensorProto_DOUBLE):
+		if len(tp.DoubleData) > 0 {
+			return tp.DoubleData[0]
+		}
+		if len(tp.RawData) >= 8 {
+			bits := uint64(tp.RawData[0]) | uint64(tp.RawData[1])<<8 | uint64(tp.RawData[2])<<16 |
+				uint64(tp.RawData[3])<<24 | uint64(tp.RawData[4])<<32 | uint64(tp.RawData[5])<<40 |
+				uint64(tp.RawData[6])<<48 | uint64(tp.RawData[7])<<56
+			return math.Float64frombits(bits)
+		}
+	case int32(protos.TensorProto_FLOAT16):
+		if len(tp.RawData) >= 2 {
+			bits := uint16(tp.RawData[0]) | uint16(tp.RawData[1])<<8
+			return float64(float16.Float16(bits).Float32())
+		}
+	case int32(protos.TensorProto_INT32):
+		if len(tp.Int32Data) > 0 {
+			return float64(tp.Int32Data[0])
+		}
+	case int32(protos.TensorProto_INT64):
+		if len(tp.Int64Data) > 0 {
+			return float64(tp.Int64Data[0])
+		}
+	}
+	return 0
+}
+
+// ConstantNodeToScalar extracts a scalar float64 from a Constant op node.
+// Returns 0 if no scalar value is found.
+func ConstantNodeToScalar(node *protos.NodeProto) float64 {
+	for _, attr := range node.Attribute {
+		if attr.Name == "value" && attr.T != nil {
+			return TensorProtoToScalar(attr.T)
+		}
+		if attr.Name == "value_float" {
+			return float64(attr.F)
+		}
+	}
+	return 0
+}
+
+// tensorProtoRawBytes returns the raw byte representation of a TensorProto's data.
+// If the data is already in RawData format, returns it directly. Otherwise converts
+// typed data fields (FloatData, etc.) to little-endian raw bytes.
+func tensorProtoRawBytes(tp *protos.TensorProto) ([]byte, error) {
+	if tp.RawData != nil {
+		return tp.RawData, nil
+	}
+	if tp.FloatData != nil {
+		buf := make([]byte, len(tp.FloatData)*4)
+		for i, v := range tp.FloatData {
+			binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
+		}
+		return buf, nil
+	}
+	if tp.DoubleData != nil {
+		buf := make([]byte, len(tp.DoubleData)*8)
+		for i, v := range tp.DoubleData {
+			binary.LittleEndian.PutUint64(buf[i*8:], math.Float64bits(v))
+		}
+		return buf, nil
+	}
+	if tp.Int32Data != nil {
+		buf := make([]byte, len(tp.Int32Data)*4)
+		for i, v := range tp.Int32Data {
+			binary.LittleEndian.PutUint32(buf[i*4:], uint32(v))
+		}
+		return buf, nil
+	}
+	if tp.Int64Data != nil {
+		buf := make([]byte, len(tp.Int64Data)*8)
+		for i, v := range tp.Int64Data {
+			binary.LittleEndian.PutUint64(buf[i*8:], uint64(v))
+		}
+		return buf, nil
+	}
+	return nil, errors.Errorf("tensor %q has no supported data format for raw byte extraction", tp.Name)
+}
+
+// concatenateTensorProtos concatenates TensorProto data along the given axis.
+// All tensors must have the same data type and matching dimensions on all axes
+// except the concatenation axis. Returns a new TensorProto with RawData format.
+func concatenateTensorProtos(tps []*protos.TensorProto, axis int) (*protos.TensorProto, error) {
+	if len(tps) == 0 {
+		return nil, errors.New("no tensors to concatenate")
+	}
+	if len(tps) == 1 {
+		return tps[0], nil
+	}
+
+	ndim := len(tps[0].Dims)
+	if axis < 0 {
+		axis = ndim + axis
+	}
+	if axis < 0 || axis >= ndim {
+		return nil, errors.Errorf("axis %d out of range for %d-dimensional tensor", axis, ndim)
+	}
+
+	// Validate shapes and data types match.
+	for i := 1; i < len(tps); i++ {
+		if len(tps[i].Dims) != ndim {
+			return nil, errors.Errorf("tensor %d has %d dims, expected %d", i, len(tps[i].Dims), ndim)
+		}
+		if tps[i].DataType != tps[0].DataType {
+			return nil, errors.Errorf("tensor %d has DataType %d, expected %d", i, tps[i].DataType, tps[0].DataType)
+		}
+		for d := 0; d < ndim; d++ {
+			if d != axis && tps[i].Dims[d] != tps[0].Dims[d] {
+				return nil, errors.Errorf("tensor %d dim %d is %d, expected %d", i, d, tps[i].Dims[d], tps[0].Dims[d])
+			}
+		}
+	}
+
+	// Get raw bytes for each tensor.
+	rawDatas := make([][]byte, len(tps))
+	for i, t := range tps {
+		var err error
+		rawDatas[i], err = tensorProtoRawBytes(t)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Compute element size in bytes.
+	totalElements := int64(1)
+	for _, d := range tps[0].Dims {
+		totalElements *= d
+	}
+	if totalElements == 0 || len(rawDatas[0]) == 0 {
+		return nil, errors.New("cannot concatenate empty tensors")
+	}
+	elemSize := len(rawDatas[0]) / int(totalElements)
+
+	// Output shape.
+	outDims := make([]int64, ndim)
+	copy(outDims, tps[0].Dims)
+	for i := 1; i < len(tps); i++ {
+		outDims[axis] += tps[i].Dims[axis]
+	}
+
+	// outerSize = product of dims before axis.
+	outerSize := int64(1)
+	for d := 0; d < axis; d++ {
+		outerSize *= tps[0].Dims[d]
+	}
+
+	// suffix = product of dims after axis.
+	suffix := int64(1)
+	for d := axis + 1; d < ndim; d++ {
+		suffix *= tps[0].Dims[d]
+	}
+
+	// innerSize[i] = tps[i].Dims[axis] * suffix (in elements).
+	innerSizes := make([]int64, len(tps))
+	for i, t := range tps {
+		innerSizes[i] = t.Dims[axis] * suffix
+	}
+
+	// Allocate output.
+	totalOutElements := int64(1)
+	for _, d := range outDims {
+		totalOutElements *= d
+	}
+	outRaw := make([]byte, int(totalOutElements)*elemSize)
+
+	// Copy data row by row.
+	outOffset := 0
+	for row := int64(0); row < outerSize; row++ {
+		for i := range tps {
+			nBytes := int(innerSizes[i]) * elemSize
+			srcOffset := int(row*innerSizes[i]) * elemSize
+			copy(outRaw[outOffset:outOffset+nBytes], rawDatas[i][srcOffset:srcOffset+nBytes])
+			outOffset += nBytes
+		}
+	}
+
+	return &protos.TensorProto{
+		Dims:     outDims,
+		DataType: tps[0].DataType,
+		RawData:  outRaw,
+	}, nil
 }

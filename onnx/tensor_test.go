@@ -1,6 +1,8 @@
 package onnx
 
 import (
+	"encoding/binary"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,7 +12,9 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/x448/float16"
 
 	_ "github.com/gomlx/gomlx/backends/default"
 )
@@ -1070,5 +1074,313 @@ func TestExternalDataReader(t *testing.T) {
 
 		result := tensors.MustCopyFlatData[float32](tensor)
 		require.InDeltaSlice(t, data, result, 0.0001)
+	})
+}
+
+// TestTensorProtoRawBytes tests the tensorProtoRawBytes helper across all supported data formats.
+func TestTensorProtoRawBytes(t *testing.T) {
+	t.Run("FloatData", func(t *testing.T) {
+		tp := &protos.TensorProto{
+			Name:      "f",
+			Dims:      []int64{2},
+			DataType:  int32(protos.TensorProto_FLOAT),
+			FloatData: []float32{1.0, 2.0},
+		}
+		raw, err := tensorProtoRawBytes(tp)
+		require.NoError(t, err)
+		require.Len(t, raw, 8) // 2 floats * 4 bytes
+
+		// Verify little-endian encoding.
+		got0 := math.Float32frombits(binary.LittleEndian.Uint32(raw[0:4]))
+		got1 := math.Float32frombits(binary.LittleEndian.Uint32(raw[4:8]))
+		assert.Equal(t, float32(1.0), got0)
+		assert.Equal(t, float32(2.0), got1)
+	})
+
+	t.Run("RawData", func(t *testing.T) {
+		expected := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+		tp := &protos.TensorProto{
+			Name:     "r",
+			Dims:     []int64{2},
+			DataType: int32(protos.TensorProto_FLOAT),
+			RawData:  expected,
+		}
+		raw, err := tensorProtoRawBytes(tp)
+		require.NoError(t, err)
+		assert.Equal(t, expected, raw)
+	})
+
+	t.Run("DoubleData", func(t *testing.T) {
+		tp := &protos.TensorProto{
+			Name:       "d",
+			Dims:       []int64{1},
+			DataType:   int32(protos.TensorProto_DOUBLE),
+			DoubleData: []float64{3.14},
+		}
+		raw, err := tensorProtoRawBytes(tp)
+		require.NoError(t, err)
+		require.Len(t, raw, 8)
+		got := math.Float64frombits(binary.LittleEndian.Uint64(raw))
+		assert.Equal(t, 3.14, got)
+	})
+
+	t.Run("Int32Data", func(t *testing.T) {
+		tp := &protos.TensorProto{
+			Name:      "i32",
+			Dims:      []int64{3},
+			DataType:  int32(protos.TensorProto_INT32),
+			Int32Data: []int32{10, -20, 30},
+		}
+		raw, err := tensorProtoRawBytes(tp)
+		require.NoError(t, err)
+		require.Len(t, raw, 12)
+		assert.Equal(t, uint32(10), binary.LittleEndian.Uint32(raw[0:4]))
+		assert.Equal(t, int32(-20), int32(binary.LittleEndian.Uint32(raw[4:8])))
+		assert.Equal(t, uint32(30), binary.LittleEndian.Uint32(raw[8:12]))
+	})
+
+	t.Run("Int64Data", func(t *testing.T) {
+		tp := &protos.TensorProto{
+			Name:      "i64",
+			Dims:      []int64{2},
+			DataType:  int32(protos.TensorProto_INT64),
+			Int64Data: []int64{100, -200},
+		}
+		raw, err := tensorProtoRawBytes(tp)
+		require.NoError(t, err)
+		require.Len(t, raw, 16)
+		assert.Equal(t, uint64(100), binary.LittleEndian.Uint64(raw[0:8]))
+		assert.Equal(t, int64(-200), int64(binary.LittleEndian.Uint64(raw[8:16])))
+	})
+
+	t.Run("NoData", func(t *testing.T) {
+		tp := &protos.TensorProto{
+			Name:     "empty",
+			Dims:     []int64{2},
+			DataType: int32(protos.TensorProto_FLOAT),
+		}
+		_, err := tensorProtoRawBytes(tp)
+		require.Error(t, err)
+	})
+}
+
+// TestConcatenateTensorProtos tests concatenation of TensorProtos along an axis.
+func TestConcatenateTensorProtos(t *testing.T) {
+	t.Run("Basic2DLastAxis", func(t *testing.T) {
+		// A = [[1,2,3],[4,5,6]] shape [2,3]
+		// B = [[7,8,9],[10,11,12]] shape [2,3]
+		// Result = [[1,2,3,7,8,9],[4,5,6,10,11,12]] shape [2,6]
+		a := &protos.TensorProto{
+			Dims: []int64{2, 3}, DataType: int32(protos.TensorProto_FLOAT),
+			FloatData: []float32{1, 2, 3, 4, 5, 6},
+		}
+		b := &protos.TensorProto{
+			Dims: []int64{2, 3}, DataType: int32(protos.TensorProto_FLOAT),
+			FloatData: []float32{7, 8, 9, 10, 11, 12},
+		}
+		result, err := concatenateTensorProtos([]*protos.TensorProto{a, b}, -1)
+		require.NoError(t, err)
+		assert.Equal(t, []int64{2, 6}, result.Dims)
+
+		// Decode result raw bytes back to float32.
+		expected := []float32{1, 2, 3, 7, 8, 9, 4, 5, 6, 10, 11, 12}
+		for i, want := range expected {
+			got := math.Float32frombits(binary.LittleEndian.Uint32(result.RawData[i*4 : (i+1)*4]))
+			assert.InDelta(t, want, got, 1e-6, "index %d", i)
+		}
+	})
+
+	t.Run("1DConcatenation", func(t *testing.T) {
+		a := &protos.TensorProto{
+			Dims: []int64{3}, DataType: int32(protos.TensorProto_FLOAT),
+			FloatData: []float32{1, 2, 3},
+		}
+		b := &protos.TensorProto{
+			Dims: []int64{2}, DataType: int32(protos.TensorProto_FLOAT),
+			FloatData: []float32{4, 5},
+		}
+		result, err := concatenateTensorProtos([]*protos.TensorProto{a, b}, 0)
+		require.NoError(t, err)
+		assert.Equal(t, []int64{5}, result.Dims)
+
+		expected := []float32{1, 2, 3, 4, 5}
+		for i, want := range expected {
+			got := math.Float32frombits(binary.LittleEndian.Uint32(result.RawData[i*4 : (i+1)*4]))
+			assert.InDelta(t, want, got, 1e-6)
+		}
+	})
+
+	t.Run("RawDataFormat", func(t *testing.T) {
+		// Same as Basic2DLastAxis but using RawData storage.
+		aRaw := make([]byte, 6*4)
+		bRaw := make([]byte, 6*4)
+		for i, v := range []float32{1, 2, 3, 4, 5, 6} {
+			binary.LittleEndian.PutUint32(aRaw[i*4:], math.Float32bits(v))
+		}
+		for i, v := range []float32{7, 8, 9, 10, 11, 12} {
+			binary.LittleEndian.PutUint32(bRaw[i*4:], math.Float32bits(v))
+		}
+		a := &protos.TensorProto{Dims: []int64{2, 3}, DataType: int32(protos.TensorProto_FLOAT), RawData: aRaw}
+		b := &protos.TensorProto{Dims: []int64{2, 3}, DataType: int32(protos.TensorProto_FLOAT), RawData: bRaw}
+
+		result, err := concatenateTensorProtos([]*protos.TensorProto{a, b}, -1)
+		require.NoError(t, err)
+		assert.Equal(t, []int64{2, 6}, result.Dims)
+
+		expected := []float32{1, 2, 3, 7, 8, 9, 4, 5, 6, 10, 11, 12}
+		for i, want := range expected {
+			got := math.Float32frombits(binary.LittleEndian.Uint32(result.RawData[i*4 : (i+1)*4]))
+			assert.InDelta(t, want, got, 1e-6, "index %d", i)
+		}
+	})
+
+	t.Run("SingleTensor", func(t *testing.T) {
+		a := &protos.TensorProto{
+			Dims: []int64{2, 3}, DataType: int32(protos.TensorProto_FLOAT),
+			FloatData: []float32{1, 2, 3, 4, 5, 6},
+		}
+		result, err := concatenateTensorProtos([]*protos.TensorProto{a}, 0)
+		require.NoError(t, err)
+		assert.Equal(t, a, result) // Should return same pointer.
+	})
+
+	t.Run("ErrorDimensionMismatch", func(t *testing.T) {
+		a := &protos.TensorProto{Dims: []int64{2, 3}, DataType: int32(protos.TensorProto_FLOAT), FloatData: make([]float32, 6)}
+		b := &protos.TensorProto{Dims: []int64{3, 3}, DataType: int32(protos.TensorProto_FLOAT), FloatData: make([]float32, 9)}
+		_, err := concatenateTensorProtos([]*protos.TensorProto{a, b}, -1)
+		require.Error(t, err)
+	})
+
+	t.Run("ErrorDTypeMismatch", func(t *testing.T) {
+		a := &protos.TensorProto{Dims: []int64{2}, DataType: int32(protos.TensorProto_FLOAT), FloatData: make([]float32, 2)}
+		b := &protos.TensorProto{Dims: []int64{2}, DataType: int32(protos.TensorProto_INT32), Int32Data: make([]int32, 2)}
+		_, err := concatenateTensorProtos([]*protos.TensorProto{a, b}, 0)
+		require.Error(t, err)
+	})
+
+	t.Run("ErrorBadAxis", func(t *testing.T) {
+		a := &protos.TensorProto{Dims: []int64{2, 3}, DataType: int32(protos.TensorProto_FLOAT), FloatData: make([]float32, 6)}
+		_, err := concatenateTensorProtos([]*protos.TensorProto{a, a}, 5)
+		require.Error(t, err)
+	})
+
+	t.Run("ErrorEmpty", func(t *testing.T) {
+		_, err := concatenateTensorProtos(nil, 0)
+		require.Error(t, err)
+	})
+}
+
+// TestTensorProtoToScalar tests scalar extraction from TensorProto across all dtype branches.
+func TestTensorProtoToScalar(t *testing.T) {
+	tests := []struct {
+		name string
+		tp   *protos.TensorProto
+		want float64
+	}{
+		{
+			name: "FLOAT_FloatData",
+			tp:   &protos.TensorProto{Dims: []int64{}, DataType: int32(protos.TensorProto_FLOAT), FloatData: []float32{3.14}},
+			want: float64(float32(3.14)),
+		},
+		{
+			name: "FLOAT_RawData",
+			tp: func() *protos.TensorProto {
+				raw := make([]byte, 4)
+				binary.LittleEndian.PutUint32(raw, math.Float32bits(2.5))
+				return &protos.TensorProto{Dims: []int64{1}, DataType: int32(protos.TensorProto_FLOAT), RawData: raw}
+			}(),
+			want: 2.5,
+		},
+		{
+			name: "DOUBLE_DoubleData",
+			tp:   &protos.TensorProto{Dims: []int64{}, DataType: int32(protos.TensorProto_DOUBLE), DoubleData: []float64{1.23456789}},
+			want: 1.23456789,
+		},
+		{
+			name: "DOUBLE_RawData",
+			tp: func() *protos.TensorProto {
+				raw := make([]byte, 8)
+				binary.LittleEndian.PutUint64(raw, math.Float64bits(9.87))
+				return &protos.TensorProto{Dims: []int64{}, DataType: int32(protos.TensorProto_DOUBLE), RawData: raw}
+			}(),
+			want: 9.87,
+		},
+		{
+			name: "FLOAT16_RawData",
+			tp: func() *protos.TensorProto {
+				// float16 for 1.5: use the float16 package to get exact bits.
+				h := float16.Fromfloat32(1.5)
+				raw := make([]byte, 2)
+				binary.LittleEndian.PutUint16(raw, uint16(h))
+				return &protos.TensorProto{Dims: []int64{}, DataType: int32(protos.TensorProto_FLOAT16), RawData: raw}
+			}(),
+			want: 1.5,
+		},
+		{
+			name: "INT32_Int32Data",
+			tp:   &protos.TensorProto{Dims: []int64{1}, DataType: int32(protos.TensorProto_INT32), Int32Data: []int32{42}},
+			want: 42,
+		},
+		{
+			name: "INT64_Int64Data",
+			tp:   &protos.TensorProto{Dims: []int64{}, DataType: int32(protos.TensorProto_INT64), Int64Data: []int64{-7}},
+			want: -7,
+		},
+		{
+			name: "NonScalar_ReturnsZero",
+			tp:   &protos.TensorProto{Dims: []int64{2, 2}, DataType: int32(protos.TensorProto_FLOAT), FloatData: []float32{1, 2, 3, 4}},
+			want: 0,
+		},
+		{
+			name: "UnsupportedDType_ReturnsZero",
+			tp:   &protos.TensorProto{Dims: []int64{}, DataType: int32(protos.TensorProto_STRING)},
+			want: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TensorProtoToScalar(tt.tp)
+			assert.InDelta(t, tt.want, got, 1e-6)
+		})
+	}
+}
+
+// TestConstantNodeToScalar tests scalar extraction from Constant op nodes.
+func TestConstantNodeToScalar(t *testing.T) {
+	t.Run("ValueAttribute", func(t *testing.T) {
+		node := &protos.NodeProto{
+			OpType: "Constant",
+			Attribute: []*protos.AttributeProto{
+				{
+					Name: "value",
+					T: &protos.TensorProto{
+						Dims:      []int64{},
+						DataType:  int32(protos.TensorProto_FLOAT),
+						FloatData: []float32{7.5},
+					},
+				},
+			},
+		}
+		assert.InDelta(t, 7.5, ConstantNodeToScalar(node), 1e-6)
+	})
+
+	t.Run("ValueFloatAttribute", func(t *testing.T) {
+		node := &protos.NodeProto{
+			OpType: "Constant",
+			Attribute: []*protos.AttributeProto{
+				{Name: "value_float", F: 0.125},
+			},
+		}
+		assert.InDelta(t, 0.125, ConstantNodeToScalar(node), 1e-6)
+	})
+
+	t.Run("NoMatchingAttribute", func(t *testing.T) {
+		node := &protos.NodeProto{
+			OpType: "Constant",
+			Attribute: []*protos.AttributeProto{
+				{Name: "something_else"},
+			},
+		}
+		assert.Equal(t, 0.0, ConstantNodeToScalar(node))
 	})
 }

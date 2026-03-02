@@ -44,6 +44,39 @@ func SafeVarName(onnxName string) (gomlxName string) {
 	return strings.ReplaceAll(onnxName, context.ScopeSeparator, "|")
 }
 
+// FreeUnusedVariables removes initializers that are not referenced by any node input
+// in the graph. This is useful after fusion detection creates new combined initializers,
+// leaving the original individual weights unused.
+func (m *Model) FreeUnusedVariables() {
+	// Collect all names referenced as node inputs.
+	referenced := make(map[string]bool)
+	for _, node := range m.Proto.Graph.Node {
+		for _, input := range node.Input {
+			if input != "" {
+				referenced[input] = true
+			}
+		}
+	}
+
+	// Also keep initializers referenced by fusion external inputs.
+	for _, cand := range m.detectedFusions {
+		for _, name := range cand.ExternalInputs() {
+			referenced[name] = true
+		}
+	}
+
+	// Filter initializers.
+	kept := m.Proto.Graph.Initializer[:0]
+	for _, init := range m.Proto.Graph.Initializer {
+		if referenced[init.Name] {
+			kept = append(kept, init)
+		} else {
+			delete(m.variableNameToValue, init.Name)
+		}
+	}
+	m.Proto.Graph.Initializer = kept
+}
+
 // ContextToONNX converts the variables in the context back to the ONNX model.
 // Do this before saving the ONNX model back to disk.
 //

@@ -180,6 +180,12 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 		return
 	}
 
+	// Check if this output belongs to a fusion group.
+	if fg := m.isFusionGroupOutput(nodeOutputName); fg != nil {
+		m.ensureFusionGroupConverted(ctx, g, fg, convertedOutputs)
+		return
+	}
+
 	// Is it the output of a variable?
 	if _, found := m.variableNameToValue[nodeOutputName]; found {
 		if ctx == nil {
