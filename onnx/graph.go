@@ -524,6 +524,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = convertGatherND(node, inputs)
 	case "Shape":
 		result = convertShape(node, inputs)
+	case "Size":
+		result = convertSize(inputs)
 	case "Concat":
 		result = convertConcat(node, inputs)
 	case "Softmax":
