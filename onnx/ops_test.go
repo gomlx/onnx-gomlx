@@ -2166,3 +2166,91 @@ func TestConvertResize(t *testing.T) {
 	}, [][][][]float32{{{{1, 2}, {3, 4}}}})
 }
 
+func TestConvertSize(t *testing.T) {
+	graphtest.RunTestGraphFn(t, "Size(scalar)", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, float32(42))
+		inputs = []*Node{x}
+		outputs = []*Node{convertSize(inputs)}
+		return
+	}, []any{
+		int64(1),
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "Size(1D)", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{1, 2, 3, 4, 5})
+		inputs = []*Node{x}
+		outputs = []*Node{convertSize(inputs)}
+		return
+	}, []any{
+		int64(5),
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "Size(2D)", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{1, 2, 3}, {4, 5, 6}})
+		inputs = []*Node{x}
+		outputs = []*Node{convertSize(inputs)}
+		return
+	}, []any{
+		int64(6),
+	}, -1)
+}
+
+func TestConvertPadReflect(t *testing.T) {
+	// 1D: left padding only
+	graphtest.RunTestGraphFn(t, "PadReflect(1D, left=2)", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{1, 2, 3, 4})
+		inputs = []*Node{x}
+		outputs = []*Node{convertPadReflect(x, []int{2, 0}, 1)}
+		return
+	}, []any{
+		[]float32{3, 2, 1, 2, 3, 4},
+	}, -1)
+
+	// 1D: right padding only
+	graphtest.RunTestGraphFn(t, "PadReflect(1D, right=1)", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{1, 2, 3, 4})
+		inputs = []*Node{x}
+		outputs = []*Node{convertPadReflect(x, []int{0, 1}, 1)}
+		return
+	}, []any{
+		[]float32{1, 2, 3, 4, 3},
+	}, -1)
+
+	// 1D: both left and right padding
+	graphtest.RunTestGraphFn(t, "PadReflect(1D, left=2, right=1)", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{1, 2, 3, 4})
+		inputs = []*Node{x}
+		outputs = []*Node{convertPadReflect(x, []int{2, 1}, 1)}
+		return
+	}, []any{
+		// [c, b, a, b, c, d, c] = [3, 2, 1, 2, 3, 4, 3]
+		[]float32{3, 2, 1, 2, 3, 4, 3},
+	}, -1)
+
+	// 2D: padding on both axes
+	graphtest.RunTestGraphFn(t, "PadReflect(2D)", func(g *Graph) (inputs, outputs []*Node) {
+		// Input:
+		//  [[1, 2, 3],
+		//   [4, 5, 6]]
+		x := Const(g, [][]float32{{1, 2, 3}, {4, 5, 6}})
+		inputs = []*Node{x}
+		// pads = [padStart_axis0, padStart_axis1, padEnd_axis0, padEnd_axis1]
+		//      = [1,              1,              0,             1]
+		outputs = []*Node{convertPadReflect(x, []int{1, 1, 0, 1}, 2)}
+		return
+	}, []any{
+		// After axis 0 (pad start=1, end=0): reflect row 1 above
+		//  [[4, 5, 6],
+		//   [1, 2, 3],
+		//   [4, 5, 6]]
+		// After axis 1 (pad start=1, end=1): reflect col 1 left, col -2 right
+		//  [[5, 4, 5, 6, 5],
+		//   [2, 1, 2, 3, 2],
+		//   [5, 4, 5, 6, 5]]
+		[][]float32{
+			{5, 4, 5, 6, 5},
+			{2, 1, 2, 3, 2},
+			{5, 4, 5, 6, 5},
+		},
+	}, -1)
+}
