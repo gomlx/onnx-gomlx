@@ -200,11 +200,12 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 			return
 		}
 
-		// Check if the backend prefers constants for variables (e.g., CoreML).
-		// This enables optimizations like blob storage for weights and avoids
-		// passing hundreds of weight tensors as inputs per inference.
+		// Check if variables should be embedded as constants in the graph.
+		// This is needed for models that use variables in ops requiring compile-time
+		// values (e.g., Range for rotary embeddings), and for backends that prefer
+		// blob storage for weights (e.g., CoreML).
 		backend := g.Backend()
-		if backend != nil && backend.Capabilities().PreferConstantsForVariables {
+		if m.constantVariables || (backend != nil && backend.Capabilities().PreferConstantsForVariables) {
 			// Get the variable value and create a constant node
 			value, err := v.Value()
 			if err != nil {
@@ -251,8 +252,12 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 	}
 
 	// Convert sub-graph initializers (constants) to GoMLX nodes
-	// Also temporarily add them to model's variableNameToValue for materializeConstantExpression
+	// Also temporarily add them to model's variableNameToValue for materializeConstantExpression.
+	// Save original values so we can restore them on cleanup (in case sub-graph names collide
+	// with main graph names).
 	subGraphInitializers := make(map[string]*protos.TensorProto)
+	savedVariables := make(map[string]*protos.TensorProto)
+	savedVariableExists := make(map[string]bool)
 	reader := m.getExternalDataReader()
 	for _, initializerProto := range subGraphProto.Initializer {
 		initializerName := initializerProto.Name
@@ -266,11 +271,18 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 		}
 		localConvertedOutputs[initializerName] = Const(g, tensor)
 		subGraphInitializers[initializerName] = initializerProto
+		// Save original before overwriting
+		if orig, exists := m.variableNameToValue[initializerName]; exists {
+			savedVariables[initializerName] = orig
+			savedVariableExists[initializerName] = true
+		}
 		m.variableNameToValue[initializerName] = initializerProto
 	}
 
 	// Build a mapping from output name to the node that produces it (for this sub-graph only)
 	subGraphNodeOutputToNode := make(map[string]*protos.NodeProto)
+	savedNodes := make(map[string]*protos.NodeProto)
+	savedNodeExists := make(map[string]bool)
 	for _, node := range subGraphProto.Node {
 		for _, outputName := range node.Output {
 			if outputName != "" {
@@ -282,19 +294,29 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 	// Temporarily add sub-graph nodes to the model's nodeOutputToNode map
 	// This is needed for materializeConstantExpression to work with sub-graph nodes
 	for outputName, node := range subGraphNodeOutputToNode {
+		// Save original before overwriting
+		if orig, exists := m.nodeOutputToNode[outputName]; exists {
+			savedNodes[outputName] = orig
+			savedNodeExists[outputName] = true
+		}
 		m.nodeOutputToNode[outputName] = node
 	}
 
-	// Consolidated cleanup: remove all temporary entries from model's maps when done
-	// Using a single defer with recovery handling to ensure cleanup always happens
+	// Consolidated cleanup: restore original entries or remove temporary ones
 	defer func() {
-		// Clean up sub-graph initializers from model's variableNameToValue map
 		for initName := range subGraphInitializers {
-			delete(m.variableNameToValue, initName)
+			if savedVariableExists[initName] {
+				m.variableNameToValue[initName] = savedVariables[initName]
+			} else {
+				delete(m.variableNameToValue, initName)
+			}
 		}
-		// Clean up sub-graph nodes from model's nodeOutputToNode map
 		for outputName := range subGraphNodeOutputToNode {
-			delete(m.nodeOutputToNode, outputName)
+			if savedNodeExists[outputName] {
+				m.nodeOutputToNode[outputName] = savedNodes[outputName]
+			} else {
+				delete(m.nodeOutputToNode, outputName)
+			}
 		}
 	}()
 
@@ -508,6 +530,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	// Ops with equivalents:
 	case "MatMul":
 		result = m.convertMatMul(inputs[0], inputs[1])
+	case "Einsum":
+		result = convertEinsum(node, inputs)
 
 	// Ops with special behavior:
 	case "Clip":

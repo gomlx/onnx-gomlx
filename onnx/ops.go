@@ -660,6 +660,20 @@ func (m *Model) convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
 	return result
 }
 
+// convertEinsum converts an ONNX Einsum op to GoMLX's Einsum.
+// ONNX Einsum supports N operands, but GoMLX only supports exactly 2.
+func convertEinsum(node *protos.NodeProto, inputs []*Node) *Node {
+	equation := getStringAttrOr(node, "equation", "")
+	if equation == "" {
+		exceptions.Panicf("Einsum node %q missing required 'equation' attribute", node.Name)
+	}
+	if len(inputs) != 2 {
+		exceptions.Panicf("Einsum node %q has %d inputs, but GoMLX only supports exactly 2 operands",
+			node.Name, len(inputs))
+	}
+	return Einsum(equation, inputs[0], inputs[1])
+}
+
 ////////////////////////////////////////////////////////////////////
 //
 // Ops that require materialization of constant sub-expressions
@@ -2257,7 +2271,6 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 	interleaved := getIntAttrOr(node, "interleaved", 0) != 0
 	numHeads := getIntAttrOr(node, "num_heads", 0)
 
-
 	inputRank := x.Rank()
 	inputShape := x.Shape().Dimensions
 
@@ -2962,18 +2975,12 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 	bInt32 := ConvertDType(b, dtypes.Int32)
 
 	// Subtract zero points if provided
-	if aZeroPoint != nil && !aZeroPoint.IsScalar() || (aZeroPoint != nil && aZeroPoint.Shape().Size() > 0) {
-		aZeroPointInt32 := ConvertDType(aZeroPoint, dtypes.Int32)
-		aInt32 = Sub(aInt32, aZeroPointInt32)
-	} else if aZeroPoint != nil {
+	if aZeroPoint != nil {
 		aZeroPointInt32 := ConvertDType(aZeroPoint, dtypes.Int32)
 		aInt32 = Sub(aInt32, aZeroPointInt32)
 	}
 
-	if bZeroPoint != nil && !bZeroPoint.IsScalar() || (bZeroPoint != nil && bZeroPoint.Shape().Size() > 0) {
-		bZeroPointInt32 := ConvertDType(bZeroPoint, dtypes.Int32)
-		bInt32 = Sub(bInt32, bZeroPointInt32)
-	} else if bZeroPoint != nil {
+	if bZeroPoint != nil {
 		bZeroPointInt32 := ConvertDType(bZeroPoint, dtypes.Int32)
 		bInt32 = Sub(bInt32, bZeroPointInt32)
 	}
@@ -2993,10 +3000,13 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 	scaledResult := Mul(matmulFloat, combinedScale)
 
 	// Add output zero point and convert back to quantized type
-	outputDType := yZeroPoint.DType()
+	var outputDType dtypes.DType
 	if yZeroPoint != nil {
+		outputDType = yZeroPoint.DType()
 		yZeroPointFloat := ConvertDType(yZeroPoint, scaleDType)
 		scaledResult = Add(scaledResult, yZeroPointFloat)
+	} else {
+		outputDType = a.DType()
 	}
 
 	// Round and clip to valid quantized range
@@ -3122,10 +3132,10 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 	}
 
 	// Return the first output (convention for ops)
-	if len(results) > 0 {
-		return results[0]
+	if len(results) == 0 {
+		exceptions.Panicf("If node %q produced no outputs", node.Name)
 	}
-	return nil
+	return results[0]
 }
 
 // convertTopK converts an ONNX TopK node to GoMLX.
