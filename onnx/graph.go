@@ -257,7 +257,6 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 	// with main graph names).
 	subGraphInitializers := make(map[string]*protos.TensorProto)
 	savedVariables := make(map[string]*protos.TensorProto)
-	savedVariableExists := make(map[string]bool)
 	reader := m.getExternalDataReader()
 	for _, initializerProto := range subGraphProto.Initializer {
 		initializerName := initializerProto.Name
@@ -274,7 +273,6 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 		// Save original before overwriting
 		if orig, exists := m.variableNameToValue[initializerName]; exists {
 			savedVariables[initializerName] = orig
-			savedVariableExists[initializerName] = true
 		}
 		m.variableNameToValue[initializerName] = initializerProto
 	}
@@ -282,7 +280,6 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 	// Build a mapping from output name to the node that produces it (for this sub-graph only)
 	subGraphNodeOutputToNode := make(map[string]*protos.NodeProto)
 	savedNodes := make(map[string]*protos.NodeProto)
-	savedNodeExists := make(map[string]bool)
 	for _, node := range subGraphProto.Node {
 		for _, outputName := range node.Output {
 			if outputName != "" {
@@ -291,13 +288,13 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 		}
 	}
 
-	// Temporarily add sub-graph nodes to the model's nodeOutputToNode map
-	// This is needed for materializeConstantExpression to work with sub-graph nodes
+	// Temporarily add sub-graph nodes to the model's nodeOutputToNode map.
+	// This is needed for materializeConstantExpression to work with sub-graph nodes.
+	// Note: this temporary mutation is not concurrency-safe, but graph construction is single-threaded.
 	for outputName, node := range subGraphNodeOutputToNode {
 		// Save original before overwriting
 		if orig, exists := m.nodeOutputToNode[outputName]; exists {
 			savedNodes[outputName] = orig
-			savedNodeExists[outputName] = true
 		}
 		m.nodeOutputToNode[outputName] = node
 	}
@@ -305,15 +302,15 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 	// Consolidated cleanup: restore original entries or remove temporary ones
 	defer func() {
 		for initName := range subGraphInitializers {
-			if savedVariableExists[initName] {
-				m.variableNameToValue[initName] = savedVariables[initName]
+			if orig, wasSaved := savedVariables[initName]; wasSaved {
+				m.variableNameToValue[initName] = orig
 			} else {
 				delete(m.variableNameToValue, initName)
 			}
 		}
 		for outputName := range subGraphNodeOutputToNode {
-			if savedNodeExists[outputName] {
-				m.nodeOutputToNode[outputName] = savedNodes[outputName]
+			if orig, wasSaved := savedNodes[outputName]; wasSaved {
+				m.nodeOutputToNode[outputName] = orig
 			} else {
 				delete(m.nodeOutputToNode, outputName)
 			}
