@@ -49,9 +49,9 @@ func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.
 	if opRequiresContext(node.OpType) {
 		contextNodes = append(contextNodes, node)
 	}
-	if node.OpType == "Shape" {
-		// Shape op returns a static value after converting to GoMLX, independent of inputs.
-		// So we don't recurse into its inputs.
+	if node.OpType == "Shape" || node.OpType == "Size" {
+		// Shape and Size ops return static values after converting to GoMLX, independent of inputs.
+		// So we don't recurse into their inputs.
 		return nonConstInputs, variables, contextNodes
 	}
 	for _, input := range node.Input {
