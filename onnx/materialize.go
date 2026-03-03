@@ -115,7 +115,7 @@ func (m *Model) materializeConstantExpression(nodeOutputName string, convertedOu
 		opsDesc := make([]string, 0, len(contextNodes))
 		for _, node := range contextNodes {
 			// We discard the error because we know this conversion works already, to have reached this point.
-			varDesc = append(opsDesc, node.String())
+			opsDesc = append(opsDesc, node.String())
 		}
 		return nil, errors.Errorf("cannot materialize constant/static value for %q: it depends on non-constant: inputs=%q, variables: %s, ops with context: %s",
 			nodeOutputName, nonConstInputs, strings.Join(varDesc, ", "), strings.Join(opsDesc, ", "))

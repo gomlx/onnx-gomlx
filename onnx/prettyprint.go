@@ -230,7 +230,7 @@ func (m *Model) PrintVariables(writer io.Writer) error {
 	w("\n")
 	for _, st := range m.Proto.Graph.SparseInitializer {
 		shape, _ := SparseShape(st)
-		w("\t\t%q: dense shape=%d\n", st.Values.Name, shape)
+		w("\t\t%q: dense shape=%v\n", st.Values.Name, shape)
 	}
 	return err
 }
