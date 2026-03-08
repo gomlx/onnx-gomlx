@@ -64,8 +64,8 @@ func (c *quantizedSDPACandidate) Emit(_ *context.Context, g *Graph, convertedOut
 		mask = convertedOutputs[p.MaskInputName]
 	}
 
-	result := BackendFusedQuantizedScaledDotProductAttention(
-		q, k, v, mask, p.NumHeads, p.NumKVHeads, backends.AxesLayoutBHSD, p.Scale, false)
+	result := BackendFusedScaledDotProductAttention(
+		q, k, v, mask, p.NumHeads, p.NumKVHeads, backends.AxesLayoutBHSD, p.Scale, false, true)
 	convertedOutputs[c.outputName] = result
 }
 
