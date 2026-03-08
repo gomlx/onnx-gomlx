@@ -530,6 +530,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = activations.HardSwish(inputs[0])
 	case "IsNaN":
 		result = IsNaN(inputs[0])
+	case "Reciprocal":
+		result = Inverse(m.ensureFloat(inputs[0]))
 
 	// Ops with equivalents:
 	case "MatMul":
