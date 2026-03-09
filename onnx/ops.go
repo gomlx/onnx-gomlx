@@ -523,6 +523,22 @@ func convertShape(node *protos.NodeProto, inputs []*Node) *Node {
 	return Const(g, dims)
 }
 
+// convertSize converts an ONNX Size node to a GoMLX constant.
+// Size returns the total number of elements of the input tensor as a scalar int64.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Size.html
+func convertSize(inputs []*Node) *Node {
+	shape := inputs[0].Shape()
+	for _, d := range shape.Dimensions {
+		if d < 0 {
+			exceptions.Panicf("Size: input has dynamic dimension, cannot compute static size: %s", shape)
+		}
+	}
+	size := int64(shape.Size())
+	return Const(inputs[0].Graph(), size)
+}
+
 // convertFlatten converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
@@ -1849,9 +1865,6 @@ func convertAveragePool(_ *Model, _ map[string]*Node, node *protos.NodeProto, in
 // https://onnx.ai/onnx/operators/onnx__Pad.html
 func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	mode := getStringAttrOr(node, "mode", "constant")
-	if mode != "constant" {
-		exceptions.Panicf("Pad: support for mode '%s' is not yet implemented", mode)
-	}
 	padsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 	if err != nil {
 		panic(errors.WithMessagef(err, "while converting 'pads' for node %s", nodeToString(node)))
@@ -1865,23 +1878,83 @@ func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodePr
 		return x
 	}
 
-	var constantValueNode *Node
-	if len(inputs) > 2 {
-		constantValueNode = inputs[2]
-	} else {
-		constantValueNode = Scalar(x.Graph(), x.DType(), 0)
-	}
-
 	rank := x.Rank()
 	if len(pads) != 2*rank {
 		exceptions.Panicf("invalid number of padding values: %d axes, got %d padding values -- expected 2 pads per axis", rank, len(pads))
 	}
-	paddings := make([]backends.PadAxis, rank)
-	for i := range rank {
-		paddings[i] = backends.PadAxis{Start: pads[i], End: pads[i+rank]}
-	}
 
-	return Pad(x, constantValueNode, paddings...)
+	switch mode {
+	case "constant":
+		var constantValueNode *Node
+		if len(inputs) > 2 {
+			constantValueNode = inputs[2]
+		} else {
+			constantValueNode = Scalar(x.Graph(), x.DType(), 0)
+		}
+		paddings := make([]backends.PadAxis, rank)
+		for i := range rank {
+			paddings[i] = backends.PadAxis{Start: pads[i], End: pads[i+rank]}
+		}
+		return Pad(x, constantValueNode, paddings...)
+
+	case "reflect":
+		return convertPadReflect(x, pads, rank)
+
+	default:
+		exceptions.Panicf("Pad: unsupported mode %q", mode)
+		return nil
+	}
+}
+
+// convertPadReflect implements ONNX reflect padding using Slice, Reverse, and Concatenate.
+//
+// Reflect padding mirrors values at the boundary, excluding the edge element itself.
+// For [a, b, c, d] with left=2, right=1: [c, b, a, b, c, d, c].
+func convertPadReflect(x *Node, pads []int, rank int) *Node {
+	result := x
+	for axis := range rank {
+		padStart := pads[axis]
+		padEnd := pads[axis+rank]
+		if padStart == 0 && padEnd == 0 {
+			continue
+		}
+
+		var parts []*Node
+
+		if padStart > 0 {
+			// Slice elements [1, 1+padStart) along axis, then reverse.
+			specs := make([]SliceAxisSpec, rank)
+			for i := range rank {
+				if i == axis {
+					specs[i] = AxisRange(1, 1+padStart)
+				} else {
+					specs[i] = AxisRange()
+				}
+			}
+			leftSlice := Slice(result, specs...)
+			parts = append(parts, Reverse(leftSlice, axis))
+		}
+
+		parts = append(parts, result)
+
+		if padEnd > 0 {
+			// Slice elements [dim-1-padEnd, dim-1) along axis, then reverse.
+			// Using negative indices: [-1-padEnd, -1).
+			specs := make([]SliceAxisSpec, rank)
+			for i := range rank {
+				if i == axis {
+					specs[i] = AxisRange(-1-padEnd, -1)
+				} else {
+					specs[i] = AxisRange()
+				}
+			}
+			rightSlice := Slice(result, specs...)
+			parts = append(parts, Reverse(rightSlice, axis))
+		}
+
+		result = Concatenate(parts, axis)
+	}
+	return result
 }
 
 // convertMaxPool converts an ONNX MaxPool node to a GoMLX node.
