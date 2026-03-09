@@ -65,7 +65,8 @@ func (c *quantizedSDPACandidate) Emit(_ *context.Context, g *Graph, convertedOut
 	}
 
 	result := BackendFusedScaledDotProductAttention(
-		q, k, v, mask, p.NumHeads, p.NumKVHeads, backends.AxesLayoutBHSD, p.Scale, false, true)
+		q, k, v, mask, p.NumHeads, p.NumKVHeads, backends.AxesLayoutBHSD, p.Scale, false,
+		&backends.ScaledDotProductAttentionConfig{QuantizedMatmuls: true})
 	convertedOutputs[c.outputName] = result
 }
 
@@ -257,21 +258,18 @@ func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPAC
 		internalNodes[addNode] = true
 	}
 
-	// Identify and add combined scale nodes.
-	// QK combined scale: other input to scaleMulNode (not castOut).
-	combinedScaleName1 := identifyOtherInput(scaleMulNode, castOut)
-	if combinedScaleName1 != "" {
-		if sc, scOk := m.nodeOutputToNode[combinedScaleName1]; scOk && sc.OpType == "Mul" {
+	// Add combined scale producer nodes (e.g. Mul(a_scale, b_scale)) as internal.
+	addScaleProducer := func(scaleMul *protos.NodeProto, castOutput string) {
+		name := onnxgraph.OtherBinaryOpInput(scaleMul, castOutput)
+		if name == "" {
+			return
+		}
+		if sc, ok := m.nodeOutputToNode[name]; ok && sc.OpType == "Mul" {
 			internalNodes[sc] = true
 		}
 	}
-	// AV combined scale: other input to scaleMulNode2 (not castOut2).
-	combinedScaleName2 := identifyOtherInput(scaleMulNode2, castOut2)
-	if combinedScaleName2 != "" {
-		if sc, scOk := m.nodeOutputToNode[combinedScaleName2]; scOk && sc.OpType == "Mul" {
-			internalNodes[sc] = true
-		}
-	}
+	addScaleProducer(scaleMulNode, castOut)
+	addScaleProducer(scaleMulNode2, castOut2)
 
 	// Collect internal outputs from all internal nodes.
 	internalOutputs := make(map[string]bool)
@@ -284,13 +282,10 @@ func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPAC
 	}
 
 	// Verify no internal output (except root) is consumed by external nodes.
-	internalOutputsExclRoot := make(map[string]bool)
-	for k, v := range internalOutputs {
-		if k != rootOutput {
-			internalOutputsExclRoot[k] = v
-		}
-	}
-	if onnxgraph.HasExternalConsumers(internalOutputsExclRoot, consumers, internalNodes) {
+	delete(internalOutputs, rootOutput)
+	hasExternal := onnxgraph.HasExternalConsumers(internalOutputs, consumers, internalNodes)
+	internalOutputs[rootOutput] = true
+	if hasExternal {
 		return nil
 	}
 
@@ -396,6 +391,10 @@ func (m *Model) traceQuantizedKBackward(uint8Name string) (dqlNode *protos.NodeP
 
 	case "Transpose":
 		// K^T was applied after DQL (uint8 transpose).
+		// Validate that the permutation actually swaps the last two axes.
+		if tNode, _ := m.matchKTranspose(uint8Name); tNode == nil {
+			return nil, "", nil, false, false
+		}
 		transposeNode = node
 		if len(transposeNode.Input) == 0 {
 			return nil, "", nil, false, false
