@@ -54,7 +54,6 @@ func (c *quantizedQKVDenseCandidate) Emit(_ *context.Context, g *Graph, converte
 
 	// Concatenate int8 weights: [K, QDim] + [K, KVDim] + [K, KVDim] → [K, 3*QDim]
 	wQKV := Concatenate([]*Node{wQ, wK, wV}, 1)
-	totalN := p.QDim + 2*p.KVDim
 	groupSize := p.QDim // Each projection is one quantization group.
 
 	// Build scales [K, 3]: each scalar scale broadcast to [K, 1] then concatenated.
@@ -73,8 +72,13 @@ func (c *quantizedQKVDenseCandidate) Emit(_ *context.Context, g *Graph, converte
 	}
 
 	// Single fused QuantizedDense for all 3 projections.
-	result := nn.QuantizedDense(floatInput, wQKV, fusedScales, bias,
-		backends.QuantInt8, groupSize, totalN)
+	quant := &Quantization{
+		Scheme:    backends.QuantLinear,
+		Scale:     fusedScales,
+		BlockAxis: 1,
+		BlockSize: groupSize,
+	}
+	result := nn.QuantizedDense(floatInput, wQKV, quant, bias)
 
 	// Split output along last axis: [batch..., totalN] → Q, K, V each [batch..., QDim]
 	parts := Split(result, -1, 3)
