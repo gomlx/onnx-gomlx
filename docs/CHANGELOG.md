@@ -1,9 +1,14 @@
-# Next
+# v0.3.5: New ops for various models support (Gemma, Snowflake,CLAP, etc); Many fixes and improvements.
 
+- Add ONNX operators for Gemma and Snowflake Arctic models: `ReduceL2`, `SimplifiedLayerNormalization` (RMSNorm),
+  `RotaryEmbedding`, `MultiHeadAttention`.
+- Simplified optional DType auto-promotion.
+- Added Resize operation for "CLAP" model support.
 - Added ReduceMax, ReduceMin, ReduceSum, ReduceProd, and NonZero ONNX operations.
 - Optional auto-promotion of dtypes in case of mismatches: this is an error
   in ONNX specification, but some Pytorch models do this. See `Model.AllowDTypePromotion()`.
 - Added support for reading variables from external data files (due to proto 2/4 Gb size-limit)
+- Several fixes (see logs)
 
 # v0.3.4: Updated for GoMLX 0.26.0
 
