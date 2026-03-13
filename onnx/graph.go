@@ -200,11 +200,12 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 			return
 		}
 
-		// Check if the backend prefers constants for variables (e.g., CoreML).
-		// This enables optimizations like blob storage for weights and avoids
-		// passing hundreds of weight tensors as inputs per inference.
+		// Check if variables should be embedded as constants in the graph.
+		// This is needed for models that use variables in ops requiring compile-time
+		// values (e.g., Range for rotary embeddings), and for backends that prefer
+		// blob storage for weights (e.g., CoreML).
 		backend := g.Backend()
-		if backend != nil && backend.Capabilities().PreferConstantsForVariables {
+		if m.constantVariables || (backend != nil && backend.Capabilities().PreferConstantsForVariables) {
 			// Get the variable value and create a constant node
 			value, err := v.Value()
 			if err != nil {
