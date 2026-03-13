@@ -240,7 +240,7 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 // convertSubGraph converts an ONNX sub-graph (used in control flow ops like If) to GoMLX nodes.
 // It takes the parent graph g and the sub-graph proto, along with the current convertedOutputs mapping.
 // Returns a slice of output nodes from the sub-graph in the order they appear in the sub-graph's output list.
-func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, parentConvertedOutputs map[string]*Node) []*Node {
+func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *protos.GraphProto, parentConvertedOutputs map[string]*Node) []*Node {
 	// Create a new local context for the sub-graph
 	// Note: Sub-graphs in ONNX can reference outputs from the parent graph
 	localConvertedOutputs := make(map[string]*Node)
@@ -251,8 +251,11 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 	}
 
 	// Convert sub-graph initializers (constants) to GoMLX nodes
-	// Also temporarily add them to model's variableNameToValue for materializeConstantExpression
+	// Also temporarily add them to model's variableNameToValue for materializeConstantExpression.
+	// Save original values so we can restore them on cleanup (in case sub-graph names collide
+	// with main graph names).
 	subGraphInitializers := make(map[string]*protos.TensorProto)
+	savedVariables := make(map[string]*protos.TensorProto)
 	reader := m.getExternalDataReader()
 	for _, initializerProto := range subGraphProto.Initializer {
 		initializerName := initializerProto.Name
@@ -266,11 +269,16 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 		}
 		localConvertedOutputs[initializerName] = Const(g, tensor)
 		subGraphInitializers[initializerName] = initializerProto
+		// Save original before overwriting
+		if orig, exists := m.variableNameToValue[initializerName]; exists {
+			savedVariables[initializerName] = orig
+		}
 		m.variableNameToValue[initializerName] = initializerProto
 	}
 
 	// Build a mapping from output name to the node that produces it (for this sub-graph only)
 	subGraphNodeOutputToNode := make(map[string]*protos.NodeProto)
+	savedNodes := make(map[string]*protos.NodeProto)
 	for _, node := range subGraphProto.Node {
 		for _, outputName := range node.Output {
 			if outputName != "" {
@@ -279,22 +287,32 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 		}
 	}
 
-	// Temporarily add sub-graph nodes to the model's nodeOutputToNode map
-	// This is needed for materializeConstantExpression to work with sub-graph nodes
+	// Temporarily add sub-graph nodes to the model's nodeOutputToNode map.
+	// This is needed for materializeConstantExpression to work with sub-graph nodes.
+	// Note: this temporary mutation is not concurrency-safe, but graph construction is single-threaded.
 	for outputName, node := range subGraphNodeOutputToNode {
+		// Save original before overwriting
+		if orig, exists := m.nodeOutputToNode[outputName]; exists {
+			savedNodes[outputName] = orig
+		}
 		m.nodeOutputToNode[outputName] = node
 	}
 
-	// Consolidated cleanup: remove all temporary entries from model's maps when done
-	// Using a single defer with recovery handling to ensure cleanup always happens
+	// Consolidated cleanup: restore original entries or remove temporary ones
 	defer func() {
-		// Clean up sub-graph initializers from model's variableNameToValue map
 		for initName := range subGraphInitializers {
-			delete(m.variableNameToValue, initName)
+			if orig, wasSaved := savedVariables[initName]; wasSaved {
+				m.variableNameToValue[initName] = orig
+			} else {
+				delete(m.variableNameToValue, initName)
+			}
 		}
-		// Clean up sub-graph nodes from model's nodeOutputToNode map
 		for outputName := range subGraphNodeOutputToNode {
-			delete(m.nodeOutputToNode, outputName)
+			if orig, wasSaved := savedNodes[outputName]; wasSaved {
+				m.nodeOutputToNode[outputName] = orig
+			} else {
+				delete(m.nodeOutputToNode, outputName)
+			}
 		}
 	}()
 
@@ -342,7 +360,7 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 					convertSubGraphOutput(inputName)
 				}
 				// Now convert this main model node and add to local outputs
-				m.convertNode(nil, g, mainNode, localConvertedOutputs)
+				m.convertNode(ctx, g, mainNode, localConvertedOutputs)
 
 				// Also add to parent outputs so other branches/sub-graphs can reuse it
 				parentConvertedOutputs[outputName] = localConvertedOutputs[outputName]
@@ -377,7 +395,7 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 		}
 
 		// Now convert this node
-		m.convertNode(nil, g, node, localConvertedOutputs)
+		m.convertNode(ctx, g, node, localConvertedOutputs)
 	}
 
 	// Convert all output nodes recursively (which will convert their dependencies)
@@ -418,7 +436,7 @@ func opRequiresContext(opType string) bool {
 // See the definitions in:
 // . https://openxla.org/xla/broadcasting
 // . https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
-func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto, convertedOutputs map[string]*Node) {
+func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodeProto, convertedOutputs map[string]*Node) {
 	if node.Overload != "" {
 		exceptions.Panicf("overload %q to in-model function in ONNX model not implemented in node %q", node.Overload, node.Name)
 	}
@@ -510,6 +528,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	// Ops with equivalents:
 	case "MatMul":
 		result = m.convertMatMul(inputs[0], inputs[1])
+	case "Einsum":
+		result = convertEinsum(node, inputs)
 
 	// Ops with special behavior:
 	case "Clip":
@@ -630,7 +650,7 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 
 	// Control flow ops:
 	case "If":
-		result = convertIf(m, convertedOutputs, node, inputs)
+		result = convertIf(ctx, m, convertedOutputs, node, inputs)
 
 	// Sorting/ranking ops:
 	case "TopK":

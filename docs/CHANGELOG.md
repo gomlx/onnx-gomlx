@@ -6,6 +6,8 @@
   `RotaryEmbedding`, `MultiHeadAttention`.
 - Simplified optional DType auto-promotion.
 - Added Resize operation for "CLAP" model support.
+- New Einsum op support (2 operands).
+- Various bug fixes across multiple ops and sub-graph handling.
 - Added ReduceMax, ReduceMin, ReduceSum, ReduceProd, and NonZero ONNX operations.
 - Optional auto-promotion of dtypes in case of mismatches: this is an error
   in ONNX specification, but some Pytorch models do this. See `Model.AllowDTypePromotion()`.
