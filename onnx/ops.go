@@ -2688,41 +2688,36 @@ func (m *Model) isZeroInitializer(name string) bool {
 	}
 
 	// Check raw data first (most common storage).
-	if len(tp.RawData) > 0 {
+	switch {
+	case len(tp.RawData) > 0:
 		for _, b := range tp.RawData {
 			if b != 0 {
 				return false
 			}
 		}
 		return true
-	}
-
-	// Check typed data fields.
-	if len(tp.Int32Data) > 0 {
+	case len(tp.Int32Data) > 0:
 		for _, v := range tp.Int32Data {
 			if v != 0 {
 				return false
 			}
 		}
 		return true
-	}
-	if len(tp.Int64Data) > 0 {
+	case len(tp.Int64Data) > 0:
 		for _, v := range tp.Int64Data {
 			if v != 0 {
 				return false
 			}
 		}
 		return true
-	}
-	if len(tp.FloatData) > 0 {
+	case len(tp.FloatData) > 0:
 		for _, v := range tp.FloatData {
 			if v != 0 {
 				return false
 			}
 		}
 		return true
-	}
-	if len(tp.DoubleData) > 0 {
+	case len(tp.DoubleData) > 0:
 		for _, v := range tp.DoubleData {
 			if v != 0 {
 				return false
@@ -2731,8 +2726,17 @@ func (m *Model) isZeroInitializer(name string) bool {
 		return true
 	}
 
-	// Empty tensor (scalar 0 stored with no explicit data) or unknown format.
-	return len(tp.Dims) == 0
+	// Empty tensors have zero elements, including scalars stored with no explicit
+	// data and shapes with a zero-sized dimension such as [batchSize, 0].
+	if len(tp.Dims) == 0 {
+		return true
+	}
+	for _, dim := range tp.Dims {
+		if dim == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // convertQuantizeLinear converts the corresponding ONNX node to a GoMLX node.
