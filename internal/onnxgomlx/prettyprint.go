@@ -291,20 +291,20 @@ func (m *Model) recursiveGraphviz(writer io.Writer, visited sets.Set[string], ta
 	}
 
 	// The target is an input.
-	if m.inputsNameSet.Has(target) {
+	if m.InputsNameSet.Has(target) {
 		w("\t%q [shape=box, style=filled, fillcolor=%q];\n", target, GraphvizInputColor)
 		return err
 	}
 
 	// the target is a label.
-	if v, found := m.variableNameToValue[target]; found {
+	if v, found := m.VariableNameToValue[target]; found {
 		var vShape shapes.Shape
 		vShape, err = Shape(v)
 		w("\t%q [shape=box, style=filled, fillcolor=%q, tooltip=%q];\n", target, GraphvizVarColor, vShape)
 		return err
 	}
 
-	node, found := m.nodeOutputToNode[target]
+	node, found := m.NodeOutputToNode[target]
 	if !found {
 		err = errors.Errorf("couldn't find target %q in model graph!?", target)
 		return err

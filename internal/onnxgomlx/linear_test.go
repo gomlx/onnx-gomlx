@@ -65,7 +65,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// Save change of variable "B" to the ONNX model.
 	require.NoError(t, model.ContextToONNX(ctx))
-	tensorProto, found := model.variableNameToValue["B"]
+	tensorProto, found := model.VariableNameToValue["B"]
 	require.True(t, found, "Didn't find B variable")
 	require.Equal(t, []float32{7001}, tensorProto.FloatData, "ONNX variable B initial value was not updated.")
 }

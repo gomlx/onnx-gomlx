@@ -18,24 +18,24 @@ import (
 
 // Model represents a parsed ONNX file.
 type Model struct {
-	onnxFileName     string
+	ONNXFileName     string
 	Proto            protos.ModelProto
-	nodeOutputToNode map[string]*protos.NodeProto
+	NodeOutputToNode map[string]*protos.NodeProto
 
 	// Names used for variables and inputs: these are like internal outputs, but they come not from a node,
 	// but from an input or variable. Used to introspect the graph.
-	inputsNameSet       sets.Set[string]
-	variableNameToValue map[string]*protos.TensorProto
+	InputsNameSet       sets.Set[string]
+	VariableNameToValue map[string]*protos.TensorProto
 
 	name                        string
 	InputsNames, OutputsNames   []string
 	InputsShapes, OutputsShapes []DynamicShape
 
-	// inputsAsConstants: see WithInputsAsConstants
-	inputsAsConstants map[string]any
+	// InputsAsConstants: see WithInputsAsConstants
+	InputsAsConstants map[string]any
 
-	// backend used for ONNX-conversion time tensor processing.
-	backend backends.Backend
+	// Backend used for ONNX-conversion time tensor processing.
+	Backend backends.Backend
 
 	// allowDTypePromotion enables automatic dtype promotion for mixed-precision models.
 	// By default (false), dtype mismatches will panic per ONNX spec.
@@ -45,19 +45,19 @@ type Model struct {
 	// Only applies when allowDTypePromotion is true.
 	prioritizeFloat16 bool
 
-	// externalDataReader manages memory-mapped external data files for efficient tensor loading.
+	// ExternalDataReader manages memory-mapped external data files for efficient tensor loading.
 	// It is initialized lazily when external data is first accessed.
-	externalDataReader *ExternalDataReader
+	ExternalDataReader *ExternalDataReader
 
-	// consumers maps output names to the nodes that consume them. Built during detectFusionPatterns
+	// Consumers maps output names to the nodes that consume them. Built during detectFusionPatterns
 	// and used by fusion detectors to walk the graph.
-	consumers map[string][]*protos.NodeProto
+	Consumers map[string][]*protos.NodeProto
 
-	// detectedFusions maps output names to detected fusion candidates (SDPA, QKV Dense, Dense+Gelu).
+	// DetectedFusions maps output names to detected fusion candidates (SDPA, QKV Dense, Dense+Gelu).
 	// Populated by detectFusionPatterns during Parse. The GoMLX wrapper functions
 	// (attention.Core, attention.QKVProjection, nn.Dense) handle fused-vs-decomposed
 	// fallback internally, so all detected fusions are always active.
-	detectedFusions map[string]FusionCandidate
+	DetectedFusions map[string]FusionCandidate
 }
 
 // Ensure Model implements onnx.Model.
@@ -73,19 +73,19 @@ func Parse(contents []byte) (*Model, error) {
 	}
 
 	// Create the backend that we'll use for processing of tensors.
-	m.backend, err = simplego.New("")
+	m.Backend, err = simplego.New("")
 	if err != nil {
 		return nil, errors.WithMessage(err, "ONNX conversion requires GoMLX for processing of tensors, but failed to create SimpleGo backend for GoMLX model")
 	}
 
 	// Parse inputs and outputs.
 	m.name = m.Proto.Graph.Name
-	m.inputsNameSet = sets.Make[string]()
+	m.InputsNameSet = sets.Make[string]()
 	m.InputsNames = make([]string, len(m.Proto.Graph.Input))
 	m.InputsShapes = make([]DynamicShape, len(m.Proto.Graph.Input))
 	for ii, input := range m.Proto.Graph.Input {
 		m.InputsNames[ii] = input.Name
-		m.inputsNameSet.Insert(input.Name)
+		m.InputsNameSet.Insert(input.Name)
 
 		tensorType, ok := input.Type.Value.(*protos.TypeProto_TensorType)
 		if !ok {
@@ -111,20 +111,20 @@ func Parse(contents []byte) (*Model, error) {
 	}
 
 	// Set of variable names.
-	m.variableNameToValue = make(map[string]*protos.TensorProto)
+	m.VariableNameToValue = make(map[string]*protos.TensorProto)
 	for _, tensorProto := range m.Proto.Graph.Initializer {
-		m.variableNameToValue[tensorProto.Name] = tensorProto
+		m.VariableNameToValue[tensorProto.Name] = tensorProto
 	}
 
 	// Maps the intermediary node outputs to the nodes that create them.
-	m.nodeOutputToNode = make(map[string]*protos.NodeProto)
+	m.NodeOutputToNode = make(map[string]*protos.NodeProto)
 	for _, node := range m.Proto.Graph.Node {
 		for _, outputName := range node.GetOutput() {
-			if otherNode, found := m.nodeOutputToNode[outputName]; found {
+			if otherNode, found := m.NodeOutputToNode[outputName]; found {
 				return nil, errors.Errorf("invalid graph: node output name %q used by 2 different nodes: (1) %s, (2) %s",
 					outputName, nodeToString(otherNode), nodeToString(node))
 			}
-			m.nodeOutputToNode[outputName] = node
+			m.NodeOutputToNode[outputName] = node
 		}
 	}
 
@@ -145,7 +145,7 @@ func ReadFile(filePath string) (*Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	m.onnxFileName = filePath
+	m.ONNXFileName = filePath
 	return m, nil
 }
 
@@ -156,33 +156,33 @@ func (m *Model) Name() string { return m.name }
 // This is used for resolving external data file paths.
 // Returns an empty string if the model was not loaded from a file.
 func (m *Model) baseDir() string {
-	if m.onnxFileName == "" {
+	if m.ONNXFileName == "" {
 		return ""
 	}
-	return filepath.Dir(m.onnxFileName)
+	return filepath.Dir(m.ONNXFileName)
 }
 
 // getExternalDataReader returns the ExternalDataReader for this model, creating it lazily if needed.
 // Returns nil if the model has no base directory (e.g., parsed from bytes without a file path).
 func (m *Model) getExternalDataReader() *ExternalDataReader {
-	if m.externalDataReader != nil {
-		return m.externalDataReader
+	if m.ExternalDataReader != nil {
+		return m.ExternalDataReader
 	}
 	baseDir := m.baseDir()
 	if baseDir == "" {
 		return nil
 	}
-	m.externalDataReader = NewExternalDataReader(baseDir)
-	return m.externalDataReader
+	m.ExternalDataReader = NewExternalDataReader(baseDir)
+	return m.ExternalDataReader
 }
 
 // Close releases resources held by the model, including memory-mapped external data files.
 // After Close is called, the model should not be used for operations that require external data.
 // It is safe to call Close multiple times.
 func (m *Model) Close() error {
-	if m.externalDataReader != nil {
-		err := m.externalDataReader.Close()
-		m.externalDataReader = nil
+	if m.ExternalDataReader != nil {
+		err := m.ExternalDataReader.Close()
+		m.ExternalDataReader = nil
 		return err
 	}
 	return nil
@@ -224,7 +224,7 @@ func (m *Model) NumInputs() int {
 //
 // The value each input maps to will be converted to a tensors.FromAnyValue.
 func (m *Model) WithInputsAsConstants(inputsAsConstants map[string]any) {
-	m.inputsAsConstants = inputsAsConstants
+	m.InputsAsConstants = inputsAsConstants
 }
 
 // AllowDTypePromotion enables automatic dtype promotion for operations with

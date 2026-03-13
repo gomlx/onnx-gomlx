@@ -26,8 +26,8 @@ type qkvDenseCandidate struct {
 	externalInputs  []string
 }
 
-func (c *qkvDenseCandidate) Name() string       { return "QKVDense" }
-func (c *qkvDenseCandidate) Score() float32      { return 80.0 }
+func (c *qkvDenseCandidate) Name() string   { return "QKVDense" }
+func (c *qkvDenseCandidate) Score() float32 { return 80.0 }
 func (c *qkvDenseCandidate) OutputNames() []string {
 	return []string{c.params.QOutputName, c.params.KOutputName, c.params.VOutputName}
 }
@@ -64,7 +64,7 @@ func init() {
 // detectQKVDenseCandidates scans for three MatMul nodes sharing the same first input (x)
 // with constant weight second inputs, optionally followed by bias Add nodes.
 func detectQKVDenseCandidates(m *Model) []FusionCandidate {
-	consumers := m.consumers
+	consumers := m.Consumers
 	// Group MatMul nodes by their first input.
 	matmulsByInput := make(map[string][]*protos.NodeProto)
 	for _, node := range m.Proto.Graph.Node {
@@ -183,9 +183,9 @@ func (m *Model) tryMatchQKVDense(consumers map[string][]*protos.NodeProto, share
 	}
 
 	// Pre-concatenate Q, K, V weight tensors along the last axis.
-	wQ := m.variableNameToValue[qProj.weightName]
-	wK := m.variableNameToValue[kProj.weightName]
-	wV := m.variableNameToValue[vProj.weightName]
+	wQ := m.VariableNameToValue[qProj.weightName]
+	wK := m.VariableNameToValue[kProj.weightName]
+	wV := m.VariableNameToValue[vProj.weightName]
 	if wQ == nil || wK == nil || wV == nil {
 		return nil
 	}
@@ -196,7 +196,7 @@ func (m *Model) tryMatchQKVDense(consumers map[string][]*protos.NodeProto, share
 	wQKVName := fmt.Sprintf("__fused_wQKV_%s", sharedInput)
 	wQKV.Name = wQKVName
 	m.Proto.Graph.Initializer = append(m.Proto.Graph.Initializer, wQKV)
-	m.variableNameToValue[wQKVName] = wQKV
+	m.VariableNameToValue[wQKVName] = wQKV
 
 	params := &QKVDenseParams{
 		SharedInputName: sharedInput,
@@ -231,10 +231,10 @@ func (m *Model) tryMatchQKVDense(consumers map[string][]*protos.NodeProto, share
 
 // isConstant checks if a name refers to a constant (initializer or Constant node output).
 func (m *Model) isConstant(name string) bool {
-	if _, ok := m.variableNameToValue[name]; ok {
+	if _, ok := m.VariableNameToValue[name]; ok {
 		return true
 	}
-	if node, ok := m.nodeOutputToNode[name]; ok && node.OpType == "Constant" {
+	if node, ok := m.NodeOutputToNode[name]; ok && node.OpType == "Constant" {
 		return true
 	}
 	return false

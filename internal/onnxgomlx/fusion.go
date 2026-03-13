@@ -42,8 +42,8 @@ func RegisterFusionDetector(d FusionDetector) {
 // detectFusionPatterns runs all registered detectors, sorts candidates by score descending,
 // then greedily selects non-overlapping fusions, populating m.detectedFusions.
 func (m *Model) detectFusionPatterns() {
-	m.consumers = onnxgraph.BuildConsumerMap(m.Proto.Graph)
-	m.detectedFusions = make(map[string]FusionCandidate)
+	m.Consumers = onnxgraph.BuildConsumerMap(m.Proto.Graph)
+	m.DetectedFusions = make(map[string]FusionCandidate)
 
 	// Collect all candidates from all detectors.
 	var allCandidates []FusionCandidate
@@ -82,7 +82,7 @@ func (m *Model) detectFusionPatterns() {
 		// Claim all outputs and internals.
 		for _, name := range cand.OutputNames() {
 			claimed[name] = true
-			m.detectedFusions[name] = cand
+			m.DetectedFusions[name] = cand
 		}
 		for name := range cand.InternalOutputs() {
 			claimed[name] = true
@@ -112,13 +112,13 @@ func (m *Model) ensureFusionGroupConverted(ctx *context.Context, g *Graph, cand 
 // isFusionGroupOutput checks if nodeOutputName is an output of any detected fusion candidate.
 // Returns the candidate if found, nil otherwise.
 func (m *Model) isFusionGroupOutput(nodeOutputName string) FusionCandidate {
-	if m.detectedFusions == nil {
+	if m.DetectedFusions == nil {
 		return nil
 	}
-	return m.detectedFusions[nodeOutputName]
+	return m.DetectedFusions[nodeOutputName]
 }
 
 // DisableFusion clears all detected fusions, forcing normal (unfused) conversion.
 func (m *Model) DisableFusion() {
-	m.detectedFusions = nil
+	m.DetectedFusions = nil
 }

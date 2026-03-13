@@ -25,7 +25,7 @@ type denseActivationCandidate struct {
 	externalInputs  []string
 }
 
-func (c *denseActivationCandidate) Name() string                    { return "DenseGelu" }
+func (c *denseActivationCandidate) Name() string                     { return "DenseGelu" }
 func (c *denseActivationCandidate) Score() float32                   { return 50.0 }
 func (c *denseActivationCandidate) OutputNames() []string            { return []string{c.params.OutputName} }
 func (c *denseActivationCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
@@ -56,7 +56,7 @@ func init() {
 //
 // and returns FusionCandidates for each match.
 func detectDenseActivationCandidates(m *Model) []FusionCandidate {
-	consumers := m.consumers
+	consumers := m.Consumers
 	var candidates []FusionCandidate
 	for _, node := range m.Proto.Graph.Node {
 		if node.OpType != "MatMul" || len(node.Input) < 2 || len(node.Output) == 0 {

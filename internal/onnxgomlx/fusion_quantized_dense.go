@@ -4,8 +4,8 @@ import (
 	"math"
 
 	"github.com/gomlx/gomlx/backends"
-	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
+	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
 	"github.com/gomlx/gomlx/pkg/ml/nn"
@@ -54,7 +54,7 @@ type quantizedDenseCandidate struct {
 	externalInputs  []string
 }
 
-func (c *quantizedDenseCandidate) Name() string                    { return "QuantizedDense" }
+func (c *quantizedDenseCandidate) Name() string                     { return "QuantizedDense" }
 func (c *quantizedDenseCandidate) Score() float32                   { return 40.0 }
 func (c *quantizedDenseCandidate) OutputNames() []string            { return []string{c.outputName} }
 func (c *quantizedDenseCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
@@ -148,7 +148,7 @@ func detectQuantizedDenseCandidates(m *Model) []FusionCandidate {
 // Cast → Mul(combined_scale) chain, tracing backward through DQL to find the original float
 // input and extracting the constant weight scale from the scale combiner.
 func (m *Model) tryMatchQuantizedDense(matMulNode *protos.NodeProto) *quantizedDenseCandidate {
-	consumers := m.consumers
+	consumers := m.Consumers
 	matMulInputs := matMulNode.Input
 	if len(matMulInputs) < 2 {
 		return nil
@@ -161,7 +161,7 @@ func (m *Model) tryMatchQuantizedDense(matMulNode *protos.NodeProto) *quantizedD
 	if !m.isConstant(bName) {
 		return nil
 	}
-	bTP, bFound := m.variableNameToValue[bName]
+	bTP, bFound := m.VariableNameToValue[bName]
 	if !bFound || bTP == nil || len(bTP.Dims) != 2 || bTP.DataType != int32(protos.TensorProto_INT8) {
 		return nil
 	}
@@ -176,13 +176,13 @@ func (m *Model) tryMatchQuantizedDense(matMulNode *protos.NodeProto) *quantizedD
 	}
 
 	// A input must come from DynamicQuantizeLinear.
-	dqlNode, ok := m.nodeOutputToNode[aName]
+	dqlNode, ok := m.NodeOutputToNode[aName]
 	if !ok || dqlNode.OpType != "DynamicQuantizeLinear" || len(dqlNode.Input) == 0 || len(dqlNode.Output) < 2 {
 		// DQL not found — try DequantizeLinear variant instead.
 		return m.tryMatchQuantizedDenseDequantLinear(matMulNode, bName, K, N)
 	}
-	floatInputName := dqlNode.Input[0]    // original float32 input
-	aScaleName := dqlNode.Output[1]       // dynamic per-tensor scale
+	floatInputName := dqlNode.Input[0] // original float32 input
+	aScaleName := dqlNode.Output[1]    // dynamic per-tensor scale
 
 	// Follow forward: MatMulInteger → sole consumer Cast → sole consumer Mul(combined_scale).
 	matMulOut := matMulNode.Output[0]
@@ -204,7 +204,7 @@ func (m *Model) tryMatchQuantizedDense(matMulNode *protos.NodeProto) *quantizedD
 	}
 
 	// The combined scale must be produced by Mul(a_scale, B_scale) where B_scale is constant.
-	scaleMulNode, ok := m.nodeOutputToNode[combinedScaleName]
+	scaleMulNode, ok := m.NodeOutputToNode[combinedScaleName]
 	if !ok || scaleMulNode.OpType != "Mul" || len(scaleMulNode.Input) < 2 {
 		return nil
 	}
@@ -218,9 +218,9 @@ func (m *Model) tryMatchQuantizedDense(matMulNode *protos.NodeProto) *quantizedD
 	// Collect internal nodes/outputs for the base pattern.
 	// Note: DQL is NOT internal — it may be shared across multiple MatMulIntegers.
 	internalNodes := map[*protos.NodeProto]bool{
-		matMulNode:   true,
-		castNode:     true,
-		scaleMulNode: true,
+		matMulNode:    true,
+		castNode:      true,
+		scaleMulNode:  true,
 		resultMulNode: true,
 	}
 	internalOutputs := map[string]bool{
@@ -294,7 +294,7 @@ func (m *Model) tryMatchQuantizedDense(matMulNode *protos.NodeProto) *quantizedD
 // This variant is emitted by some ONNX exporters instead of the DQL-based
 // Cast+Mul(a_scale*B_scale) chain. Both are semantically equivalent.
 func (m *Model) tryMatchQuantizedDenseDequantLinear(matMulNode *protos.NodeProto, bName string, K, N int) *quantizedDenseCandidate {
-	consumers := m.consumers
+	consumers := m.Consumers
 	matMulOut := matMulNode.Output[0]
 	matMulInputs := matMulNode.Input
 
@@ -314,7 +314,7 @@ func (m *Model) tryMatchQuantizedDenseDequantLinear(matMulNode *protos.NodeProto
 	if !m.isConstant(scaleName) {
 		return nil
 	}
-	scaleTP, scaleFound := m.variableNameToValue[scaleName]
+	scaleTP, scaleFound := m.VariableNameToValue[scaleName]
 	if !scaleFound || scaleTP == nil {
 		return nil
 	}

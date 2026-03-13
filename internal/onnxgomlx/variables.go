@@ -27,7 +27,7 @@ func (m *Model) VariablesToContext(ctx *context.Context) error {
 	ctx = ctx.In(onnx.ModelScope).Checked(false)
 	reader := m.getExternalDataReader()
 	for _, tensorProto := range m.Proto.Graph.Initializer {
-		tensor, err := tensorToGoMLXWithBaseDir(m.backend, tensorProto, m.baseDir(), reader)
+		tensor, err := tensorToGoMLXWithBaseDir(m.Backend, tensorProto, m.baseDir(), reader)
 		if err != nil {
 			return errors.WithMessagef(err, "Model.VariablesToContext()")
 		}
@@ -57,7 +57,7 @@ func (m *Model) FreeUnusedVariables() {
 	}
 
 	// Also keep initializers referenced by fusion external inputs.
-	for _, cand := range m.detectedFusions {
+	for _, cand := range m.DetectedFusions {
 		for _, name := range cand.ExternalInputs() {
 			referenced[name] = true
 		}
@@ -69,7 +69,7 @@ func (m *Model) FreeUnusedVariables() {
 		if referenced[init.Name] {
 			kept = append(kept, init)
 		} else {
-			delete(m.variableNameToValue, init.Name)
+			delete(m.VariableNameToValue, init.Name)
 		}
 	}
 	m.Proto.Graph.Initializer = kept

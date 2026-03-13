@@ -76,7 +76,7 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 		}
 		inputN := inputs[inputName]
 		if inputN == nil {
-			staticValue := m.inputsAsConstants[inputName]
+			staticValue := m.InputsAsConstants[inputName]
 			if staticValue != nil {
 				// Check if the static value is a zero-size tensor (e.g., empty KV cache).
 				// Zero-size tensors cannot be represented as constants in some backends (e.g., XLA),
@@ -92,7 +92,7 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 				continue
 			}
 		} else {
-			if _, found := m.inputsAsConstants[inputName]; found {
+			if _, found := m.InputsAsConstants[inputName]; found {
 				repeatedInputs.Insert(inputName)
 			}
 			convertedOutputs[inputName] = inputN
@@ -103,7 +103,7 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 			unknownInputs.Insert(givenName)
 		}
 	}
-	for givenName := range m.inputsAsConstants {
+	for givenName := range m.InputsAsConstants {
 		if _, found := convertedOutputs[givenName]; !found {
 			unknownInputs.Insert(givenName)
 		}
@@ -188,7 +188,7 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 	}
 
 	// Is it the output of a variable?
-	if _, found := m.variableNameToValue[nodeOutputName]; found {
+	if _, found := m.VariableNameToValue[nodeOutputName]; found {
 		if ctx == nil {
 			exceptions.Panicf("onnxgomlx.CallGraph(): model has variables, but a nil context was given")
 			return
@@ -220,7 +220,7 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 		return
 	}
 
-	onnxNode, found := m.nodeOutputToNode[nodeOutputName]
+	onnxNode, found := m.NodeOutputToNode[nodeOutputName]
 	if !found {
 		exceptions.Panicf("ONNX node output %q not found as the output of any Op, and not a variable or input either -- could it be a node name, and note a node **output** name ?", nodeOutputName)
 	}
@@ -271,10 +271,10 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 		localConvertedOutputs[initializerName] = Const(g, tensor)
 		subGraphInitializers[initializerName] = initializerProto
 		// Save original before overwriting
-		if orig, exists := m.variableNameToValue[initializerName]; exists {
+		if orig, exists := m.VariableNameToValue[initializerName]; exists {
 			savedVariables[initializerName] = orig
 		}
-		m.variableNameToValue[initializerName] = initializerProto
+		m.VariableNameToValue[initializerName] = initializerProto
 	}
 
 	// Build a mapping from output name to the node that produces it (for this sub-graph only)
@@ -293,26 +293,26 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 	// Note: this temporary mutation is not concurrency-safe, but graph construction is single-threaded.
 	for outputName, node := range subGraphNodeOutputToNode {
 		// Save original before overwriting
-		if orig, exists := m.nodeOutputToNode[outputName]; exists {
+		if orig, exists := m.NodeOutputToNode[outputName]; exists {
 			savedNodes[outputName] = orig
 		}
-		m.nodeOutputToNode[outputName] = node
+		m.NodeOutputToNode[outputName] = node
 	}
 
 	// Consolidated cleanup: restore original entries or remove temporary ones
 	defer func() {
 		for initName := range subGraphInitializers {
 			if orig, wasSaved := savedVariables[initName]; wasSaved {
-				m.variableNameToValue[initName] = orig
+				m.VariableNameToValue[initName] = orig
 			} else {
-				delete(m.variableNameToValue, initName)
+				delete(m.VariableNameToValue, initName)
 			}
 		}
 		for outputName := range subGraphNodeOutputToNode {
 			if orig, wasSaved := savedNodes[outputName]; wasSaved {
-				m.nodeOutputToNode[outputName] = orig
+				m.NodeOutputToNode[outputName] = orig
 			} else {
-				delete(m.nodeOutputToNode, outputName)
+				delete(m.NodeOutputToNode, outputName)
 			}
 		}
 	}()
@@ -331,7 +331,7 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 		}
 
 		// Check if it's a model-level initializer (variable)
-		if initializerProto, found := m.variableNameToValue[outputName]; found {
+		if initializerProto, found := m.VariableNameToValue[outputName]; found {
 			// Convert the model-level initializer to a constant in the sub-graph
 			tensor, err := tensorToGoMLXWithBaseDir(g.Backend(), initializerProto, m.baseDir(), reader)
 			if err != nil {
@@ -351,7 +351,7 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 			}
 
 			// Not in parent outputs yet - try to find and convert it from the main model
-			if mainNode, foundInMain := m.nodeOutputToNode[outputName]; foundInMain {
+			if mainNode, foundInMain := m.NodeOutputToNode[outputName]; foundInMain {
 				// This is a main model node that hasn't been converted yet
 				// Recursively convert its inputs first
 				for _, inputName := range mainNode.Input {

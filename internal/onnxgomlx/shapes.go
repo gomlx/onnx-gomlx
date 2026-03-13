@@ -21,7 +21,7 @@ func (m *Model) ShapeForName(name string) shapes.Shape {
 		}
 	}
 	// Check initializers.
-	if tp, ok := m.variableNameToValue[name]; ok {
+	if tp, ok := m.VariableNameToValue[name]; ok {
 		dims := make([]int, len(tp.Dims))
 		for i, d := range tp.Dims {
 			dims[i] = int(d)

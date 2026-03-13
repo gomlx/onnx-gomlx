@@ -310,7 +310,7 @@ func convertConstant(m *Model, node *protos.NodeProto, g *Graph) *Node {
 	if valueAttr.T == nil {
 		panic(errors.Errorf("TENSOR attribute for ONNX node %s is nil!?", nodeToString(node)))
 	}
-	tensor, err := tensorToGoMLXWithBaseDir(m.backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
+	tensor, err := tensorToGoMLXWithBaseDir(m.Backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
 	if err != nil {
 		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
 		panic(err)
@@ -1278,7 +1278,7 @@ func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *p
 	valueAttr := getNodeAttr(node, "value", false)
 	if valueAttr != nil {
 		assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
-		tensor, err := tensorToGoMLXWithBaseDir(m.backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
+		tensor, err := tensorToGoMLXWithBaseDir(m.Backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
 		if err != nil {
 			err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
 			panic(err)
@@ -2705,7 +2705,7 @@ func onnxDequantizeLinear(x, scale, xZeroPoint *Node, targetAxis int, outputDTyp
 // isZeroInitializer checks if the named tensor in the model's initializers is an
 // all-zeros tensor. Returns false if the name is not found or not all zeros.
 func (m *Model) isZeroInitializer(name string) bool {
-	tp, found := m.variableNameToValue[name]
+	tp, found := m.VariableNameToValue[name]
 	if !found || tp == nil {
 		return false
 	}

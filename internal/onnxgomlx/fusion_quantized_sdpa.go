@@ -33,7 +33,7 @@ type quantizedSDPACandidate struct {
 	externalInputs  []string
 }
 
-func (c *quantizedSDPACandidate) Name() string                    { return "QuantizedSDPA" }
+func (c *quantizedSDPACandidate) Name() string                     { return "QuantizedSDPA" }
 func (c *quantizedSDPACandidate) Score() float32                   { return 90.0 }
 func (c *quantizedSDPACandidate) OutputNames() []string            { return []string{c.outputName} }
 func (c *quantizedSDPACandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
@@ -96,7 +96,7 @@ func detectQuantizedSDPACandidates(m *Model) []FusionCandidate {
 // tryMatchQuantizedSDPA attempts to match a quantized SDPA chain starting from matmul1
 // (the candidate Q@K^T MatMulInteger).
 func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPACandidate {
-	consumers := m.consumers
+	consumers := m.Consumers
 	mm1Out := matmul1.Output[0]
 
 	// Forward chain: MatMulInteger1 → sole consumer Cast(int32→float32)
@@ -190,7 +190,7 @@ func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPAC
 
 	// Q: matmul1.Input[0] → DQL → Q_float (possibly pre-scaled by 1/√headDim)
 	qUint8Name := matmul1.Input[0]
-	qDqlNode, ok := m.nodeOutputToNode[qUint8Name]
+	qDqlNode, ok := m.NodeOutputToNode[qUint8Name]
 	if !ok || qDqlNode.OpType != "DynamicQuantizeLinear" || len(qDqlNode.Input) == 0 {
 		return nil
 	}
@@ -201,7 +201,7 @@ func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPAC
 	var attentionScale float64 = 1.0
 	var qPreScaleMulNode *protos.NodeProto
 
-	qInputNode, qInputFound := m.nodeOutputToNode[qDqlInput]
+	qInputNode, qInputFound := m.NodeOutputToNode[qDqlInput]
 	if qInputFound && qInputNode.OpType == "Mul" && len(qInputNode.Input) >= 2 {
 		for _, scalarIdx := range []int{0, 1} {
 			otherIdx := 1 - scalarIdx
@@ -228,7 +228,7 @@ func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPAC
 
 	// V: matmul2.Input[1] → DQL → V_float
 	vUint8Name := matmul2.Input[1]
-	vDqlNode, vOk := m.nodeOutputToNode[vUint8Name]
+	vDqlNode, vOk := m.NodeOutputToNode[vUint8Name]
 	if !vOk || vDqlNode.OpType != "DynamicQuantizeLinear" || len(vDqlNode.Input) == 0 {
 		return nil
 	}
@@ -264,7 +264,7 @@ func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPAC
 		if name == "" {
 			return
 		}
-		if sc, ok := m.nodeOutputToNode[name]; ok && sc.OpType == "Mul" {
+		if sc, ok := m.NodeOutputToNode[name]; ok && sc.OpType == "Mul" {
 			internalNodes[sc] = true
 		}
 	}
@@ -342,7 +342,7 @@ func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPAC
 // When kIsTransposed is true, kFloatName points to a K^T tensor (already transposed)
 // that needs the last two dims swapped before passing to the fused op.
 func (m *Model) traceQuantizedKBackward(uint8Name string) (dqlNode *protos.NodeProto, kFloatName string, transposeNode *protos.NodeProto, kNeedsHeadsFirst, kIsTransposed bool) {
-	node, ok := m.nodeOutputToNode[uint8Name]
+	node, ok := m.NodeOutputToNode[uint8Name]
 	if !ok {
 		return
 	}
@@ -370,7 +370,7 @@ func (m *Model) traceQuantizedKBackward(uint8Name string) (dqlNode *protos.NodeP
 		// Pre-scaled K^T: DQL ← Mul(Transpose(K_BHSD), scalar).
 		// The Transpose is hidden inside the Mul. We can't strip it without losing
 		// the pre-scale, so return the Mul output (K^T_scaled) and flag as transposed.
-		if mulNode, mulOk := m.nodeOutputToNode[kTransposedFloat]; mulOk && mulNode.OpType == "Mul" && len(mulNode.Input) >= 2 {
+		if mulNode, mulOk := m.NodeOutputToNode[kTransposedFloat]; mulOk && mulNode.OpType == "Mul" && len(mulNode.Input) >= 2 {
 			for _, transposeIdx := range []int{0, 1} {
 				tNode, _ = m.matchKTranspose(mulNode.Input[transposeIdx])
 				if tNode != nil {
@@ -399,7 +399,7 @@ func (m *Model) traceQuantizedKBackward(uint8Name string) (dqlNode *protos.NodeP
 		if len(transposeNode.Input) == 0 {
 			return nil, "", nil, false, false
 		}
-		dqlNode, ok = m.nodeOutputToNode[transposeNode.Input[0]]
+		dqlNode, ok = m.NodeOutputToNode[transposeNode.Input[0]]
 		if !ok || dqlNode.OpType != "DynamicQuantizeLinear" || len(dqlNode.Input) == 0 {
 			return nil, "", nil, false, false
 		}
@@ -418,7 +418,7 @@ func (m *Model) traceQuantizedKBackward(uint8Name string) (dqlNode *protos.NodeP
 func (m *Model) traceToReshapeForHeadCount(name string) int {
 	current := name
 	for depth := 0; depth < 10; depth++ {
-		node, ok := m.nodeOutputToNode[current]
+		node, ok := m.NodeOutputToNode[current]
 		if !ok {
 			return -1
 		}
@@ -450,11 +450,11 @@ func (m *Model) extractReshapeHeadDim(reshapeNode *protos.NodeProto) int {
 	shapeName := reshapeNode.Input[1]
 
 	// Try to read the shape as a constant int64 tensor from initializers.
-	if tp, ok := m.variableNameToValue[shapeName]; ok {
+	if tp, ok := m.VariableNameToValue[shapeName]; ok {
 		return headCountFromShapeTensor(tp)
 	}
 
-	shapeNode, ok := m.nodeOutputToNode[shapeName]
+	shapeNode, ok := m.NodeOutputToNode[shapeName]
 	if !ok {
 		return -1
 	}
@@ -484,7 +484,7 @@ func (m *Model) extractReshapeHeadDim(reshapeNode *protos.NodeProto) int {
 // The element may be a Constant node producing a [1]-shaped int64 tensor.
 func (m *Model) extractConstantInt64FromConcatInput(name string) int {
 	// Check initializer.
-	if tp, ok := m.variableNameToValue[name]; ok {
+	if tp, ok := m.VariableNameToValue[name]; ok {
 		vals := extractInt64SliceFromTensor(tp)
 		if len(vals) == 1 && vals[0] > 0 {
 			return int(vals[0])
@@ -493,7 +493,7 @@ func (m *Model) extractConstantInt64FromConcatInput(name string) int {
 	}
 
 	// Check Constant node.
-	node, ok := m.nodeOutputToNode[name]
+	node, ok := m.NodeOutputToNode[name]
 	if !ok || node.OpType != "Constant" {
 		return -1
 	}

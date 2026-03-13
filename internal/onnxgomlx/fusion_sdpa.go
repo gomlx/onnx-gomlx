@@ -46,7 +46,7 @@ type sdpaCandidate struct {
 	externalInputs  []string
 }
 
-func (c *sdpaCandidate) Name() string                    { return "SDPA" }
+func (c *sdpaCandidate) Name() string                     { return "SDPA" }
 func (c *sdpaCandidate) Score() float32                   { return 100.0 }
 func (c *sdpaCandidate) OutputNames() []string            { return []string{c.outputName} }
 func (c *sdpaCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
@@ -102,7 +102,7 @@ func detectSDPACandidates(m *Model) []FusionCandidate {
 // In the pre-scaled pattern, both Q and K inputs to MatMul1 come from Mul(·, scalar)
 // with the same scalar constant, and the effective scale is scalar².
 func (m *Model) sdpaTryMatch(matmul1 *protos.NodeProto) *sdpaCandidate {
-	consumers := m.consumers
+	consumers := m.Consumers
 	if len(matmul1.Output) == 0 {
 		return nil
 	}
@@ -330,7 +330,7 @@ func (m *Model) sdpaTryMatch(matmul1 *protos.NodeProto) *sdpaCandidate {
 // matchKTranspose checks if inputName comes from a Transpose node that swaps the last two axes.
 // Returns the Transpose node and the original (pre-transpose) input name, or nil if not matched.
 func (m *Model) matchKTranspose(inputName string) (*protos.NodeProto, string) {
-	node, ok := m.nodeOutputToNode[inputName]
+	node, ok := m.NodeOutputToNode[inputName]
 	if !ok || node.OpType != "Transpose" {
 		return nil, ""
 	}
@@ -367,7 +367,7 @@ func (m *Model) matchKTranspose(inputName string) (*protos.NodeProto, string) {
 // Returns the Mul node, Transpose node, and the pre-transpose input name; or nil if not matched.
 // kNeedsHeadsFirst is true when K_raw needs a [0,2,1,3] transpose to get to [batch, heads, kvLen, headDim].
 func (m *Model) matchPreScaledKTranspose(inputName string) (mulNode, transposeNode *protos.NodeProto, preTransposeInput string, kNeedsHeadsFirst bool) {
-	node, ok := m.nodeOutputToNode[inputName]
+	node, ok := m.NodeOutputToNode[inputName]
 	if !ok || node.OpType != "Mul" {
 		return nil, nil, "", false
 	}
@@ -404,7 +404,7 @@ func (m *Model) matchPreScaledKTranspose(inputName string) (mulNode, transposeNo
 // Input: [batch, kvLen, numKVHeads, headDim] → Output: [batch, numKVHeads, headDim, kvLen]
 // Returns the Transpose node and pre-transpose input name, or (nil, "", false).
 func (m *Model) matchCombinedKTranspose(inputName string) (*protos.NodeProto, string, bool) {
-	node, ok := m.nodeOutputToNode[inputName]
+	node, ok := m.NodeOutputToNode[inputName]
 	if !ok || node.OpType != "Transpose" {
 		return nil, "", false
 	}
@@ -429,7 +429,7 @@ func (m *Model) matchCombinedKTranspose(inputName string) (*protos.NodeProto, st
 // come from Mul(·, scalar) with the same constant scalar. Returns scalar² or 0 if not matched.
 func (m *Model) sdpaExtractPreScale(qMulOutputName string, kMulNode *protos.NodeProto) float64 {
 	// Q input should also come from a Mul(·, scalar).
-	qNode, ok := m.nodeOutputToNode[qMulOutputName]
+	qNode, ok := m.NodeOutputToNode[qMulOutputName]
 	if !ok || qNode.OpType != "Mul" {
 		return 0
 	}
@@ -466,7 +466,7 @@ func (m *Model) sdpaExtractPreScale(qMulOutputName string, kMulNode *protos.Node
 // sdpaLookThroughMulForShapeName returns the non-scalar input to a Mul node, which typically
 // has shape info (e.g. from a Transpose). Falls back to the original name.
 func (m *Model) sdpaLookThroughMulForShapeName(name string) string {
-	node, ok := m.nodeOutputToNode[name]
+	node, ok := m.NodeOutputToNode[name]
 	if !ok || node.OpType != "Mul" {
 		return name
 	}
@@ -506,11 +506,11 @@ func (m *Model) sdpaExtractScaleFromMul(node *protos.NodeProto) float64 {
 // tryGetConstantScalar attempts to read a scalar float64 from a constant/initializer.
 func (m *Model) tryGetConstantScalar(name string) float64 {
 	// Check initializers (variables).
-	if tp, ok := m.variableNameToValue[name]; ok {
+	if tp, ok := m.VariableNameToValue[name]; ok {
 		return TensorProtoToScalar(tp)
 	}
 	// Check if it's a Constant node output.
-	if node, ok := m.nodeOutputToNode[name]; ok && node.OpType == "Constant" {
+	if node, ok := m.NodeOutputToNode[name]; ok && node.OpType == "Constant" {
 		return ConstantNodeToScalar(node)
 	}
 	return 0
