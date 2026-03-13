@@ -54,28 +54,76 @@ func onnxBroadcastToCommonShape(operands []*Node) []*Node {
 	// Step 1: Expand to common rank
 	operands = onnxImplicitExpansion(operands)
 
-	// Step 2: Find the maximum dimension for each axis
+	// Step 2: Find the maximum dimension for each axis.
+	// DynamicDim (-1) takes precedence over concrete dimensions: if any operand
+	// has DynamicDim for an axis, the broadcast target is DynamicDim (since the
+	// concrete value is unknown at graph build time and 1-dims will be broadcast
+	// to match it at execution time).
 	ranks := sliceMap(operands, func(n *Node) int { return n.Rank() })
 	maxRank := slices.Max(ranks)
 	maxDims := make([]int, maxRank)
 	for axis := range maxRank {
-		allDims := sliceMap(operands, func(n *Node) int {
-			if n.IsScalar() {
-				return 1
+		hasDynamic := false
+		maxConcrete := 0
+		for _, n := range operands {
+			d := 1
+			if !n.IsScalar() {
+				d = n.Shape().Dim(axis)
 			}
-			return n.Shape().Dim(axis)
-		})
-		maxDims[axis] = slices.Max(allDims)
+			if d == shapes.DynamicDim {
+				hasDynamic = true
+			} else if d > maxConcrete {
+				maxConcrete = d
+			}
+		}
+		if hasDynamic {
+			maxDims[axis] = shapes.DynamicDim
+		} else {
+			maxDims[axis] = maxConcrete
+		}
 	}
 
-	// Step 3: Broadcast each operand to the common shape
+	// Step 3: Broadcast each operand to the common shape.
+	// When the target has DynamicDim axes, we collect axis names from operands
+	// that carry them (e.g., the operand with the dynamic batch dim) and build
+	// a target shapes.Shape with those names. BroadcastToShape preserves axis
+	// names so that the specialization system can resolve DynamicDim to concrete
+	// values at execution time.
+	//
+	// Collect axis names for DynamicDim axes from all operands.
+	dynamicAxisNames := make([]string, maxRank)
+	for axis := range maxRank {
+		if maxDims[axis] != shapes.DynamicDim {
+			continue
+		}
+		for _, n := range operands {
+			if name := n.Shape().AxisName(axis); name != "" {
+				dynamicAxisNames[axis] = name
+				break
+			}
+		}
+	}
+
 	result := make([]*Node, len(operands))
 	for ii, operand := range operands {
-		if !operand.IsScalar() && !slices.Equal(operand.Shape().Dimensions, maxDims) {
-			result[ii] = BroadcastToDims(operand, maxDims...)
-		} else {
+		if operand.IsScalar() || slices.Equal(operand.Shape().Dimensions, maxDims) {
 			result[ii] = operand
+			continue
 		}
+		// Build the target shape with axis names for DynamicDim axes.
+		targetShape := shapes.Shape{
+			DType:      operand.DType(),
+			Dimensions: slices.Clone(maxDims),
+		}
+		for axis, name := range dynamicAxisNames {
+			if name != "" {
+				if targetShape.AxisNames == nil {
+					targetShape.AxisNames = make([]string, maxRank)
+				}
+				targetShape.AxisNames[axis] = name
+			}
+		}
+		result[ii] = BroadcastToShape(operand, targetShape)
 	}
 	return result
 }
@@ -860,9 +908,16 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	effectiveEnds := make([]int, rank)
 	effectiveSteps := make([]int, rank)
 
+	// Track which axes are dynamic (DynamicDim) — we can't compute
+	// concrete start/end/step for these at graph build time.
+	dynamicAxes := make([]bool, rank)
 	for i := 0; i < rank; i++ {
+		dim := operand.Shape().Dim(i)
+		if dim == shapes.DynamicDim {
+			dynamicAxes[i] = true
+		}
 		effectiveStarts[i] = 0
-		effectiveEnds[i] = operand.Shape().Dim(i)
+		effectiveEnds[i] = dim
 		effectiveSteps[i] = 1
 	}
 
@@ -891,6 +946,22 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		// Validate step is not zero
 		if step == 0 {
 			panic(errors.Errorf("step cannot be 0 for axis %d in node %s", axis, nodeToString(node)))
+		}
+
+		// For dynamic axes: if the Slice takes the full range (start=0, end=max),
+		// keep the axis dynamic. Otherwise, if the Slice takes a concrete sub-range
+		// that doesn't depend on the dimension size, compute concrete bounds.
+		if dynamicAxes[axis] {
+			// If start and end are both non-negative and don't reference dimSize,
+			// we can compute concrete slice bounds even for dynamic dims.
+			if start >= 0 && end >= 0 {
+				effectiveStarts[axis] = start
+				effectiveEnds[axis] = end
+				effectiveSteps[axis] = step
+			}
+			// Otherwise (negative indices that reference dimSize), keep full range.
+			// The actual slicing will happen at execution time with concrete shapes.
+			continue
 		}
 
 		// Handle negative start and end indices by adding dimension size
@@ -927,6 +998,11 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	emptySlice := false
 	outputDims := make([]int, rank)
 	for i := 0; i < rank; i++ {
+		// Dynamic axes that keep the full range remain dynamic.
+		if dynamicAxes[i] && effectiveEnds[i] == shapes.DynamicDim {
+			outputDims[i] = shapes.DynamicDim
+			continue
+		}
 		start := effectiveStarts[i]
 		end := effectiveEnds[i]
 		step := effectiveSteps[i]
@@ -947,12 +1023,24 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		}
 	}
 	if emptySlice {
+		// For empty slices, replace any DynamicDim with 0 — the slice is empty
+		// regardless of the dynamic dimension's concrete value.
+		for i := range outputDims {
+			if outputDims[i] == shapes.DynamicDim {
+				outputDims[i] = 0
+			}
+		}
 		return Zeros(operand.Graph(), shapes.Make(operand.DType(), outputDims...))
 	}
 
 	specs := make([]SliceAxisSpec, rank)
 	for i := 0; i < rank; i++ {
-		specs[i] = AxisRange(effectiveStarts[i], effectiveEnds[i]).Stride(effectiveSteps[i])
+		if dynamicAxes[i] && effectiveEnds[i] == shapes.DynamicDim {
+			// Dynamic axis taking full range.
+			specs[i] = AxisRange()
+		} else {
+			specs[i] = AxisRange(effectiveStarts[i], effectiveEnds[i]).Stride(effectiveSteps[i])
+		}
 	}
 
 	return Slice(operand, specs...)
