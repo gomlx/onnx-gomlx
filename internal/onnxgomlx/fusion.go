@@ -1,4 +1,4 @@
-package onnx
+package onnxgomlx
 
 import (
 	"sort"
@@ -119,7 +119,6 @@ func (m *Model) isFusionGroupOutput(nodeOutputName string) FusionCandidate {
 }
 
 // DisableFusion clears all detected fusions, forcing normal (unfused) conversion.
-func (m *Model) DisableFusion() *Model {
+func (m *Model) DisableFusion() {
 	m.detectedFusions = nil
-	return m
 }

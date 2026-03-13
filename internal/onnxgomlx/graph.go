@@ -1,4 +1,4 @@
-package onnx
+package onnxgomlx
 
 import (
 	"fmt"
@@ -12,6 +12,7 @@ import (
 	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
 	"github.com/gomlx/gomlx/pkg/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/onnx-gomlx/onnx"
 )
 
 // sliceMap executes the given function sequentially for every element on in and returns a mapped slice.
@@ -46,15 +47,15 @@ func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
 // As in GoMLX graph building (symbolic) functions, it panics (throws exceptions) in case of errors.
 func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Node, outputNames ...string) (outputs []*Node) {
 	if ctx != nil {
-		ctx = ctx.In(ModelScope).Checked(false)
+		ctx = ctx.In(onnx.ModelScope).Checked(false)
 	}
 
 	// Sanity check of things we don't support yet.
 	if len(m.Proto.Functions) > 0 {
-		exceptions.Panicf("onnx.CallGraph does not support ONNX functions")
+		exceptions.Panicf("onnxgomlx.CallGraph does not support ONNX functions")
 	}
 	if len(m.Proto.Graph.SparseInitializer) > 0 {
-		exceptions.Panicf("onnx.CallGraph does not support ONNX SparseTensors")
+		exceptions.Panicf("onnxgomlx.CallGraph does not support ONNX SparseTensors")
 	}
 
 	// If no outputNames were given, take the model outputs.
@@ -108,7 +109,7 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 		}
 	}
 	if len(missingInputs) > 0 || len(unknownInputs) > 0 {
-		exceptions.Panicf("onnx.CallGraph() called with wrong inputs: missing inputs=%q; unknown given inputs=%q; inputs given normally and as constant inputs=%q",
+		exceptions.Panicf("onnxgomlx.CallGraph() called with wrong inputs: missing inputs=%q; unknown given inputs=%q; inputs given normally and as constant inputs=%q",
 			missingInputs, unknownInputs, repeatedInputs)
 	}
 
@@ -144,7 +145,7 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 
 	// Convert variables: create the GoMLX nodes corresponding to the ONNX model variables.
 	if len(m.Proto.Graph.Initializer) > 0 && ctx == nil {
-		exceptions.Panicf("onnx.CallGraph(): model has variables, but a nil context was give")
+		exceptions.Panicf("onnxgomlx.CallGraph(): model has variables, but a nil context was give")
 		return
 	}
 
@@ -189,13 +190,13 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 	// Is it the output of a variable?
 	if _, found := m.variableNameToValue[nodeOutputName]; found {
 		if ctx == nil {
-			exceptions.Panicf("onnx.CallGraph(): model has variables, but a nil context was given")
+			exceptions.Panicf("onnxgomlx.CallGraph(): model has variables, but a nil context was given")
 			return
 		}
 		varName := SafeVarName(nodeOutputName)
 		v := ctx.GetVariable(varName)
 		if v == nil {
-			exceptions.Panicf("variable %q (named %q in ONNX) has not been uploaded yet to context -- did you forget to call onnx.Model.VariablesToContext?",
+			exceptions.Panicf("variable %q (named %q in ONNX) has not been uploaded yet to context -- did you forget to call onnxgomlx.Model.VariablesToContext?",
 				varName, nodeOutputName)
 			return
 		}

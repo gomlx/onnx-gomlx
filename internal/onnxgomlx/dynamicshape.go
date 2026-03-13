@@ -1,7 +1,8 @@
-package onnx
+package onnxgomlx
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -20,6 +21,17 @@ type DynamicShape struct {
 	dtypes.DType
 	Dimensions []int
 	Names      []string
+}
+
+// GoMLX returns a shapes.Shape representation of the DynamicShape.
+// Dimensions that are dynamic (-1) are set to onnx.DynamicDim.
+func (dshape DynamicShape) GoMLX() shapes.Shape {
+	s := shapes.Make(dshape.DType)
+	if dshape.Rank() == 0 {
+		return s
+	}
+	s.Dimensions = slices.Clone(dshape.Dimensions)
+	return s
 }
 
 // UnnamedDynamicDimension is a placeholder name for an unnamed dynamic dimension, that doesn't necessarily match any other (in inputs/outputs).

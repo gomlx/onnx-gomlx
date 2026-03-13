@@ -15,7 +15,7 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
-	"github.com/gomlx/onnx-gomlx/onnx"
+	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/go-benchmarks"
 	"github.com/janpfeifer/must"
 	ort "github.com/yalue/onnxruntime_go"
@@ -59,7 +59,7 @@ func downloadInceptionV3Model() string {
 
 func benchGoMLXInceptionV3(t *testing.T) {
 	onnxModelPath := downloadInceptionV3Model()
-	model := must.M1(onnx.ReadFile(onnxModelPath))
+	model := must.M1(parser.FromFile(onnxModelPath))
 	if *flagVerbose {
 		fmt.Printf("Model details:\n%s\n", model)
 	}
@@ -67,8 +67,10 @@ func benchGoMLXInceptionV3(t *testing.T) {
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()
-	inputName := model.InputsNames[0]
-	outputName := model.OutputsNames[0]
+	inputsNames, _ := model.Inputs()
+	inputName := inputsNames[0]
+	outputsNames, _ := model.Outputs()
+	outputName := outputsNames[0]
 	for batchIdx, batchSize := range inceptionV3BatchSizes {
 		//t.Run(fmt.Sprintf("batchSize=%02d", batchSize), func(t *testing.T) {
 		exec := context.MustNewExec(backend, ctx, func(ctx *context.Context, images *Node) *Node {
@@ -95,7 +97,10 @@ func benchGoMLXInceptionV3(t *testing.T) {
 		benchFn := benchmarks.NamedFunction{
 			Name: fmt.Sprintf("%s/batchSize=%02d", t.Name(), batchSize),
 			Func: func() {
-				output := exec.MustExec1(inputImages)
+				output, err := exec.Exec1(inputImages)
+				if err != nil {
+					t.Fatalf("InceptionV3 execution failed: %+v", err)
+				}
 				// Force transfer to local memory: this should be part of the cost.
 				tensors.ConstFlatData(output, func(flat []float32) {
 					_ = flat[0]

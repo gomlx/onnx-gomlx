@@ -20,7 +20,7 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/support/xsync"
-	"github.com/gomlx/onnx-gomlx/onnx"
+	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/go-benchmarks"
 	"github.com/janpfeifer/must"
 	ort "github.com/yalue/onnxruntime_go"
@@ -318,7 +318,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	repoModel := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repoModel.DownloadFile("model.onnx"))
 	backend := graphtest.BuildTestBackend()
-	model := must.M1(onnx.ReadFile(onnxModelPath))
+	model := must.M1(parser.FromFile(onnxModelPath))
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()

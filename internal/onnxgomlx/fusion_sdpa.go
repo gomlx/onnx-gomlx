@@ -16,7 +16,7 @@
 //	Used by: Models exported with heads in non-standard axis layout (Snowflake variants)
 //
 // Grouped Query Attention (GQA) is supported when NumHeads != NumKVHeads.
-package onnx
+package onnxgomlx
 
 import (
 	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
