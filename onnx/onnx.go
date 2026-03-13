@@ -38,9 +38,6 @@ type Model struct {
 	// inputsAsConstants: see WithInputsAsConstants
 	inputsAsConstants map[string]any
 
-	// constantVariables: see WithConstantVariables
-	constantVariables bool
-
 	// backend used for ONNX-conversion time tensor processing.
 	backend backends.Backend
 
@@ -217,15 +214,6 @@ func (m *Model) NumInputs() int {
 // The value each input maps to will be converted to a tensors.FromAnyValue.
 func (m *Model) WithInputsAsConstants(inputsAsConstants map[string]any) *Model {
 	m.inputsAsConstants = inputsAsConstants
-	return m
-}
-
-// WithConstantVariables makes all model variables (ONNX initializers) become
-// constants in the computation graph instead of runtime parameters. This is
-// required for models that use variables in ops that need compile-time values
-// (e.g., Range for rotary embeddings). Use this for inference-only workloads.
-func (m *Model) WithConstantVariables() *Model {
-	m.constantVariables = true
 	return m
 }
 
