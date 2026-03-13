@@ -1,5 +1,7 @@
 # v0.3.5: New ops for various models support (Gemma, Snowflake,CLAP, etc); Many fixes and improvements.
 
+- Added quantized fusion patterns for dense layers, QKV projections, and scaled dot-product attention (SDPA). (by @ajroetker)
+- Fixed `isZeroInitializer` to handle tensors with zero-sized dimensions (e.g., `[batchSize, 0]`).
 - Add ONNX operators for Gemma and Snowflake Arctic models: `ReduceL2`, `SimplifiedLayerNormalization` (RMSNorm),
   `RotaryEmbedding`, `MultiHeadAttention`.
 - Simplified optional DType auto-promotion.

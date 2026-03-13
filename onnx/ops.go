@@ -2633,7 +2633,7 @@ func convertSplit(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__DequantizeLinear.html
-func convertDequantizeLinear(nodeProto *protos.NodeProto, inputs []*Node) *Node {
+func (m *Model) convertDequantizeLinear(convertedOutputs map[string]*Node, nodeProto *protos.NodeProto, inputs []*Node) *Node {
 	// Attributes:
 	// - Axis (optional) on which to apply the multi-valued scale.
 	// - blockSize: optional, only active if != 0. Not yet implemented.
@@ -2677,6 +2677,66 @@ func onnxDequantizeLinear(x, scale, xZeroPoint *Node, targetAxis int, outputDTyp
 		x = ConvertDType(x, outputDType)
 	}
 	return x
+}
+
+// isZeroInitializer checks if the named tensor in the model's initializers is an
+// all-zeros tensor. Returns false if the name is not found or not all zeros.
+func (m *Model) isZeroInitializer(name string) bool {
+	tp, found := m.variableNameToValue[name]
+	if !found || tp == nil {
+		return false
+	}
+
+	// Check raw data first (most common storage).
+	switch {
+	case len(tp.RawData) > 0:
+		for _, b := range tp.RawData {
+			if b != 0 {
+				return false
+			}
+		}
+		return true
+	case len(tp.Int32Data) > 0:
+		for _, v := range tp.Int32Data {
+			if v != 0 {
+				return false
+			}
+		}
+		return true
+	case len(tp.Int64Data) > 0:
+		for _, v := range tp.Int64Data {
+			if v != 0 {
+				return false
+			}
+		}
+		return true
+	case len(tp.FloatData) > 0:
+		for _, v := range tp.FloatData {
+			if v != 0 {
+				return false
+			}
+		}
+		return true
+	case len(tp.DoubleData) > 0:
+		for _, v := range tp.DoubleData {
+			if v != 0 {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Empty tensors have zero elements, including scalars stored with no explicit
+	// data and shapes with a zero-sized dimension such as [batchSize, 0].
+	if len(tp.Dims) == 0 {
+		return true
+	}
+	for _, dim := range tp.Dims {
+		if dim == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // convertQuantizeLinear converts the corresponding ONNX node to a GoMLX node.
