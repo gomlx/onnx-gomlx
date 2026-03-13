@@ -1378,7 +1378,7 @@ func TestIf(t *testing.T) {
 
 		convertedOutputs := make(map[string]*Node)
 		inputs = []*Node{cond}
-		result := convertIf(model, convertedOutputs, node, inputs)
+		result := convertIf(nil, model, convertedOutputs, node, inputs)
 		outputs = []*Node{result}
 		return
 	}, []any{
@@ -1448,7 +1448,7 @@ func TestIf(t *testing.T) {
 
 		convertedOutputs := make(map[string]*Node)
 		inputs = []*Node{cond}
-		result := convertIf(model, convertedOutputs, node, inputs)
+		result := convertIf(nil, model, convertedOutputs, node, inputs)
 		outputs = []*Node{result}
 		return
 	}, []any{
@@ -1548,7 +1548,7 @@ func TestIf(t *testing.T) {
 
 		convertedOutputs := make(map[string]*Node)
 		inputs = []*Node{cond}
-		convertIf(model, convertedOutputs, node, inputs)
+		convertIf(nil, model, convertedOutputs, node, inputs)
 
 		outputs = []*Node{
 			convertedOutputs["output1"],
@@ -1637,7 +1637,7 @@ func TestIf(t *testing.T) {
 		convertedOutputs := make(map[string]*Node)
 		convertedOutputs["parent_val"] = parentValue
 		inputs = []*Node{cond}
-		result := convertIf(model, convertedOutputs, node, inputs)
+		result := convertIf(nil, model, convertedOutputs, node, inputs)
 		outputs = []*Node{result}
 		return
 	}, []any{
