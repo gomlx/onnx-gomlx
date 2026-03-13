@@ -1,5 +1,7 @@
 # Next
 
+- Added quantized fusion patterns for dense layers, QKV projections, and scaled dot-product attention (SDPA). (by @ajroetker)
+- Fixed `isZeroInitializer` to handle tensors with zero-sized dimensions (e.g., `[batchSize, 0]`).
 - Added ReduceMax, ReduceMin, ReduceSum, ReduceProd, and NonZero ONNX operations.
 - Optional auto-promotion of dtypes in case of mismatches: this is an error
   in ONNX specification, but some Pytorch models do this. See `Model.AllowDTypePromotion()`.
