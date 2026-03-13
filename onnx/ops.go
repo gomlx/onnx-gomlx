@@ -660,6 +660,20 @@ func (m *Model) convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
 	return result
 }
 
+// convertEinsum converts an ONNX Einsum op to GoMLX's Einsum.
+// ONNX Einsum supports N operands, but GoMLX only supports exactly 2.
+func convertEinsum(node *protos.NodeProto, inputs []*Node) *Node {
+	equation := getStringAttrOr(node, "equation", "")
+	if equation == "" {
+		exceptions.Panicf("Einsum node %q missing required 'equation' attribute", node.Name)
+	}
+	if len(inputs) != 2 {
+		exceptions.Panicf("Einsum node %q has %d inputs, but GoMLX only supports exactly 2 operands",
+			node.Name, len(inputs))
+	}
+	return Einsum(equation, inputs[0], inputs[1])
+}
+
 ////////////////////////////////////////////////////////////////////
 //
 // Ops that require materialization of constant sub-expressions
@@ -1260,15 +1274,20 @@ func nonZeroMaskAny(valuesAny any) []bool {
 func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	g := inputs[0].Graph()
 
-	valueAttr := getNodeAttr(node, "value", true)
-	assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
-
-	tensor, err := tensorToGoMLXWithBaseDir(m.backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
-	if err != nil {
-		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
-		panic(err)
+	var valueN *Node
+	valueAttr := getNodeAttr(node, "value", false)
+	if valueAttr != nil {
+		assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
+		tensor, err := tensorToGoMLXWithBaseDir(m.backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
+		if err != nil {
+			err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
+			panic(err)
+		}
+		valueN = Const(g, tensor)
+	} else {
+		// Default per ONNX spec: scalar float32 zero
+		valueN = Scalar(g, dtypes.Float32, 0)
 	}
-	valueN := Const(g, tensor)
 
 	dimsN := inputs[0]
 	if !dimsN.DType().IsInt() {
@@ -1475,7 +1494,7 @@ func onnxCumSum(operand *Node, axis int, exclusive, reverse bool) *Node {
 	if reverse {
 		operand = Reverse(operand, adjustedAxis)
 	}
-	output := CumSum(operand, axis)
+	output := CumSum(operand, adjustedAxis)
 	if exclusive {
 		output = ShiftWithScalar(output, adjustedAxis, ShiftDirRight, 1, 0)
 	}
@@ -1560,7 +1579,7 @@ func convertScatterND(_ *Model, _ map[string]*Node, node *protos.NodeProto, inpu
 
 	q := indices.Rank()
 	if !(q >= 1) {
-		exceptions.Panicf("ScatterND: indices must have rank >= 1, got %d", r)
+		exceptions.Panicf("ScatterND: indices must have rank >= 1, got %d", q)
 	}
 
 	v := q + r - indices.Shape().Dimensions[len(indices.Shape().Dimensions)-1] - 1
@@ -1630,10 +1649,10 @@ func convertLSTM(_ *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 
 	// Attributes:
 	activationAlpha := getFloatAttrOr(node, "activation_alpha", 0.01)
-	activationBeta := getFloatsAttrOr(node, "activation_alpha", nil)
+	activationBeta := getFloatsAttrOr(node, "activation_beta", nil)
 	activations := getStringsAttrOr(node, "activations", nil)
 	if activations != nil {
-		exceptions.Panicf("LSTM custom activaitons is not supported yet -- pls open an issue on github.com/gomlx/onnx-gomlx")
+		exceptions.Panicf("LSTM custom activations is not supported yet -- pls open an issue on github.com/gomlx/onnx-gomlx")
 	}
 	_, _ = activationAlpha, activationBeta
 	clip := getFloatAttrOr(node, "clip", 0)
@@ -2110,29 +2129,31 @@ func convertLayerNormalization(_ *Model, _ map[string]*Node, node *protos.NodePr
 	// Need to add leading 1s to match the input rank
 	if scale.Rank() < inputRank {
 		scaleShape := make([]int, inputRank)
-		biasShape := make([]int, inputRank)
 		// Set leading dimensions to 1
 		for i := 0; i < axis; i++ {
 			scaleShape[i] = 1
-			biasShape[i] = 1
 		}
-		// Copy the scale/bias dimensions for the normalized axes
+		// Copy the scale dimensions for the normalized axes
 		scaleDims := scale.Shape().Dimensions
 		scaleRank := len(scaleDims)
 		for i := axis; i < inputRank; i++ {
-			// Check bounds to prevent index out of bounds
 			scaleIdx := i - axis
 			if scaleIdx >= scaleRank {
 				exceptions.Panicf("LayerNormalization: scale tensor has insufficient dimensions (rank=%d) for input rank=%d and axis=%d",
 					scaleRank, inputRank, axis)
 			}
 			scaleShape[i] = scaleDims[scaleIdx]
-			if bias != nil {
-				biasShape[i] = scaleDims[scaleIdx]
-			}
 		}
 		scale = Reshape(scale, scaleShape...)
 		if bias != nil {
+			biasDims := bias.Shape().Dimensions
+			biasShape := make([]int, inputRank)
+			for i := 0; i < axis; i++ {
+				biasShape[i] = 1
+			}
+			for i := axis; i < inputRank; i++ {
+				biasShape[i] = biasDims[i-axis]
+			}
 			bias = Reshape(bias, biasShape...)
 		}
 	}
@@ -2245,9 +2266,12 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 	// - position_ids: position indices for cache lookup (may be nil if optional)
 	// - cos_cache: cosine values for rotation
 	// - sin_cache: sine values for rotation
+	if len(inputs) < 4 {
+		exceptions.Panicf("RotaryEmbedding: expected at least 4 inputs (input, position_ids, cos_cache, sin_cache), got %d", len(inputs))
+	}
 	x := inputs[0]
 	var positionIds *Node
-	if len(inputs) > 1 && inputs[1] != nil {
+	if inputs[1] != nil {
 		positionIds = inputs[1]
 	}
 	cosCache := inputs[2]
@@ -2256,7 +2280,6 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 	// Attributes
 	interleaved := getIntAttrOr(node, "interleaved", 0) != 0
 	numHeads := getIntAttrOr(node, "num_heads", 0)
-
 
 	inputRank := x.Rank()
 	inputShape := x.Shape().Dimensions
@@ -2419,8 +2442,8 @@ func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodePr
 		maskRank := attentionMask.Rank()
 		if maskRank == 2 {
 			// (batch, kv_seq) -> (batch, 1, 1, kv_seq)
-			attentionMask = ExpandLeftToRank(attentionMask, 4)
-			attentionMask = TransposeAllDims(attentionMask, 0, 2, 3, 1)
+			maskDims := attentionMask.Shape().Dimensions
+			attentionMask = Reshape(attentionMask, maskDims[0], 1, 1, maskDims[1])
 		} else if maskRank == 3 {
 			// (batch, q_seq, kv_seq) -> (batch, 1, q_seq, kv_seq)
 			maskDims := attentionMask.Shape().Dimensions
@@ -2473,10 +2496,10 @@ func convertGroupQueryAttention(_ *Model, convertedOutputs map[string]*Node, nod
 	value := inputs[2]
 
 	var pastKey, pastValue *Node
-	if len(inputs) > 3 && inputs[3] != nil && inputs[3].Shape().Dimensions[2] > 0 {
+	if len(inputs) > 3 && inputs[3] != nil && inputs[3].Rank() > 2 && inputs[3].Shape().Dimensions[2] > 0 {
 		pastKey = inputs[3]
 	}
-	if len(inputs) > 4 && inputs[4] != nil && inputs[4].Shape().Dimensions[2] > 0 {
+	if len(inputs) > 4 && inputs[4] != nil && inputs[4].Rank() > 2 && inputs[4].Shape().Dimensions[2] > 0 {
 		pastValue = inputs[4]
 	}
 
@@ -2962,18 +2985,12 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 	bInt32 := ConvertDType(b, dtypes.Int32)
 
 	// Subtract zero points if provided
-	if aZeroPoint != nil && !aZeroPoint.IsScalar() || (aZeroPoint != nil && aZeroPoint.Shape().Size() > 0) {
-		aZeroPointInt32 := ConvertDType(aZeroPoint, dtypes.Int32)
-		aInt32 = Sub(aInt32, aZeroPointInt32)
-	} else if aZeroPoint != nil {
+	if aZeroPoint != nil {
 		aZeroPointInt32 := ConvertDType(aZeroPoint, dtypes.Int32)
 		aInt32 = Sub(aInt32, aZeroPointInt32)
 	}
 
-	if bZeroPoint != nil && !bZeroPoint.IsScalar() || (bZeroPoint != nil && bZeroPoint.Shape().Size() > 0) {
-		bZeroPointInt32 := ConvertDType(bZeroPoint, dtypes.Int32)
-		bInt32 = Sub(bInt32, bZeroPointInt32)
-	} else if bZeroPoint != nil {
+	if bZeroPoint != nil {
 		bZeroPointInt32 := ConvertDType(bZeroPoint, dtypes.Int32)
 		bInt32 = Sub(bInt32, bZeroPointInt32)
 	}
@@ -2993,10 +3010,13 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 	scaledResult := Mul(matmulFloat, combinedScale)
 
 	// Add output zero point and convert back to quantized type
-	outputDType := yZeroPoint.DType()
+	var outputDType dtypes.DType
 	if yZeroPoint != nil {
+		outputDType = yZeroPoint.DType()
 		yZeroPointFloat := ConvertDType(yZeroPoint, scaleDType)
 		scaledResult = Add(scaledResult, yZeroPointFloat)
+	} else {
+		outputDType = a.DType()
 	}
 
 	// Round and clip to valid quantized range
@@ -3044,7 +3064,7 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__If.html
-func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func convertIf(ctx *context.Context, m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	if len(inputs) != 1 {
 		exceptions.Panicf("If: expected exactly 1 input (condition), got %d", len(inputs))
 	}
@@ -3087,10 +3107,10 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 
 	// Convert then_branch sub-graph
 	// Note: convertSubGraph will update convertedOutputs with any main model nodes it converts
-	thenResults := m.convertSubGraph(g, thenGraph, convertedOutputs)
+	thenResults := m.convertSubGraph(ctx, g, thenGraph, convertedOutputs)
 
 	// Convert else_branch sub-graph (will see nodes converted by then_branch via convertedOutputs)
-	elseResults := m.convertSubGraph(g, elseGraph, convertedOutputs)
+	elseResults := m.convertSubGraph(ctx, g, elseGraph, convertedOutputs)
 
 	// Both branches must produce the same number of outputs
 	if len(thenResults) != len(elseResults) {
@@ -3105,13 +3125,8 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 		thenOut := thenResults[i]
 		elseOut := elseResults[i]
 
-		// Apply ONNX broadcasting rules to ensure compatible shapes
-		broadcasted := onnxBroadcastToCommonShape([]*Node{cond, thenOut, elseOut})
-		condBroadcast := broadcasted[0]
-		thenOut = broadcasted[1]
-		elseOut = broadcasted[2]
-
-		results[i] = Where(condBroadcast, thenOut, elseOut)
+		// Use onnxWhere which handles both ONNX broadcasting and dtype promotion
+		results[i] = m.onnxWhere([]*Node{cond, thenOut, elseOut})
 	}
 
 	// Store additional outputs in convertedOutputs
@@ -3122,10 +3137,10 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 	}
 
 	// Return the first output (convention for ops)
-	if len(results) > 0 {
-		return results[0]
+	if len(results) == 0 {
+		exceptions.Panicf("If node %q produced no outputs", node.Name)
 	}
-	return nil
+	return results[0]
 }
 
 // convertTopK converts an ONNX TopK node to GoMLX.
