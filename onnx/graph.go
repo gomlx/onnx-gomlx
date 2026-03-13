@@ -476,6 +476,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = activations.Relu(inputs[0])
 	case "Gelu":
 		result = activations.Gelu(inputs[0])
+	case "FastGelu":
+		result = activations.GeluApproximate(inputs[0])
 	case "Abs":
 		result = Abs(inputs[0])
 	case "Neg":

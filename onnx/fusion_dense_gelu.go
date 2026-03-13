@@ -15,6 +15,7 @@ type DenseActivationParams struct {
 	WeightName     string
 	BiasName       string // empty if no bias
 	OutputName     string // final output after activation
+	ActivationType activations.Type
 }
 
 // denseActivationCandidate implements FusionCandidate for fused Dense+Activation.
@@ -41,7 +42,7 @@ func (c *denseActivationCandidate) Emit(_ *context.Context, g *Graph, convertedO
 		bias = convertedOutputs[p.BiasName]
 	}
 
-	result := nn.Dense(x, weight, bias, activations.TypeGelu)
+	result := nn.Dense(x, weight, bias, p.ActivationType)
 	convertedOutputs[p.OutputName] = result
 }
 
@@ -68,7 +69,7 @@ func detectDenseActivationCandidates(m *Model) []FusionCandidate {
 	return candidates
 }
 
-// tryMatchDenseActivation attempts to match MatMul → [Add bias] → Gelu starting from a MatMul node.
+// tryMatchDenseActivation attempts to match MatMul → [Add bias] → Gelu/FastGelu starting from a MatMul node.
 func (m *Model) tryMatchDenseActivation(consumers map[string][]*protos.NodeProto, matmulNode *protos.NodeProto) *denseActivationCandidate {
 	xName := matmulNode.Input[0]
 	weightName := matmulNode.Input[1]
@@ -90,7 +91,7 @@ func (m *Model) tryMatchDenseActivation(consumers map[string][]*protos.NodeProto
 
 	switch next.OpType {
 	case "Add":
-		// MatMul → Add(bias) → Gelu?
+		// MatMul → Add(bias) → Gelu/FastGelu?
 		biasName := onnxgraph.OtherBinaryOpInput(next, matmulOut)
 		if biasName == "" || !m.isConstant(biasName) {
 			return nil
@@ -102,9 +103,10 @@ func (m *Model) tryMatchDenseActivation(consumers map[string][]*protos.NodeProto
 		internalOutputs[matmulOut] = true
 		afterBiasOut := next.Output[0]
 
-		// Now look for Gelu after Add.
+		// Now look for Gelu or FastGelu after Add.
 		geluNode := onnxgraph.SoleConsumer(consumers, afterBiasOut)
-		if geluNode == nil || geluNode.OpType != "Gelu" {
+		actType := geluActivationType(geluNode)
+		if actType == activations.TypeNone {
 			return nil
 		}
 		if len(geluNode.Output) == 0 {
@@ -120,17 +122,19 @@ func (m *Model) tryMatchDenseActivation(consumers map[string][]*protos.NodeProto
 		externalInputs := []string{xName, weightName, biasName}
 		return &denseActivationCandidate{
 			params: &DenseActivationParams{
-				XInputName: xName,
-				WeightName: weightName,
-				BiasName:   biasName,
-				OutputName: geluNode.Output[0],
+				XInputName:     xName,
+				WeightName:     weightName,
+				BiasName:       biasName,
+				OutputName:     geluNode.Output[0],
+				ActivationType: actType,
 			},
 			internalOutputs: internalOutputs,
 			externalInputs:  externalInputs,
 		}
 
-	case "Gelu":
-		// MatMul → Gelu (no bias).
+	case "Gelu", "FastGelu":
+		// MatMul → Gelu/FastGelu (no bias).
+		actType := geluActivationType(next)
 		if len(next.Output) == 0 {
 			return nil
 		}
@@ -144,9 +148,10 @@ func (m *Model) tryMatchDenseActivation(consumers map[string][]*protos.NodeProto
 		externalInputs := []string{xName, weightName}
 		return &denseActivationCandidate{
 			params: &DenseActivationParams{
-				XInputName: xName,
-				WeightName: weightName,
-				OutputName: next.Output[0],
+				XInputName:     xName,
+				WeightName:     weightName,
+				OutputName:     next.Output[0],
+				ActivationType: actType,
 			},
 			internalOutputs: internalOutputs,
 			externalInputs:  externalInputs,
@@ -154,4 +159,20 @@ func (m *Model) tryMatchDenseActivation(consumers map[string][]*protos.NodeProto
 	}
 
 	return nil
+}
+
+// geluActivationType returns the activation type for a Gelu or FastGelu node,
+// or TypeNone if the node is nil or not a recognized activation.
+func geluActivationType(node *protos.NodeProto) activations.Type {
+	if node == nil {
+		return activations.TypeNone
+	}
+	switch node.OpType {
+	case "Gelu":
+		return activations.TypeGelu
+	case "FastGelu":
+		return activations.TypeGeluApprox
+	default:
+		return activations.TypeNone
+	}
 }
