@@ -1,4 +1,4 @@
-package onnx
+package onnxgomlx
 
 import (
 	"fmt"
@@ -12,6 +12,7 @@ import (
 	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
 	"github.com/gomlx/gomlx/pkg/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/onnx-gomlx/onnx"
 )
 
 // sliceMap executes the given function sequentially for every element on in and returns a mapped slice.
@@ -46,15 +47,15 @@ func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
 // As in GoMLX graph building (symbolic) functions, it panics (throws exceptions) in case of errors.
 func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Node, outputNames ...string) (outputs []*Node) {
 	if ctx != nil {
-		ctx = ctx.In(ModelScope).Checked(false)
+		ctx = ctx.In(onnx.ModelScope).Checked(false)
 	}
 
 	// Sanity check of things we don't support yet.
 	if len(m.Proto.Functions) > 0 {
-		exceptions.Panicf("onnx.CallGraph does not support ONNX functions")
+		exceptions.Panicf("onnxgomlx.CallGraph does not support ONNX functions")
 	}
 	if len(m.Proto.Graph.SparseInitializer) > 0 {
-		exceptions.Panicf("onnx.CallGraph does not support ONNX SparseTensors")
+		exceptions.Panicf("onnxgomlx.CallGraph does not support ONNX SparseTensors")
 	}
 
 	// If no outputNames were given, take the model outputs.
@@ -75,7 +76,7 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 		}
 		inputN := inputs[inputName]
 		if inputN == nil {
-			staticValue := m.inputsAsConstants[inputName]
+			staticValue := m.InputsAsConstants[inputName]
 			if staticValue != nil {
 				// Check if the static value is a zero-size tensor (e.g., empty KV cache).
 				// Zero-size tensors cannot be represented as constants in some backends (e.g., XLA),
@@ -91,7 +92,7 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 				continue
 			}
 		} else {
-			if _, found := m.inputsAsConstants[inputName]; found {
+			if _, found := m.InputsAsConstants[inputName]; found {
 				repeatedInputs.Insert(inputName)
 			}
 			convertedOutputs[inputName] = inputN
@@ -102,13 +103,13 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 			unknownInputs.Insert(givenName)
 		}
 	}
-	for givenName := range m.inputsAsConstants {
+	for givenName := range m.InputsAsConstants {
 		if _, found := convertedOutputs[givenName]; !found {
 			unknownInputs.Insert(givenName)
 		}
 	}
 	if len(missingInputs) > 0 || len(unknownInputs) > 0 {
-		exceptions.Panicf("onnx.CallGraph() called with wrong inputs: missing inputs=%q; unknown given inputs=%q; inputs given normally and as constant inputs=%q",
+		exceptions.Panicf("onnxgomlx.CallGraph() called with wrong inputs: missing inputs=%q; unknown given inputs=%q; inputs given normally and as constant inputs=%q",
 			missingInputs, unknownInputs, repeatedInputs)
 	}
 
@@ -144,7 +145,7 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 
 	// Convert variables: create the GoMLX nodes corresponding to the ONNX model variables.
 	if len(m.Proto.Graph.Initializer) > 0 && ctx == nil {
-		exceptions.Panicf("onnx.CallGraph(): model has variables, but a nil context was give")
+		exceptions.Panicf("onnxgomlx.CallGraph(): model has variables, but a nil context was give")
 		return
 	}
 
@@ -187,15 +188,15 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 	}
 
 	// Is it the output of a variable?
-	if _, found := m.variableNameToValue[nodeOutputName]; found {
+	if _, found := m.VariableNameToValue[nodeOutputName]; found {
 		if ctx == nil {
-			exceptions.Panicf("onnx.CallGraph(): model has variables, but a nil context was given")
+			exceptions.Panicf("onnxgomlx.CallGraph(): model has variables, but a nil context was given")
 			return
 		}
 		varName := SafeVarName(nodeOutputName)
 		v := ctx.GetVariable(varName)
 		if v == nil {
-			exceptions.Panicf("variable %q (named %q in ONNX) has not been uploaded yet to context -- did you forget to call onnx.Model.VariablesToContext?",
+			exceptions.Panicf("variable %q (named %q in ONNX) has not been uploaded yet to context -- did you forget to call onnxgomlx.Model.VariablesToContext?",
 				varName, nodeOutputName)
 			return
 		}
@@ -219,7 +220,7 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 		return
 	}
 
-	onnxNode, found := m.nodeOutputToNode[nodeOutputName]
+	onnxNode, found := m.NodeOutputToNode[nodeOutputName]
 	if !found {
 		exceptions.Panicf("ONNX node output %q not found as the output of any Op, and not a variable or input either -- could it be a node name, and note a node **output** name ?", nodeOutputName)
 	}
@@ -240,7 +241,7 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 // convertSubGraph converts an ONNX sub-graph (used in control flow ops like If) to GoMLX nodes.
 // It takes the parent graph g and the sub-graph proto, along with the current convertedOutputs mapping.
 // Returns a slice of output nodes from the sub-graph in the order they appear in the sub-graph's output list.
-func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, parentConvertedOutputs map[string]*Node) []*Node {
+func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *protos.GraphProto, parentConvertedOutputs map[string]*Node) []*Node {
 	// Create a new local context for the sub-graph
 	// Note: Sub-graphs in ONNX can reference outputs from the parent graph
 	localConvertedOutputs := make(map[string]*Node)
@@ -251,8 +252,11 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 	}
 
 	// Convert sub-graph initializers (constants) to GoMLX nodes
-	// Also temporarily add them to model's variableNameToValue for materializeConstantExpression
+	// Also temporarily add them to model's variableNameToValue for materializeConstantExpression.
+	// Save original values so we can restore them on cleanup (in case sub-graph names collide
+	// with main graph names).
 	subGraphInitializers := make(map[string]*protos.TensorProto)
+	savedVariables := make(map[string]*protos.TensorProto)
 	reader := m.getExternalDataReader()
 	for _, initializerProto := range subGraphProto.Initializer {
 		initializerName := initializerProto.Name
@@ -266,11 +270,16 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 		}
 		localConvertedOutputs[initializerName] = Const(g, tensor)
 		subGraphInitializers[initializerName] = initializerProto
-		m.variableNameToValue[initializerName] = initializerProto
+		// Save original before overwriting
+		if orig, exists := m.VariableNameToValue[initializerName]; exists {
+			savedVariables[initializerName] = orig
+		}
+		m.VariableNameToValue[initializerName] = initializerProto
 	}
 
 	// Build a mapping from output name to the node that produces it (for this sub-graph only)
 	subGraphNodeOutputToNode := make(map[string]*protos.NodeProto)
+	savedNodes := make(map[string]*protos.NodeProto)
 	for _, node := range subGraphProto.Node {
 		for _, outputName := range node.Output {
 			if outputName != "" {
@@ -279,22 +288,37 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 		}
 	}
 
-	// Temporarily add sub-graph nodes to the model's nodeOutputToNode map
-	// This is needed for materializeConstantExpression to work with sub-graph nodes
+	// Temporarily add sub-graph nodes to the model's nodeOutputToNode map.
+	// This is needed for materializeConstantExpression to work with sub-graph nodes.
+	// Note: this temporary mutation is not concurrency-safe, but graph construction is single-threaded.
+	// Save original entries so we can restore them (sub-graph outputs may shadow parent names).
 	for outputName, node := range subGraphNodeOutputToNode {
-		m.nodeOutputToNode[outputName] = node
+		if orig, exists := m.NodeOutputToNode[outputName]; exists {
+			savedNodes[outputName] = orig
+		}
+		m.NodeOutputToNode[outputName] = node
+	}
+	for initName := range subGraphInitializers {
+		if orig, exists := m.VariableNameToValue[initName]; exists {
+			savedVariables[initName] = orig
+		}
 	}
 
-	// Consolidated cleanup: remove all temporary entries from model's maps when done
-	// Using a single defer with recovery handling to ensure cleanup always happens
+	// Consolidated cleanup: restore original entries or remove temporary ones.
 	defer func() {
-		// Clean up sub-graph initializers from model's variableNameToValue map
 		for initName := range subGraphInitializers {
-			delete(m.variableNameToValue, initName)
+			if orig, wasSaved := savedVariables[initName]; wasSaved {
+				m.VariableNameToValue[initName] = orig
+			} else {
+				delete(m.VariableNameToValue, initName)
+			}
 		}
-		// Clean up sub-graph nodes from model's nodeOutputToNode map
 		for outputName := range subGraphNodeOutputToNode {
-			delete(m.nodeOutputToNode, outputName)
+			if orig, wasSaved := savedNodes[outputName]; wasSaved {
+				m.NodeOutputToNode[outputName] = orig
+			} else {
+				delete(m.NodeOutputToNode, outputName)
+			}
 		}
 	}()
 
@@ -312,7 +336,7 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 		}
 
 		// Check if it's a model-level initializer (variable)
-		if initializerProto, found := m.variableNameToValue[outputName]; found {
+		if initializerProto, found := m.VariableNameToValue[outputName]; found {
 			// Convert the model-level initializer to a constant in the sub-graph
 			tensor, err := tensorToGoMLXWithBaseDir(g.Backend(), initializerProto, m.baseDir(), reader)
 			if err != nil {
@@ -332,7 +356,7 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 			}
 
 			// Not in parent outputs yet - try to find and convert it from the main model
-			if mainNode, foundInMain := m.nodeOutputToNode[outputName]; foundInMain {
+			if mainNode, foundInMain := m.NodeOutputToNode[outputName]; foundInMain {
 				// This is a main model node that hasn't been converted yet
 				// Recursively convert its inputs first
 				for _, inputName := range mainNode.Input {
@@ -342,7 +366,7 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 					convertSubGraphOutput(inputName)
 				}
 				// Now convert this main model node and add to local outputs
-				m.convertNode(nil, g, mainNode, localConvertedOutputs)
+				m.convertNode(ctx, g, mainNode, localConvertedOutputs)
 
 				// Also add to parent outputs so other branches/sub-graphs can reuse it
 				parentConvertedOutputs[outputName] = localConvertedOutputs[outputName]
@@ -377,7 +401,7 @@ func (m *Model) convertSubGraph(g *Graph, subGraphProto *protos.GraphProto, pare
 		}
 
 		// Now convert this node
-		m.convertNode(nil, g, node, localConvertedOutputs)
+		m.convertNode(ctx, g, node, localConvertedOutputs)
 	}
 
 	// Convert all output nodes recursively (which will convert their dependencies)
@@ -418,7 +442,7 @@ func opRequiresContext(opType string) bool {
 // See the definitions in:
 // . https://openxla.org/xla/broadcasting
 // . https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
-func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto, convertedOutputs map[string]*Node) {
+func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodeProto, convertedOutputs map[string]*Node) {
 	if node.Overload != "" {
 		exceptions.Panicf("overload %q to in-model function in ONNX model not implemented in node %q", node.Overload, node.Name)
 	}
@@ -438,6 +462,8 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 		result = m.convertBinaryOp(Mul, inputs[0], inputs[1])
 	case "Div":
 		result = m.convertBinaryOp(Div, inputs[0], inputs[1])
+	case "Mod":
+		result = m.convertMod(node, inputs)
 	case "Pow":
 		result = m.convertPow(convertedOutputs, node, inputs)
 	case "And":
@@ -463,19 +489,21 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "GreaterOrEqual":
 		result = m.convertBinaryOp(GreaterOrEqual, inputs[0], inputs[1])
 
-	// Unary operators
+	// Unary operators (float/complex required)
 	case "Sqrt":
-		result = Sqrt(inputs[0])
+		result = Sqrt(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Exp":
-		result = Exp(inputs[0])
+		result = Exp(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Log":
-		result = Log(inputs[0])
+		result = Log(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Erf":
-		result = Erf(inputs[0])
+		result = Erf(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Relu":
 		result = activations.Relu(inputs[0])
 	case "Gelu":
 		result = activations.Gelu(inputs[0])
+	case "FastGelu":
+		result = activations.GeluApproximate(inputs[0])
 	case "Abs":
 		result = Abs(inputs[0])
 	case "Neg":
@@ -483,9 +511,17 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "Sign":
 		result = Sign(inputs[0])
 	case "Ceil":
-		result = Ceil(inputs[0])
+		if inputs[0].DType().IsInt() {
+			result = Identity(inputs[0])
+		} else {
+			result = Ceil(inputs[0])
+		}
 	case "Floor":
-		result = Floor(inputs[0])
+		if inputs[0].DType().IsInt() {
+			result = Identity(inputs[0])
+		} else {
+			result = Floor(inputs[0])
+		}
 	case "Identity":
 		result = Identity(inputs[0])
 	case "Not":
@@ -493,21 +529,25 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "BitwiseNot":
 		result = BitwiseNot(inputs[0])
 	case "Tanh":
-		result = Tanh(inputs[0])
+		result = Tanh(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Sin":
-		result = Sin(inputs[0])
+		result = Sin(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Cos":
-		result = Cos(inputs[0])
+		result = Cos(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Sigmoid":
-		result = Sigmoid(inputs[0])
+		result = Sigmoid(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "HardSwish":
 		result = activations.HardSwish(inputs[0])
 	case "IsNaN":
 		result = IsNaN(inputs[0])
+	case "Reciprocal":
+		result = Inverse(m.onnxImplicitFloatPromotion(inputs[0]))
 
 	// Ops with equivalents:
 	case "MatMul":
 		result = m.convertMatMul(inputs[0], inputs[1])
+	case "Einsum":
+		result = convertEinsum(node, inputs)
 
 	// Ops with special behavior:
 	case "Clip":
@@ -533,7 +573,7 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "Size":
 		result = convertSize(inputs)
 	case "Concat":
-		result = convertConcat(node, inputs)
+		result = m.convertConcat(node, inputs)
 	case "Softmax":
 		result = convertSoftmax(node, inputs)
 	case "Cast":
@@ -545,7 +585,7 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 	case "Flatten":
 		result = convertFlatten(node, inputs)
 	case "DequantizeLinear":
-		result = convertDequantizeLinear(node, inputs)
+		result = m.convertDequantizeLinear(convertedOutputs, node, inputs)
 	case "QuantizeLinear":
 		result = convertQuantizeLinear(node, inputs)
 	case "MatMulInteger":
@@ -628,7 +668,7 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 
 	// Control flow ops:
 	case "If":
-		result = convertIf(m, convertedOutputs, node, inputs)
+		result = convertIf(ctx, m, convertedOutputs, node, inputs)
 
 	// Sorting/ranking ops:
 	case "TopK":
@@ -640,7 +680,7 @@ func (m *Model) convertNode(_ *context.Context, g *Graph, node *protos.NodeProto
 
 		// Ops not implemented:
 	default:
-		exceptions.Panicf("unimplemented ONNX op %q in %s", node.OpType, nodeToString(node))
+		exceptions.Panicf("unimplemented ONNX op %q in %s", node.OpType, NodeToString(node))
 	}
 	if result != nil {
 		convertedOutputs[node.Output[0]] = result

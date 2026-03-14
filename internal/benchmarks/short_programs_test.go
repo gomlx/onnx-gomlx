@@ -25,7 +25,7 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
-	"github.com/gomlx/onnx-gomlx/onnx"
+	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/must"
 	ort "github.com/yalue/onnxruntime_go"
 	"k8s.io/klog/v2"
@@ -121,7 +121,7 @@ func BenchmarkSmallXLAExec(b *testing.B) {
 	backend := graphtest.BuildTestBackend()
 	execs := make([]*graph.Exec, numPrograms)
 	for progIdx, program := range SmallTestPrograms {
-		model := must.M1(onnx.ReadFile(program[0]))
+		model := must.M1(parser.FromFile(program[0]))
 		execs[progIdx] = graph.MustNewExec(backend, func(x *graph.Node) *graph.Node {
 			g := x.Graph()
 			outputs := model.CallGraph(nil, g, map[string]*graph.Node{"X": x})
@@ -179,7 +179,7 @@ func BenchmarkSmallXLADirect(b *testing.B) {
 	for shapeIdx, s := range TestShapes {
 		graphPerShapePerProgram[shapeIdx] = make([]*graph.Graph, numPrograms)
 		for progIdx, program := range SmallTestPrograms {
-			model := must.M1(onnx.ReadFile(program[0]))
+			model := must.M1(parser.FromFile(program[0]))
 			g := graph.NewGraph(backend, fmt.Sprintf("Graph #%d", shapeIdx))
 			x := graph.Parameter(g, "X", s)
 			y := model.CallGraph(nil, g, map[string]*graph.Node{"X": x})[0]

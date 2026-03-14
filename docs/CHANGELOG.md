@@ -1,9 +1,32 @@
-# Next
+# v0.4.0: More ops and fused ops; Added support for model [Florence-2](https://huggingface.co/microsoft/Florence-2-large); `onnx` package refactored.
 
+- Package `onnx`: split implementation into `internal/onnxgomlx/...`, `onnx` is now just a public API.
+  - **API change**: it's a small change but `onnx.Model` is now an interface (it was a pointer to an object)
+    and the constructors reside in `onnx/parser`.
+- `Mod` operator: Supports both fmod=1 (C-style, sign follows dividend) and fmod=0 (Python-style, sign follows divisor) with broadcasting and dtype promotion
+- `onnxImplicitFloatPromotion` for float-only ops (Sqrt, Exp, etc.).
+- `Concat` dtype alignment: When dtype promotion is enabled, all Concat operands are cast to the first operand's dtype, preserving Int64 for shape/index tensors.
+- `isVariableConstant` loosening: Float variables with "const" in the name are now accepted as materializable constants (needed when Concat dtype promotion casts Float32 constants to Int64).
+- Sub-graph name shadowing fix: convertSubGraph now saves and restores parent entries in nodeOutputToNode / variableNameToValue instead of unconditionally deleting them on cleanup.
+- `convertIf()` rework: Uses GoMLX's native If with closures instead of the Where-based approach.
+- Added support for [Florence2 model](https://huggingface.co/microsoft/Florence-2-large); 
+- Updated GoMLX dependency to v0.27.0.
+
+# v0.3.5: New ops for various models support (Gemma, Snowflake,CLAP, etc); Many fixes and improvements.
+
+- Added quantized fusion patterns for dense layers, QKV projections, and scaled dot-product attention (SDPA). (by @ajroetker)
+- Fixed `isZeroInitializer` to handle tensors with zero-sized dimensions (e.g., `[batchSize, 0]`).
+- Add ONNX operators for Gemma and Snowflake Arctic models: `ReduceL2`, `SimplifiedLayerNormalization` (RMSNorm),
+  `RotaryEmbedding`, `MultiHeadAttention`.
+- Simplified optional DType auto-promotion.
+- Added Resize operation for "CLAP" model support.
+- New Einsum op support (2 operands).
+- Various bug fixes across multiple ops and sub-graph handling.
 - Added ReduceMax, ReduceMin, ReduceSum, ReduceProd, and NonZero ONNX operations.
 - Optional auto-promotion of dtypes in case of mismatches: this is an error
   in ONNX specification, but some Pytorch models do this. See `Model.AllowDTypePromotion()`.
 - Added support for reading variables from external data files (due to proto 2/4 Gb size-limit)
+- Several fixes (see logs)
 
 # v0.3.4: Updated for GoMLX 0.26.0
 

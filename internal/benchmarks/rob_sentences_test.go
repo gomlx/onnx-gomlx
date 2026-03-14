@@ -20,7 +20,7 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/support/xsync"
-	"github.com/gomlx/onnx-gomlx/onnx"
+	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/go-benchmarks"
 	"github.com/janpfeifer/must"
 	ort "github.com/yalue/onnxruntime_go"
@@ -318,7 +318,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	repoModel := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repoModel.DownloadFile("model.onnx"))
 	backend := graphtest.BuildTestBackend()
-	model := must.M1(onnx.ReadFile(onnxModelPath))
+	model := must.M1(parser.FromFile(onnxModelPath))
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()
@@ -425,7 +425,7 @@ func TestRobSentences_BenchORT(t *testing.T) {
 	}
 	count := 0
 	for _, parallelism := range []int{4} { // {2, 3, 4, 6, 8} {
-		for _, batchSize := range []int{256} { // 1, 2, 4, 8, 16, 32} {
+		for _, batchSize := range []int{512} { // 1, 2, 4, 8, 16, 32} {
 			implBenchRobSentencesORT(parallelism, batchSize, count == 0)
 			count++
 		}
@@ -440,8 +440,8 @@ func TestRobSentences_BenchXLA(t *testing.T) {
 	// Change parallelism/batchSize according to backend, see best values in the bottom
 	// of the "Rob Sentences" sheet in:
 	// https://docs.google.com/spreadsheets/d/1ikpJH6rVVHq8ES-IA8U4lkKH4XsTSpRyZewXwGTgits/edit?gid=397722581#gid=397722581
-	for _, parallelism := range []int{48} { // {4, 6, 8} {
-		for _, batchSize := range []int{32} { // 1, 2, 4, 8, 16, 32} {
+	for _, parallelism := range []int{8} { // {4, 6, 8} {
+		for _, batchSize := range []int{512} { // 1, 2, 4, 8, 16, 32} {
 			implBenchRobSentencesXLA(t, parallelism, batchSize, count == 0)
 			count++
 		}

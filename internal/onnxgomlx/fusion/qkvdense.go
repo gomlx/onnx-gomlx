@@ -1,4 +1,4 @@
-package onnx
+package fusion
 
 import (
 	"fmt"
@@ -6,6 +6,7 @@ import (
 	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/ml/layers/attention"
+	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 )
@@ -19,15 +20,15 @@ type QKVDenseParams struct {
 	QDim, KVDim                           int
 }
 
-// qkvDenseCandidate implements FusionCandidate for fused QKV projection.
+// qkvDenseCandidate implements onnxgomlx.FusionCandidate for fused QKV projection.
 type qkvDenseCandidate struct {
 	params          *QKVDenseParams
 	internalOutputs map[string]bool
 	externalInputs  []string
 }
 
-func (c *qkvDenseCandidate) Name() string       { return "QKVDense" }
-func (c *qkvDenseCandidate) Score() float32      { return 80.0 }
+func (c *qkvDenseCandidate) Name() string   { return "QKVDense" }
+func (c *qkvDenseCandidate) Score() float32 { return 80.0 }
 func (c *qkvDenseCandidate) OutputNames() []string {
 	return []string{c.params.QOutputName, c.params.KOutputName, c.params.VOutputName}
 }
@@ -58,17 +59,17 @@ func (c *qkvDenseCandidate) Emit(_ *context.Context, g *Graph, convertedOutputs 
 }
 
 func init() {
-	RegisterFusionDetector(detectQKVDenseCandidates)
+	onnxgomlx.RegisterFusionDetector(detectQKVDenseCandidates)
 }
 
 // detectQKVDenseCandidates scans for three MatMul nodes sharing the same first input (x)
 // with constant weight second inputs, optionally followed by bias Add nodes.
-func detectQKVDenseCandidates(m *Model) []FusionCandidate {
-	consumers := m.consumers
+func detectQKVDenseCandidates(m *onnxgomlx.Model) []onnxgomlx.FusionCandidate {
+	consumers := m.Consumers
 	// Group MatMul nodes by their first input.
 	matmulsByInput := make(map[string][]*protos.NodeProto)
 	for _, node := range m.Proto.Graph.Node {
-		if node.OpType != "MatMul" || len(node.Input) < 2 {
+		if node.OpType != "MatMul" || len(node.Input) < 2 || len(node.Output) == 0 {
 			continue
 		}
 		firstInput := node.Input[0]
@@ -78,12 +79,12 @@ func detectQKVDenseCandidates(m *Model) []FusionCandidate {
 		matmulsByInput[firstInput] = append(matmulsByInput[firstInput], node)
 	}
 
-	var candidates []FusionCandidate
+	var candidates []onnxgomlx.FusionCandidate
 	for sharedInput, matmuls := range matmulsByInput {
 		if len(matmuls) != 3 {
 			continue
 		}
-		if cand := m.tryMatchQKVDense(consumers, sharedInput, matmuls); cand != nil {
+		if cand := tryMatchQKVDense(m, consumers, sharedInput, matmuls); cand != nil {
 			candidates = append(candidates, cand)
 		}
 	}
@@ -91,7 +92,7 @@ func detectQKVDenseCandidates(m *Model) []FusionCandidate {
 }
 
 // tryMatchQKVDense attempts to match a QKV Dense fusion pattern from 3 MatMul nodes sharing input x.
-func (m *Model) tryMatchQKVDense(consumers map[string][]*protos.NodeProto, sharedInput string, matmuls []*protos.NodeProto) *qkvDenseCandidate {
+func tryMatchQKVDense(m *onnxgomlx.Model, consumers map[string][]*protos.NodeProto, sharedInput string, matmuls []*protos.NodeProto) *qkvDenseCandidate {
 	// All three MatMuls must have constant weight (second input).
 	type projection struct {
 		matmul     *protos.NodeProto
@@ -104,10 +105,10 @@ func (m *Model) tryMatchQKVDense(consumers map[string][]*protos.NodeProto, share
 	projs := make([]projection, 3)
 	for i, mm := range matmuls {
 		weightName := mm.Input[1]
-		if !m.isConstant(weightName) {
+		if !m.IsConstant(weightName) {
 			return nil
 		}
-		dim := m.getWeightOutputDim(weightName)
+		dim := m.GetWeightOutputDim(weightName)
 		if dim <= 0 {
 			return nil
 		}
@@ -126,7 +127,7 @@ func (m *Model) tryMatchQKVDense(consumers map[string][]*protos.NodeProto, share
 		biasConsumer := onnxgraph.SoleConsumer(consumers, mm.Output[0])
 		if biasConsumer != nil && biasConsumer.OpType == "Add" {
 			biasName := onnxgraph.OtherBinaryOpInput(biasConsumer, mm.Output[0])
-			if biasName != "" && m.isConstant(biasName) {
+			if biasName != "" && m.IsConstant(biasName) {
 				projs[i].biasName = biasName
 				if len(biasConsumer.Output) > 0 {
 					projs[i].outputName = biasConsumer.Output[0]
@@ -183,20 +184,20 @@ func (m *Model) tryMatchQKVDense(consumers map[string][]*protos.NodeProto, share
 	}
 
 	// Pre-concatenate Q, K, V weight tensors along the last axis.
-	wQ := m.variableNameToValue[qProj.weightName]
-	wK := m.variableNameToValue[kProj.weightName]
-	wV := m.variableNameToValue[vProj.weightName]
+	wQ := m.VariableNameToValue[qProj.weightName]
+	wK := m.VariableNameToValue[kProj.weightName]
+	wV := m.VariableNameToValue[vProj.weightName]
 	if wQ == nil || wK == nil || wV == nil {
 		return nil
 	}
-	wQKV, err := concatenateTensorProtos([]*protos.TensorProto{wQ, wK, wV}, -1)
+	wQKV, err := onnxgomlx.ConcatenateTensorProtos([]*protos.TensorProto{wQ, wK, wV}, -1)
 	if err != nil {
 		return nil
 	}
 	wQKVName := fmt.Sprintf("__fused_wQKV_%s", sharedInput)
 	wQKV.Name = wQKVName
 	m.Proto.Graph.Initializer = append(m.Proto.Graph.Initializer, wQKV)
-	m.variableNameToValue[wQKVName] = wQKV
+	m.VariableNameToValue[wQKVName] = wQKV
 
 	params := &QKVDenseParams{
 		SharedInputName: sharedInput,
@@ -227,27 +228,4 @@ func (m *Model) tryMatchQKVDense(consumers map[string][]*protos.NodeProto, share
 		internalOutputs: internalOutputs,
 		externalInputs:  externalInputs,
 	}
-}
-
-// isConstant checks if a name refers to a constant (initializer or Constant node output).
-func (m *Model) isConstant(name string) bool {
-	if _, ok := m.variableNameToValue[name]; ok {
-		return true
-	}
-	if node, ok := m.nodeOutputToNode[name]; ok && node.OpType == "Constant" {
-		return true
-	}
-	return false
-}
-
-// getWeightOutputDim returns the output dimension of a weight matrix.
-// For a MatMul x @ W where x is [batch, inFeatures] and W is [inFeatures, outFeatures],
-// returns outFeatures. Returns -1 if unknown.
-func (m *Model) getWeightOutputDim(weightName string) int {
-	s := m.ShapeForName(weightName)
-	if len(s.Dimensions) < 2 {
-		return -1
-	}
-	// Weight shape is [inFeatures, outFeatures] for standard MatMul.
-	return s.Dimensions[len(s.Dimensions)-1]
 }

@@ -1,7 +1,8 @@
-package onnx
+package onnxgomlx
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"slices"
@@ -151,6 +152,17 @@ func (m *Model) checkOrPromoteDTypes(lhs, rhs *Node) (*Node, *Node) {
 	return lhs, rhs
 }
 
+// onnxImplicitFloatPromotion for float-only ops (Sqrt, Exp, etc.).
+// ONNX Runtime does this silently.
+//
+// This is orthogonal to allowDTypPromotion which promotes dtypes of mixed multiple operands.
+func (m *Model) onnxImplicitFloatPromotion(n *Node) *Node {
+	if n.DType().IsFloat() || n.DType().IsComplex() {
+		return n
+	}
+	return ConvertDType(n, dtypes.Float32)
+}
+
 // convertBinaryOp applies ONNX broadcasting rule before calling the fn.
 //
 // It differs from GoMLX and XLA in that it automatically prepend 1-dimensional axes to
@@ -161,6 +173,35 @@ func (m *Model) convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
 	lhs, rhs = operands[0], operands[1]
 	lhs, rhs = m.checkOrPromoteDTypes(lhs, rhs)
 	return fn(lhs, rhs)
+}
+
+// convertMod converts an ONNX Mod node to GoMLX.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Mod.html
+//
+// The fmod attribute (default 0) controls the behavior:
+//   - fmod=1: C-style fmod — the result has the same sign as the dividend.
+//     This maps directly to GoMLX's Mod/Rem.
+//   - fmod=0: Python-style modulo — the result has the same sign as the divisor.
+func (m *Model) convertMod(node *protos.NodeProto, inputs []*Node) *Node {
+	fmod := GetIntAttrOr(node, "fmod", 0)
+
+	operands := onnxImplicitExpansion([]*Node{inputs[0], inputs[1]})
+	lhs, rhs := operands[0], operands[1]
+	lhs, rhs = m.checkOrPromoteDTypes(lhs, rhs)
+
+	r := Mod(lhs, rhs)
+	if fmod == 1 {
+		return r
+	}
+
+	// fmod=0: adjust C-style remainder to Python-style modulo.
+	// r and rhs have different signs exactly when r*rhs < 0;
+	// this also correctly skips adjustment when r == 0.
+	zero := ScalarZero(r.Graph(), r.DType())
+	needsAdjust := LessThan(Mul(r, rhs), zero)
+	return Where(needsAdjust, Add(r, rhs), r)
 }
 
 // convertMatMul handles dtype promotion before matrix multiplication.
@@ -229,36 +270,36 @@ func (m *Model) onnxWhere(inputs []*Node) *Node {
 
 // getNodeAttr returns the given node attribute. If required is true, it will panic with a message about
 // the missing attribute.
-func getNodeAttr(node *protos.NodeProto, name string, required bool) *protos.AttributeProto {
+func GetNodeAttr(node *protos.NodeProto, name string, required bool) *protos.AttributeProto {
 	for _, attr := range node.Attribute {
 		if attr.Name == name {
 			return attr
 		}
 	}
 	if required {
-		exceptions.Panicf("ONNX %s is missing required attribute %q", nodeToString(node), name)
+		exceptions.Panicf("ONNX %s is missing required attribute %q", NodeToString(node), name)
 	}
 	return nil
 }
 
 func assertNodeAttrType(node *protos.NodeProto, attr *protos.AttributeProto, attributeType protos.AttributeProto_AttributeType) {
 	if attr.Type != attributeType {
-		exceptions.Panicf("unsupported ONNX attribute %q of type %q in %s", attr.Name, attr.Type, nodeToString(node))
+		exceptions.Panicf("unsupported ONNX attribute %q of type %q in %s", attr.Name, attr.Type, NodeToString(node))
 	}
 }
 
 // mustGetIntAttr get the attribute as an integer.
 // It panics with an exception if attribute is not set or if it is of the wrong type.
 func mustGetIntAttr(node *protos.NodeProto, attrName string) int {
-	attr := getNodeAttr(node, attrName, true)
+	attr := GetNodeAttr(node, attrName, true)
 	assertNodeAttrType(node, attr, protos.AttributeProto_INT)
 	return int(attr.I)
 }
 
 // getIntAttrOr gets an integer attribute for node if present or return the given defaultValue.
 // It panics with an error message if the attribute is present but is of the wrong type.
-func getIntAttrOr(node *protos.NodeProto, attrName string, defaultValue int) int {
-	attr := getNodeAttr(node, attrName, false)
+func GetIntAttrOr(node *protos.NodeProto, attrName string, defaultValue int) int {
+	attr := GetNodeAttr(node, attrName, false)
 	if attr == nil {
 		return defaultValue
 	}
@@ -268,8 +309,8 @@ func getIntAttrOr(node *protos.NodeProto, attrName string, defaultValue int) int
 
 // getDTypeAttrOr gets a int attribute for node if present and convert to a GoMLX dtype, or return the given defaultValue.
 // It panics with an error message if the attribute is present but is of the wrong type.
-func getDTypeAttrOr(node *protos.NodeProto, attrName string, defaultValue dtypes.DType) dtypes.DType {
-	attr := getNodeAttr(node, attrName, false)
+func GetDTypeAttrOr(node *protos.NodeProto, attrName string, defaultValue dtypes.DType) dtypes.DType {
+	attr := GetNodeAttr(node, attrName, false)
 	if attr == nil {
 		return defaultValue
 	}
@@ -277,26 +318,26 @@ func getDTypeAttrOr(node *protos.NodeProto, attrName string, defaultValue dtypes
 	onnxDType := protos.TensorProto_DataType(int32(attr.I))
 	dtype, err := dtypeForONNX(onnxDType)
 	if err != nil {
-		exceptions.Panicf("unsupported ONNX data type %q for attribute %q in %s", onnxDType, attrName, nodeToString(node))
+		exceptions.Panicf("unsupported ONNX data type %q for attribute %q in %s", onnxDType, attrName, NodeToString(node))
 	}
 	return dtype
 }
 
 // getBoolAttrOr gets a boolean attribute (ONNX uses an int value of 0 or 1) for node if present or return the given defaultValue.
 // It panics with an error message if the attribute is present but is of the wrong type.
-func getBoolAttrOr(node *protos.NodeProto, attrName string, defaultValue bool) bool {
+func GetBoolAttrOr(node *protos.NodeProto, attrName string, defaultValue bool) bool {
 	defaultInt := 0
 	if defaultValue {
 		defaultInt = 1
 	}
-	intValue := getIntAttrOr(node, attrName, defaultInt)
+	intValue := GetIntAttrOr(node, attrName, defaultInt)
 	return intValue != 0
 }
 
 // getFloatAttrOr gets a float attribute for node if present or return the given defaultValue.
 // It panics with an error message if the attribute is present but is of the wrong type.
-func getFloatAttrOr(node *protos.NodeProto, attrName string, defaultValue float32) float32 {
-	attr := getNodeAttr(node, attrName, false)
+func GetFloatAttrOr(node *protos.NodeProto, attrName string, defaultValue float32) float32 {
+	attr := GetNodeAttr(node, attrName, false)
 	if attr == nil {
 		return defaultValue
 	}
@@ -306,8 +347,8 @@ func getFloatAttrOr(node *protos.NodeProto, attrName string, defaultValue float3
 
 // getStringAttrOr gets a string attribute for node if present or return the given defaultValue.
 // It panics with an error message if the attribute is present but is of the wrong type.
-func getStringAttrOr(node *protos.NodeProto, attrName string, defaultValue string) string {
-	attr := getNodeAttr(node, attrName, false)
+func GetStringAttrOr(node *protos.NodeProto, attrName string, defaultValue string) string {
+	attr := GetNodeAttr(node, attrName, false)
 	if attr == nil {
 		return defaultValue
 	}
@@ -317,8 +358,8 @@ func getStringAttrOr(node *protos.NodeProto, attrName string, defaultValue strin
 
 // getIntsAttrOr gets an integer list attribute for node if present or return the given defaultValues.
 // It panics with an error message if the attribute is present but is of the wrong type.
-func getIntsAttrOr(node *protos.NodeProto, attrName string, defaultValues []int) []int {
-	attr := getNodeAttr(node, attrName, false)
+func GetIntsAttrOr(node *protos.NodeProto, attrName string, defaultValues []int) []int {
+	attr := GetNodeAttr(node, attrName, false)
 	if attr == nil {
 		return defaultValues
 	}
@@ -328,8 +369,8 @@ func getIntsAttrOr(node *protos.NodeProto, attrName string, defaultValues []int)
 
 // getFloatsAttrOr gets a float list attribute for node if present or return the given defaultValues.
 // It panics with an error message if the attribute is present but is of the wrong type.
-func getFloatsAttrOr(node *protos.NodeProto, attrName string, defaultValues []float32) []float32 {
-	attr := getNodeAttr(node, attrName, false)
+func GetFloatsAttrOr(node *protos.NodeProto, attrName string, defaultValues []float32) []float32 {
+	attr := GetNodeAttr(node, attrName, false)
 	if attr == nil {
 		return defaultValues
 	}
@@ -339,8 +380,8 @@ func getFloatsAttrOr(node *protos.NodeProto, attrName string, defaultValues []fl
 
 // getStringsAttrOr gets a string list attribute for node if present or return the given defaultValues.
 // It panics with an error message if the attribute is present but is of the wrong type.
-func getStringsAttrOr(node *protos.NodeProto, attrName string, defaultValues []string) []string {
-	attr := getNodeAttr(node, attrName, false)
+func GetStringsAttrOr(node *protos.NodeProto, attrName string, defaultValues []string) []string {
+	attr := GetNodeAttr(node, attrName, false)
 	if attr == nil {
 		return defaultValues
 	}
@@ -350,17 +391,17 @@ func getStringsAttrOr(node *protos.NodeProto, attrName string, defaultValues []s
 
 // convertConstant converts a ONNX node to a GoMLX node.
 func convertConstant(m *Model, node *protos.NodeProto, g *Graph) *Node {
-	valueAttr := getNodeAttr(node, "value", true)
+	valueAttr := GetNodeAttr(node, "value", true)
 	if valueAttr == nil {
-		panic(errors.Errorf("'value' attribute for ONNX node %s is nil!?", nodeToString(node)))
+		panic(errors.Errorf("'value' attribute for ONNX node %s is nil!?", NodeToString(node)))
 	}
 	assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
 	if valueAttr.T == nil {
-		panic(errors.Errorf("TENSOR attribute for ONNX node %s is nil!?", nodeToString(node)))
+		panic(errors.Errorf("TENSOR attribute for ONNX node %s is nil!?", NodeToString(node)))
 	}
-	tensor, err := tensorToGoMLXWithBaseDir(m.backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
+	tensor, err := tensorToGoMLXWithBaseDir(m.Backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
 	if err != nil {
-		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
+		err = errors.WithMessagef(err, "while converting ONNX %s", NodeToString(node))
 		panic(err)
 	}
 	return Const(g, tensor)
@@ -371,7 +412,7 @@ func convertConstant(m *Model, node *protos.NodeProto, g *Graph) *Node {
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Gather.html
 func convertGather(node *protos.NodeProto, inputs []*Node) *Node {
-	axis := getIntAttrOr(node, "axis", 0)
+	axis := GetIntAttrOr(node, "axis", 0)
 	gatherAxis := MustAdjustAxis(axis, inputs[0])
 	if gatherAxis >= inputs[0].Rank() || gatherAxis < 0 {
 		exceptions.Panicf("Gather(data, indices, axis=%d), axis within d.Rank()=%d range", axis, inputs[0].Rank())
@@ -445,7 +486,7 @@ func convertGatherND(node *protos.NodeProto, inputs []*Node) *Node {
 	data := inputs[0]
 	indices := inputs[1]
 
-	batchDims := getIntAttrOr(node, "batch_dims", 0)
+	batchDims := GetIntAttrOr(node, "batch_dims", 0)
 
 	r := data.Rank()
 	q := indices.Rank()
@@ -497,7 +538,7 @@ func onnxGatherND(data, indices *Node, batchDims int) *Node {
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__GatherElements.html
 func convertGatherElements(node *protos.NodeProto, inputs []*Node) *Node {
-	axis := getIntAttrOr(node, "axis", 0)
+	axis := GetIntAttrOr(node, "axis", 0)
 	gatherAxis := MustAdjustAxis(axis, inputs[0])
 	if gatherAxis >= inputs[0].Rank() || gatherAxis < 0 {
 		exceptions.Panicf("Gather(data, indices, axis=%d), axis within d.Rank()=%d range", axis, inputs[0].Rank())
@@ -556,11 +597,11 @@ func onnxGatherElements(data *Node, indices *Node, gatherAxis int) *Node {
 // https://onnx.ai/onnx/operators/onnx__Shape.html
 func convertShape(node *protos.NodeProto, inputs []*Node) *Node {
 	shape := inputs[0].Shape()
-	start := getIntAttrOr(node, "start", 0)
+	start := GetIntAttrOr(node, "start", 0)
 	if start < 0 {
 		start = shape.Rank() + start
 	}
-	end := getIntAttrOr(node, "end", 0)
+	end := GetIntAttrOr(node, "end", 0)
 	if end == 0 {
 		end = shape.Rank()
 	} else if end < 0 {
@@ -593,7 +634,7 @@ func convertSize(inputs []*Node) *Node {
 // https://onnx.ai/onnx/operators/onnx__Flatten.html
 func convertFlatten(node *protos.NodeProto, inputs []*Node) *Node {
 	operand := inputs[0]
-	splitAxis := getIntAttrOr(node, "axis", 1)
+	splitAxis := GetIntAttrOr(node, "axis", 1)
 	splitAxis = MustAdjustAxis(splitAxis, operand)
 	return onnxFlatten(operand, splitAxis)
 }
@@ -615,8 +656,20 @@ func onnxFlatten(operand *Node, splitAxis int) *Node {
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Concat.html
-func convertConcat(node *protos.NodeProto, inputs []*Node) *Node {
+func (m *Model) convertConcat(node *protos.NodeProto, inputs []*Node) *Node {
 	axis := mustGetIntAttr(node, "axis")
+	if m.allowDTypePromotion && len(inputs) > 0 {
+		// Cast all operands to match the first operand's dtype.
+		// Unlike binary ops, Concat should preserve the semantic type set by
+		// the first operand (e.g. Int64 for shapes/indices) rather than
+		// promoting to a wider float type.
+		target := inputs[0].DType()
+		for i, n := range inputs[1:] {
+			if n.DType() != target {
+				inputs[i+1] = ConvertDType(n, target)
+			}
+		}
+	}
 	return Concatenate(inputs, axis)
 }
 
@@ -625,7 +678,7 @@ func convertConcat(node *protos.NodeProto, inputs []*Node) *Node {
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Softmax.html
 func convertSoftmax(node *protos.NodeProto, inputs []*Node) *Node {
-	axis := getIntAttrOr(node, "axis", -1)
+	axis := GetIntAttrOr(node, "axis", -1)
 	return Softmax(inputs[0], axis)
 }
 
@@ -636,13 +689,13 @@ func convertSoftmax(node *protos.NodeProto, inputs []*Node) *Node {
 func convertCast(node *protos.NodeProto, inputs []*Node) *Node {
 	operand := inputs[0]
 
-	saturate := getIntAttrOr(node, "saturate", 1) > 0
+	saturate := GetIntAttrOr(node, "saturate", 1) > 0
 	_ = saturate // Not implemented.
 	toDtype, err := dtypeForONNX(
 		protos.TensorProto_DataType(
 			mustGetIntAttr(node, "to")))
 	if err != nil {
-		panic(errors.WithMessagef(err, "while converting 'to' attribute for node %s", nodeToString(node)))
+		panic(errors.WithMessagef(err, "while converting 'to' attribute for node %s", NodeToString(node)))
 	}
 
 	return ConvertDType(operand, toDtype)
@@ -654,7 +707,7 @@ func convertCast(node *protos.NodeProto, inputs []*Node) *Node {
 // https://onnx.ai/onnx/operators/onnx__Transpose.html
 func convertTranspose(node *protos.NodeProto, inputs []*Node) *Node {
 	operand := inputs[0]
-	permutations := getIntsAttrOr(node, "perm", nil)
+	permutations := GetIntsAttrOr(node, "perm", nil)
 	if permutations == nil {
 		// Reverse axes.
 		permutations = make([]int, operand.Rank())
@@ -663,7 +716,7 @@ func convertTranspose(node *protos.NodeProto, inputs []*Node) *Node {
 		}
 	}
 	if len(permutations) != operand.Rank() {
-		exceptions.Panicf("Tranpose(data=%s, perm=%v) must have one permutation value per axis of the data: %s", operand.Shape(), permutations, nodeToString(node))
+		exceptions.Panicf("Tranpose(data=%s, perm=%v) must have one permutation value per axis of the data: %s", operand.Shape(), permutations, NodeToString(node))
 	}
 	return TransposeAllAxes(operand, permutations...)
 }
@@ -678,10 +731,10 @@ func (m *Model) convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
 	operandB := inputs[1]
 	operandA, operandB = m.checkOrPromoteDTypes(operandA, operandB)
 
-	transposeA := getBoolAttrOr(node, "transA", false)
-	transposeB := getBoolAttrOr(node, "transB", false)
-	alpha := getFloatAttrOr(node, "alpha", 1.0)
-	beta := getFloatAttrOr(node, "beta", 1.0)
+	transposeA := GetBoolAttrOr(node, "transA", false)
+	transposeB := GetBoolAttrOr(node, "transB", false)
+	alpha := GetFloatAttrOr(node, "alpha", 1.0)
+	beta := GetFloatAttrOr(node, "beta", 1.0)
 
 	aAxes, bAxes := "ij", "jk"
 	if transposeA {
@@ -706,6 +759,20 @@ func (m *Model) convertGemm(node *protos.NodeProto, inputs []*Node) *Node {
 		result = m.convertBinaryOp(Add, result, operandC)
 	}
 	return result
+}
+
+// convertEinsum converts an ONNX Einsum op to GoMLX's Einsum.
+// ONNX Einsum supports N operands, but GoMLX only supports exactly 2.
+func convertEinsum(node *protos.NodeProto, inputs []*Node) *Node {
+	equation := GetStringAttrOr(node, "equation", "")
+	if equation == "" {
+		exceptions.Panicf("Einsum node %q missing required 'equation' attribute", node.Name)
+	}
+	if len(inputs) != 2 {
+		exceptions.Panicf("Einsum node %q has %d inputs, but GoMLX only supports exactly 2 operands",
+			node.Name, len(inputs))
+	}
+	return Einsum(equation, inputs[0], inputs[1])
 }
 
 ////////////////////////////////////////////////////////////////////
@@ -771,9 +838,19 @@ func (m *Model) convertPow(convertedOutputs map[string]*Node, node *protos.NodeP
 	case 1:
 		return inputs[0]
 	case 0.5:
-		return Sqrt(inputs[0])
+		x := inputs[0]
+		result := Sqrt(m.onnxImplicitFloatPromotion(x))
+		if x.DType().IsInt() {
+			result = ConvertDType(result, x.DType())
+		}
+		return result
 	case -0.5:
-		return Reciprocal(Sqrt(inputs[0]))
+		x := inputs[0]
+		result := Reciprocal(Sqrt(m.onnxImplicitFloatPromotion(x)))
+		if x.DType().IsInt() {
+			result = ConvertDType(result, x.DType())
+		}
+		return result
 	case -1:
 		return Reciprocal(inputs[0])
 	case -2:
@@ -791,15 +868,15 @@ func convertSqueeze(m *Model, convertedOutputs map[string]*Node, node *protos.No
 	operand := inputs[0]
 
 	// Version 11 and earlier take the axes from the attribute:
-	axes := getIntsAttrOr(node, "axes", nil)
+	axes := GetIntsAttrOr(node, "axes", nil)
 	if len(axes) == 0 && len(inputs) >= 2 {
 		// Instead take axes from inputs[1].
 		if !inputs[1].DType().IsInt() {
-			exceptions.Panicf("axes must be integer, got %s for node %s", inputs[1].DType(), nodeToString(node))
+			exceptions.Panicf("axes must be integer, got %s for node %s", inputs[1].DType(), NodeToString(node))
 		}
 		axesT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'axes' for node %s", nodeToString(node)))
+			panic(errors.WithMessagef(err, "while converting 'axes' for node %s", NodeToString(node)))
 		}
 		axes = tensorToInts(axesT)
 	}
@@ -820,15 +897,15 @@ func convertSqueeze(m *Model, convertedOutputs map[string]*Node, node *protos.No
 // https://onnx.ai/onnx/operators/onnx__Unsqueeze.html
 func convertUnsqueeze(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	// Version 11 and earlier take the axes from the attribute:
-	axes := getIntsAttrOr(node, "axes", nil)
+	axes := GetIntsAttrOr(node, "axes", nil)
 	if len(axes) == 0 {
 		// Instead take axes from inputs[1].
 		if !inputs[1].DType().IsInt() {
-			exceptions.Panicf("axes must be integer, got %s for node %s", inputs[1].DType(), nodeToString(node))
+			exceptions.Panicf("axes must be integer, got %s for node %s", inputs[1].DType(), NodeToString(node))
 		}
 		axesT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'axes' for node %s", nodeToString(node)))
+			panic(errors.WithMessagef(err, "while converting 'axes' for node %s", NodeToString(node)))
 		}
 		axes = tensorToInts(axesT)
 	}
@@ -841,7 +918,7 @@ func convertUnsqueeze(m *Model, convertedOutputs map[string]*Node, node *protos.
 // https://onnx.ai/onnx/operators/onnx__Slice.html
 func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	if len(inputs) < 3 {
-		exceptions.Panicf("Slice requires at least 3 inputs, got %d in node %s", len(inputs), nodeToString(node))
+		exceptions.Panicf("Slice requires at least 3 inputs, got %d in node %s", len(inputs), NodeToString(node))
 	}
 
 	operand := inputs[0]
@@ -849,13 +926,13 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 
 	startsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 	if err != nil {
-		panic(errors.WithMessagef(err, "while converting 'starts' for node %s", nodeToString(node)))
+		panic(errors.WithMessagef(err, "while converting 'starts' for node %s", NodeToString(node)))
 	}
 	inputStarts := tensorToInts(startsT)
 
 	endsT, err := m.materializeConstantExpression(node.Input[2], convertedOutputs)
 	if err != nil {
-		panic(errors.WithMessagef(err, "while converting 'ends' for node %s", nodeToString(node)))
+		panic(errors.WithMessagef(err, "while converting 'ends' for node %s", NodeToString(node)))
 	}
 	inputEnds := tensorToInts(endsT)
 
@@ -864,7 +941,7 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	if len(inputs) > 3 {
 		axesT, err := m.materializeConstantExpression(node.Input[3], convertedOutputs)
 		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'axes' for node %s", nodeToString(node)))
+			panic(errors.WithMessagef(err, "while converting 'axes' for node %s", NodeToString(node)))
 		}
 		inputAxes = tensorToInts(axesT)
 	} else {
@@ -880,7 +957,7 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	if len(inputs) > 4 {
 		stepsT, err := m.materializeConstantExpression(node.Input[4], convertedOutputs)
 		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'steps' for node %s", nodeToString(node)))
+			panic(errors.WithMessagef(err, "while converting 'steps' for node %s", NodeToString(node)))
 		}
 		inputSteps = tensorToInts(stepsT)
 	} else {
@@ -931,7 +1008,7 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 
 		if normalizedAxes[i] < 0 || normalizedAxes[i] >= rank {
 			exceptions.Panicf("axis %d is out of bounds for tensor of rank %d in node %s",
-				inputAxes[i], rank, nodeToString(node))
+				inputAxes[i], rank, NodeToString(node))
 		}
 	}
 
@@ -945,7 +1022,7 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 
 		// Validate step is not zero
 		if step == 0 {
-			panic(errors.Errorf("step cannot be 0 for axis %d in node %s", axis, nodeToString(node)))
+			panic(errors.Errorf("step cannot be 0 for axis %d in node %s", axis, NodeToString(node)))
 		}
 
 		// For dynamic axes: if the Slice takes the full range (start=0, end=max),
@@ -1053,13 +1130,13 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 func convertReshape(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	operand := inputs[0]
 	if !inputs[1].DType().IsInt() {
-		exceptions.Panicf("shape must be integer, got %s for node %s", inputs[1].DType(), nodeToString(node))
+		exceptions.Panicf("shape must be integer, got %s for node %s", inputs[1].DType(), NodeToString(node))
 	}
-	allowZero := getIntAttrOr(node, "allowZero", 0)
+	allowZero := GetIntAttrOr(node, "allowZero", 0)
 
 	dimsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 	if err != nil {
-		panic(errors.WithMessagef(err, "while converting 'shape' for node %s", nodeToString(node)))
+		panic(errors.WithMessagef(err, "while converting 'shape' for node %s", NodeToString(node)))
 	}
 	dims := tensorToInts(dimsT)
 	if allowZero == 0 {
@@ -1122,26 +1199,26 @@ func convertReduceProd(m *Model, convertedOutputs map[string]*Node, node *protos
 // https://onnx.ai/onnx/operators/onnx__ReduceL2.html
 func convertReduceL2(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	operand := inputs[0]
-	keepDims := getIntAttrOr(node, "keepdims", 1) > 0
-	noOpIfEmpty := getIntAttrOr(node, "noop_with_empty_axes", 0) > 0
+	keepDims := GetIntAttrOr(node, "keepdims", 1) > 0
+	noOpIfEmpty := GetIntAttrOr(node, "noop_with_empty_axes", 0) > 0
 
 	var axes []int
 	if len(inputs) > 1 {
 		if !inputs[1].DType().IsInt() {
-			exceptions.Panicf("ReduceL2: axes must be integer, got %s for node %s", inputs[1].DType(), nodeToString(node))
+			exceptions.Panicf("ReduceL2: axes must be integer, got %s for node %s", inputs[1].DType(), NodeToString(node))
 		}
 
 		axesT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'axes' for ReduceL2 node %s", nodeToString(node)))
+			panic(errors.WithMessagef(err, "while converting 'axes' for ReduceL2 node %s", NodeToString(node)))
 		}
 		axes = tensorToInts(axesT)
 	}
 
-	axesFromAttr := getIntsAttrOr(node, "axes", nil)
+	axesFromAttr := GetIntsAttrOr(node, "axes", nil)
 	if len(axesFromAttr) > 0 {
 		if len(axes) > 0 {
-			exceptions.Panicf("ReduceL2(operand, [axes]): axes and axes attribute cannot be used together for node %s", nodeToString(node))
+			exceptions.Panicf("ReduceL2(operand, [axes]): axes and axes attribute cannot be used together for node %s", NodeToString(node))
 		}
 		axes = axesFromAttr
 	}
@@ -1180,26 +1257,26 @@ func convertReduce(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 	reduceFn func(x *Node, reduceAxes ...int) *Node,
 	reduceAllFn func(x *Node) *Node) *Node {
 	operand := inputs[0]
-	keepDims := getIntAttrOr(node, "keepdims", 1) > 0
-	noOpIfEmpty := getIntAttrOr(node, "noop_with_empty_axes", 0) > 0
+	keepDims := GetIntAttrOr(node, "keepdims", 1) > 0
+	noOpIfEmpty := GetIntAttrOr(node, "noop_with_empty_axes", 0) > 0
 
 	var axes []int
 	if len(inputs) > 1 {
 		if !inputs[1].DType().IsInt() {
-			exceptions.Panicf("axes must be integer, got %s for node %s", inputs[1].DType(), nodeToString(node))
+			exceptions.Panicf("axes must be integer, got %s for node %s", inputs[1].DType(), NodeToString(node))
 		}
 
 		axesT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'axes' for node %s", nodeToString(node)))
+			panic(errors.WithMessagef(err, "while converting 'axes' for node %s", NodeToString(node)))
 		}
 		axes = tensorToInts(axesT)
 	}
 
-	axesFromAttr := getIntsAttrOr(node, "axes", nil)
+	axesFromAttr := GetIntsAttrOr(node, "axes", nil)
 	if len(axesFromAttr) > 0 {
 		if len(axes) > 0 {
-			exceptions.Panicf("%s(operand, [axes]): axes and axes attribute cannot be used together for node %s", opName, nodeToString(node))
+			exceptions.Panicf("%s(operand, [axes]): axes and axes attribute cannot be used together for node %s", opName, NodeToString(node))
 		}
 		axes = axesFromAttr
 	}
@@ -1243,7 +1320,7 @@ func convertNonZero(m *Model, convertedOutputs map[string]*Node, node *protos.No
 	// NonZero output shape depends on data values, so we need to materialize the input
 	inputT, err := m.materializeConstantExpression(node.Input[0], convertedOutputs)
 	if err != nil {
-		panic(errors.WithMessagef(err, "NonZero requires input to be a constant expression (output shape is data-dependent) for node %s", nodeToString(node)))
+		panic(errors.WithMessagef(err, "NonZero requires input to be a constant expression (output shape is data-dependent) for node %s", NodeToString(node)))
 	}
 
 	// Compute nonzero indices
@@ -1348,26 +1425,31 @@ func nonZeroMaskAny(valuesAny any) []bool {
 func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	g := inputs[0].Graph()
 
-	valueAttr := getNodeAttr(node, "value", true)
-	assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
-
-	tensor, err := tensorToGoMLXWithBaseDir(m.backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
-	if err != nil {
-		err = errors.WithMessagef(err, "while converting ONNX %s", nodeToString(node))
-		panic(err)
+	var valueN *Node
+	valueAttr := GetNodeAttr(node, "value", false)
+	if valueAttr != nil {
+		assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
+		tensor, err := tensorToGoMLXWithBaseDir(m.Backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
+		if err != nil {
+			err = errors.WithMessagef(err, "while converting ONNX %s", NodeToString(node))
+			panic(err)
+		}
+		valueN = Const(g, tensor)
+	} else {
+		// Default per ONNX spec: scalar float32 zero
+		valueN = Scalar(g, dtypes.Float32, 0)
 	}
-	valueN := Const(g, tensor)
 
 	dimsN := inputs[0]
 	if !dimsN.DType().IsInt() {
-		exceptions.Panicf("input (shape) must be integer, got %s for node %s", dimsN.DType(), nodeToString(node))
+		exceptions.Panicf("input (shape) must be integer, got %s for node %s", dimsN.DType(), NodeToString(node))
 	}
 
 	var dims []int // Default is a scalar.
 	if dimsN.Shape().Size() > 0 {
 		dimsT, err := m.materializeConstantExpression(node.Input[0], convertedOutputs)
 		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'shape' to a static value for node %s", nodeToString(node)))
+			panic(errors.WithMessagef(err, "while converting 'shape' to a static value for node %s", NodeToString(node)))
 		}
 		dims = tensorToInts(dimsT)
 	}
@@ -1383,13 +1465,13 @@ func convertExpand(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 	operand := inputs[0]
 	dimsN := inputs[1]
 	if !dimsN.DType().IsInt() {
-		exceptions.Panicf("input (shape) must be integer, got %s for node %s", dimsN.DType(), nodeToString(node))
+		exceptions.Panicf("input (shape) must be integer, got %s for node %s", dimsN.DType(), NodeToString(node))
 	}
 	var dims []int // Default is a scalar.
 	if dimsN.Shape().Size() > 0 {
 		dimsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'shape' to a static value for node %s", nodeToString(node)))
+			panic(errors.WithMessagef(err, "while converting 'shape' to a static value for node %s", NodeToString(node)))
 		}
 		dims = tensorToInts(dimsT)
 	}
@@ -1432,11 +1514,11 @@ func convertTile(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	operand := inputs[0]
 	repeatsN := inputs[1]
 	if !repeatsN.DType().IsInt() {
-		exceptions.Panicf("Tile(input, repeats): repeats (shape) must be integer, got %s for node %s", repeatsN.DType(), nodeToString(node))
+		exceptions.Panicf("Tile(input, repeats): repeats (shape) must be integer, got %s for node %s", repeatsN.DType(), NodeToString(node))
 	}
 	repeatsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 	if err != nil {
-		panic(errors.WithMessagef(err, "while converting 'repeats' to a static value for node %s", nodeToString(node)))
+		panic(errors.WithMessagef(err, "while converting 'repeats' to a static value for node %s", NodeToString(node)))
 	}
 	repeats := tensorToInts(repeatsT)
 	return onnxTile(operand, repeats)
@@ -1488,15 +1570,15 @@ func convertRange(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	}
 	startT, err := m.materializeConstantExpression(node.Input[0], convertedOutputs)
 	if err != nil {
-		panic(errors.WithMessagef(err, "while converting 'start' to a static value for node %s", nodeToString(node)))
+		panic(errors.WithMessagef(err, "while converting 'start' to a static value for node %s", NodeToString(node)))
 	}
 	limitT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 	if err != nil {
-		panic(errors.WithMessagef(err, "while converting 'limit' to a static value for node %s", nodeToString(node)))
+		panic(errors.WithMessagef(err, "while converting 'limit' to a static value for node %s", NodeToString(node)))
 	}
 	deltaT, err := m.materializeConstantExpression(node.Input[2], convertedOutputs)
 	if err != nil {
-		panic(errors.WithMessagef(err, "while converting 'delta' to a static value for node %s", nodeToString(node)))
+		panic(errors.WithMessagef(err, "while converting 'delta' to a static value for node %s", NodeToString(node)))
 	}
 
 	// Find the number of elements:
@@ -1541,16 +1623,16 @@ func rangeCount(backend backends.Backend, start, limit, delta *tensors.Tensor) i
 // https://onnx.ai/onnx/operators/onnx__CumSum.html
 func convertCumSum(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	operand := inputs[0]
-	exclusiveAttr := getBoolAttrOr(node, "exclusive", false)
-	reverseAttr := getBoolAttrOr(node, "reverse", false)
+	exclusiveAttr := GetBoolAttrOr(node, "exclusive", false)
+	reverseAttr := GetBoolAttrOr(node, "reverse", false)
 
 	axisN := inputs[1]
 	if !axisN.DType().IsInt() || !axisN.IsScalar() {
-		exceptions.Panicf("axis (shape) must be a scalar integer, got %s for node %s", axisN.Shape(), nodeToString(node))
+		exceptions.Panicf("axis (shape) must be a scalar integer, got %s for node %s", axisN.Shape(), NodeToString(node))
 	}
 	axisT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 	if err != nil {
-		panic(errors.WithMessagef(err, "while converting 'axis' to a static value for node %s", nodeToString(node)))
+		panic(errors.WithMessagef(err, "while converting 'axis' to a static value for node %s", NodeToString(node)))
 	}
 	axis := tensorToInts(axisT)[0]
 	return onnxCumSum(operand, axis, exclusiveAttr, reverseAttr)
@@ -1563,7 +1645,7 @@ func onnxCumSum(operand *Node, axis int, exclusive, reverse bool) *Node {
 	if reverse {
 		operand = Reverse(operand, adjustedAxis)
 	}
-	output := CumSum(operand, axis)
+	output := CumSum(operand, adjustedAxis)
 	if exclusive {
 		output = ShiftWithScalar(output, adjustedAxis, ShiftDirRight, 1, 0)
 	}
@@ -1608,7 +1690,7 @@ func convertTrilu(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	if len(inputs) > 1 {
 		kT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'k' for node %s", nodeToString(node)))
+			panic(errors.WithMessagef(err, "while converting 'k' for node %s", NodeToString(node)))
 		}
 		kValues := tensorToInts(kT)
 		if len(kValues) != 1 {
@@ -1618,7 +1700,7 @@ func convertTrilu(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	}
 
 	// Get upper attribute (default: true)
-	upper := getIntAttrOr(node, "upper", 1)
+	upper := GetIntAttrOr(node, "upper", 1)
 
 	// Apply Trilu mask
 	if upper == 1 {
@@ -1639,7 +1721,7 @@ func convertScatterND(_ *Model, _ map[string]*Node, node *protos.NodeProto, inpu
 	updates := inputs[2]
 
 	// attributes
-	reduction := getStringAttrOr(node, "reduction", "none")
+	reduction := GetStringAttrOr(node, "reduction", "none")
 
 	r := data.Rank()
 	if !(r >= 1) {
@@ -1648,7 +1730,7 @@ func convertScatterND(_ *Model, _ map[string]*Node, node *protos.NodeProto, inpu
 
 	q := indices.Rank()
 	if !(q >= 1) {
-		exceptions.Panicf("ScatterND: indices must have rank >= 1, got %d", r)
+		exceptions.Panicf("ScatterND: indices must have rank >= 1, got %d", q)
 	}
 
 	v := q + r - indices.Shape().Dimensions[len(indices.Shape().Dimensions)-1] - 1
@@ -1717,18 +1799,18 @@ func convertLSTM(_ *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	biasesW = Reshape(biasesW, numDirections, 8, hiddenDim)
 
 	// Attributes:
-	activationAlpha := getFloatAttrOr(node, "activation_alpha", 0.01)
-	activationBeta := getFloatsAttrOr(node, "activation_alpha", nil)
-	activations := getStringsAttrOr(node, "activations", nil)
+	activationAlpha := GetFloatAttrOr(node, "activation_alpha", 0.01)
+	activationBeta := GetFloatsAttrOr(node, "activation_beta", nil)
+	activations := GetStringsAttrOr(node, "activations", nil)
 	if activations != nil {
-		exceptions.Panicf("LSTM custom activaitons is not supported yet -- pls open an issue on github.com/gomlx/onnx-gomlx")
+		exceptions.Panicf("LSTM custom activations is not supported yet -- pls open an issue on github.com/gomlx/onnx-gomlx")
 	}
 	_, _ = activationAlpha, activationBeta
-	clip := getFloatAttrOr(node, "clip", 0)
+	clip := GetFloatAttrOr(node, "clip", 0)
 	if clip != 0 {
 		exceptions.Panicf("LSTM clip is not supported yet -- pls open an issue on github.com/gomlx/onnx-gomlx")
 	}
-	directionAttr := getStringAttrOr(node, "direction", "forward")
+	directionAttr := GetStringAttrOr(node, "direction", "forward")
 	var direction lstm.DirectionType
 	switch directionAttr {
 	case "forward":
@@ -1740,15 +1822,15 @@ func convertLSTM(_ *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	default:
 		exceptions.Panicf("LSTM direction must be 'forward', 'reverse' or 'bidirectional', got %s", directionAttr)
 	}
-	hiddenSize := getIntAttrOr(node, "hidden_size", 0)
+	hiddenSize := GetIntAttrOr(node, "hidden_size", 0)
 	if hiddenSize != 0 && hiddenSize != inputsW.Shape().Dim(-2) {
 		exceptions.Panicf("LSTM hidden_size (%d) must match inputsW one befere last axis dimension (%s)", hiddenSize, inputsW.Shape())
 	}
-	inputForget := getBoolAttrOr(node, "input_forget", false)
+	inputForget := GetBoolAttrOr(node, "input_forget", false)
 	if inputForget {
 		exceptions.Panicf("LSTM input_forget is not supported yet -- pls open an issue on github.com/gomlx/onnx-gomlx")
 	}
-	layout := getIntAttrOr(node, "layout", 0)
+	layout := GetIntAttrOr(node, "layout", 0)
 
 	// Operand for ONNX has shape [sequenceLength, batchSize, inputSize], we need to transpose to [batchSize, sequenceLength, inputSize]
 	// (Except if layout == 1).
@@ -1811,15 +1893,15 @@ func convertLSTM(_ *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Conv.html
 func convertConv(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
-	autoPad := getStringAttrOr(node, "auto_pad", "NOTSET")
+	autoPad := GetStringAttrOr(node, "auto_pad", "NOTSET")
 	if autoPad != "NOTSET" {
 		exceptions.Panicf("Conv: support for attribute 'auto_pad' (%s) is not yet implemented", autoPad)
 	}
-	kernelShape := getIntsAttrOr(node, "kernel_shape", nil)
-	strides := getIntsAttrOr(node, "strides", nil)
-	pads := getIntsAttrOr(node, "pads", nil)
-	dilations := getIntsAttrOr(node, "dilations", nil)
-	groups := getIntAttrOr(node, "group", 1)
+	kernelShape := GetIntsAttrOr(node, "kernel_shape", nil)
+	strides := GetIntsAttrOr(node, "strides", nil)
+	pads := GetIntsAttrOr(node, "pads", nil)
+	dilations := GetIntsAttrOr(node, "dilations", nil)
+	groups := GetIntAttrOr(node, "group", 1)
 
 	x := inputs[0]
 	w := inputs[1]
@@ -1903,22 +1985,22 @@ func convertConv(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__AveragePool.html
 func convertAveragePool(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
-	autoPad := getStringAttrOr(node, "auto_pad", "NOTSET")
+	autoPad := GetStringAttrOr(node, "auto_pad", "NOTSET")
 	if autoPad != "NOTSET" {
 		exceptions.Panicf("AveragePool: support for attribute 'auto_pad' (%s) is not yet implemented", autoPad)
 	}
-	ceilMode := getIntAttrOr(node, "ceil_mode", 0)
+	ceilMode := GetIntAttrOr(node, "ceil_mode", 0)
 	if ceilMode != 0 {
 		exceptions.Panicf("AveragePool: support for attribute 'ceil_mode' is not yet implemented")
 	}
-	countIncludePad := getIntAttrOr(node, "count_include_pad", 0)
+	countIncludePad := GetIntAttrOr(node, "count_include_pad", 0)
 	if countIncludePad != 0 {
 		// GoMLX MeanPool doesn't support including padding in the count.
 		exceptions.Panicf("AveragePool: support for attribute 'count_include_pad' is not yet implemented")
 	}
-	kernelShape := getIntsAttrOr(node, "kernel_shape", nil)
-	strides := getIntsAttrOr(node, "strides", nil)
-	pads := getIntsAttrOr(node, "pads", nil)
+	kernelShape := GetIntsAttrOr(node, "kernel_shape", nil)
+	strides := GetIntsAttrOr(node, "strides", nil)
+	pads := GetIntsAttrOr(node, "pads", nil)
 
 	x := inputs[0]
 
@@ -1952,10 +2034,10 @@ func convertAveragePool(_ *Model, _ map[string]*Node, node *protos.NodeProto, in
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Pad.html
 func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
-	mode := getStringAttrOr(node, "mode", "constant")
+	mode := GetStringAttrOr(node, "mode", "constant")
 	padsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 	if err != nil {
-		panic(errors.WithMessagef(err, "while converting 'pads' for node %s", nodeToString(node)))
+		panic(errors.WithMessagef(err, "while converting 'pads' for node %s", NodeToString(node)))
 	}
 	pads := tensorToInts(padsT)
 
@@ -2050,25 +2132,25 @@ func convertPadReflect(x *Node, pads []int, rank int) *Node {
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__MaxPool.html
 func convertMaxPool(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
-	autoPad := getStringAttrOr(node, "auto_pad", "NOTSET")
+	autoPad := GetStringAttrOr(node, "auto_pad", "NOTSET")
 	if autoPad != "NOTSET" {
 		exceptions.Panicf("MaxPool: support for attribute 'auto_pad' (%s) is not yet implemented", autoPad)
 	}
-	ceilMode := getIntAttrOr(node, "ceil_mode", 0)
+	ceilMode := GetIntAttrOr(node, "ceil_mode", 0)
 	if ceilMode != 0 {
 		exceptions.Panicf("MaxPool: support for attribute 'ceil_mode' is not yet implemented")
 	}
-	dilations := getIntsAttrOr(node, "dilations", nil)
+	dilations := GetIntsAttrOr(node, "dilations", nil)
 	if dilations != nil {
 		exceptions.Panicf("MaxPool: support for attribute 'dilations' is not yet implemented")
 	}
-	storageOrder := getIntAttrOr(node, "storage_order", 0)
+	storageOrder := GetIntAttrOr(node, "storage_order", 0)
 	if storageOrder != 0 {
 		exceptions.Panicf("MaxPool: support for attribute 'storage_order' is not yet implemented")
 	}
-	kernelShape := getIntsAttrOr(node, "kernel_shape", nil)
-	strides := getIntsAttrOr(node, "strides", nil)
-	pads := getIntsAttrOr(node, "pads", nil)
+	kernelShape := GetIntsAttrOr(node, "kernel_shape", nil)
+	strides := GetIntsAttrOr(node, "strides", nil)
+	pads := GetIntsAttrOr(node, "pads", nil)
 
 	x := inputs[0]
 
@@ -2129,12 +2211,12 @@ func convertBatchNormalization(_ *Model, _ map[string]*Node, node *protos.NodePr
 	mean := inputs[3]
 	variance := inputs[4]
 
-	epsilon := getFloatAttrOr(node, "epsilon", 1e-5)
-	momentum := getFloatAttrOr(node, "momentum", 0.9)
+	epsilon := GetFloatAttrOr(node, "epsilon", 1e-5)
+	momentum := GetFloatAttrOr(node, "momentum", 0.9)
 	if momentum != 0.9 {
 		exceptions.Panicf("BatchNormalization: support for attribute 'momentum' is not yet implemented")
 	}
-	trainingMode := getIntAttrOr(node, "training_mode", 0)
+	trainingMode := GetIntAttrOr(node, "training_mode", 0)
 	if trainingMode != 0 {
 		exceptions.Panicf("BatchNormalization: support for attribute 'training_mode' is not yet implemented")
 	}
@@ -2178,8 +2260,8 @@ func convertLayerNormalization(_ *Model, _ map[string]*Node, node *protos.NodePr
 	}
 
 	// Attributes
-	axis := getIntAttrOr(node, "axis", -1)
-	epsilon := getFloatAttrOr(node, "epsilon", 1e-5)
+	axis := GetIntAttrOr(node, "axis", -1)
+	epsilon := GetFloatAttrOr(node, "epsilon", 1e-5)
 
 	// Normalize axis to positive value
 	inputRank := x.Rank()
@@ -2198,29 +2280,31 @@ func convertLayerNormalization(_ *Model, _ map[string]*Node, node *protos.NodePr
 	// Need to add leading 1s to match the input rank
 	if scale.Rank() < inputRank {
 		scaleShape := make([]int, inputRank)
-		biasShape := make([]int, inputRank)
 		// Set leading dimensions to 1
 		for i := 0; i < axis; i++ {
 			scaleShape[i] = 1
-			biasShape[i] = 1
 		}
-		// Copy the scale/bias dimensions for the normalized axes
+		// Copy the scale dimensions for the normalized axes
 		scaleDims := scale.Shape().Dimensions
 		scaleRank := len(scaleDims)
 		for i := axis; i < inputRank; i++ {
-			// Check bounds to prevent index out of bounds
 			scaleIdx := i - axis
 			if scaleIdx >= scaleRank {
 				exceptions.Panicf("LayerNormalization: scale tensor has insufficient dimensions (rank=%d) for input rank=%d and axis=%d",
 					scaleRank, inputRank, axis)
 			}
 			scaleShape[i] = scaleDims[scaleIdx]
-			if bias != nil {
-				biasShape[i] = scaleDims[scaleIdx]
-			}
 		}
 		scale = Reshape(scale, scaleShape...)
 		if bias != nil {
+			biasDims := bias.Shape().Dimensions
+			biasShape := make([]int, inputRank)
+			for i := 0; i < axis; i++ {
+				biasShape[i] = 1
+			}
+			for i := axis; i < inputRank; i++ {
+				biasShape[i] = biasDims[i-axis]
+			}
 			bias = Reshape(bias, biasShape...)
 		}
 	}
@@ -2267,8 +2351,8 @@ func convertSimplifiedLayerNormalization(_ *Model, _ map[string]*Node, node *pro
 	scale := inputs[1]
 
 	// Attributes
-	axis := getIntAttrOr(node, "axis", -1)
-	epsilon := getFloatAttrOr(node, "epsilon", 1e-5)
+	axis := GetIntAttrOr(node, "axis", -1)
+	epsilon := GetFloatAttrOr(node, "epsilon", 1e-5)
 
 	// Normalize axis to positive value
 	inputRank := x.Rank()
@@ -2333,18 +2417,20 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 	// - position_ids: position indices for cache lookup (may be nil if optional)
 	// - cos_cache: cosine values for rotation
 	// - sin_cache: sine values for rotation
+	if len(inputs) < 4 {
+		exceptions.Panicf("RotaryEmbedding: expected at least 4 inputs (input, position_ids, cos_cache, sin_cache), got %d", len(inputs))
+	}
 	x := inputs[0]
 	var positionIds *Node
-	if len(inputs) > 1 && inputs[1] != nil {
+	if inputs[1] != nil {
 		positionIds = inputs[1]
 	}
 	cosCache := inputs[2]
 	sinCache := inputs[3]
 
 	// Attributes
-	interleaved := getIntAttrOr(node, "interleaved", 0) != 0
-	numHeads := getIntAttrOr(node, "num_heads", 0)
-
+	interleaved := GetIntAttrOr(node, "interleaved", 0) != 0
+	numHeads := GetIntAttrOr(node, "num_heads", 0)
 
 	inputRank := x.Rank()
 	inputShape := x.Shape().Dimensions
@@ -2465,8 +2551,8 @@ func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodePr
 	}
 
 	// Attributes
-	numHeads := getIntAttrOr(node, "num_heads", 0)
-	scale := getFloatAttrOr(node, "scale", 0)
+	numHeads := GetIntAttrOr(node, "num_heads", 0)
+	scale := GetFloatAttrOr(node, "scale", 0)
 
 	// Determine input format and reshape if needed
 	queryRank := query.Rank()
@@ -2507,8 +2593,8 @@ func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodePr
 		maskRank := attentionMask.Rank()
 		if maskRank == 2 {
 			// (batch, kv_seq) -> (batch, 1, 1, kv_seq)
-			attentionMask = ExpandLeftToRank(attentionMask, 4)
-			attentionMask = TransposeAllDims(attentionMask, 0, 2, 3, 1)
+			maskDims := attentionMask.Shape().Dimensions
+			attentionMask = Reshape(attentionMask, maskDims[0], 1, 1, maskDims[1])
 		} else if maskRank == 3 {
 			// (batch, q_seq, kv_seq) -> (batch, 1, q_seq, kv_seq)
 			maskDims := attentionMask.Shape().Dimensions
@@ -2561,17 +2647,17 @@ func convertGroupQueryAttention(_ *Model, convertedOutputs map[string]*Node, nod
 	value := inputs[2]
 
 	var pastKey, pastValue *Node
-	if len(inputs) > 3 && inputs[3] != nil && inputs[3].Shape().Dimensions[2] > 0 {
+	if len(inputs) > 3 && inputs[3] != nil && inputs[3].Rank() > 2 && inputs[3].Shape().Dimensions[2] > 0 {
 		pastKey = inputs[3]
 	}
-	if len(inputs) > 4 && inputs[4] != nil && inputs[4].Shape().Dimensions[2] > 0 {
+	if len(inputs) > 4 && inputs[4] != nil && inputs[4].Rank() > 2 && inputs[4].Shape().Dimensions[2] > 0 {
 		pastValue = inputs[4]
 	}
 
-	numHeads := getIntAttrOr(node, "num_heads", 0)
-	kvNumHeads := getIntAttrOr(node, "kv_num_heads", 0)
-	scale := getFloatAttrOr(node, "scale", 0)
-	localWindowSize := getIntAttrOr(node, "local_window_size", -1)
+	numHeads := GetIntAttrOr(node, "num_heads", 0)
+	kvNumHeads := GetIntAttrOr(node, "kv_num_heads", 0)
+	scale := GetFloatAttrOr(node, "scale", 0)
+	localWindowSize := GetIntAttrOr(node, "local_window_size", -1)
 
 	if numHeads == 0 {
 		exceptions.Panicf("GroupQueryAttention: num_heads attribute is required")
@@ -2658,7 +2744,7 @@ func convertSplit(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	x := inputs[0]
 
 	// Get axis attribute (default is 0)
-	axis := getIntAttrOr(node, "axis", 0)
+	axis := GetIntAttrOr(node, "axis", 0)
 
 	// Determine the number of splits from the output count
 	numOutputs := len(node.Output)
@@ -2673,7 +2759,7 @@ func convertSplit(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		// Split sizes provided as input (need to materialize it)
 		splitSizesTensor, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 		if err != nil {
-			exceptions.Panicf("Split: failed to materialize split sizes for node %s: %v", nodeToString(node), err)
+			exceptions.Panicf("Split: failed to materialize split sizes for node %s: %v", NodeToString(node), err)
 		}
 		// Convert tensor to int slice
 		splitSizes = tensorToInts(splitSizesTensor)
@@ -2721,16 +2807,16 @@ func convertSplit(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__DequantizeLinear.html
-func convertDequantizeLinear(nodeProto *protos.NodeProto, inputs []*Node) *Node {
+func (m *Model) convertDequantizeLinear(convertedOutputs map[string]*Node, nodeProto *protos.NodeProto, inputs []*Node) *Node {
 	// Attributes:
 	// - Axis (optional) on which to apply the multi-valued scale.
 	// - blockSize: optional, only active if != 0. Not yet implemented.
-	targetAxis := getIntAttrOr(nodeProto, "axis", 1)
-	blockSize := getIntAttrOr(nodeProto, "blockSize", 0)
+	targetAxis := GetIntAttrOr(nodeProto, "axis", 1)
+	blockSize := GetIntAttrOr(nodeProto, "blockSize", 0)
 	if blockSize != 0 {
 		exceptions.Panicf("DequantizeLinear: support for attribute 'block_size' is not yet implemented")
 	}
-	outputDType := getDTypeAttrOr(nodeProto, "output_dtype", dtypes.Float32)
+	outputDType := GetDTypeAttrOr(nodeProto, "output_dtype", dtypes.Float32)
 
 	x := inputs[0]
 	scale := inputs[1]
@@ -2767,6 +2853,66 @@ func onnxDequantizeLinear(x, scale, xZeroPoint *Node, targetAxis int, outputDTyp
 	return x
 }
 
+// IsZeroInitializer checks if the named tensor in the model's initializers is an
+// all-zeros tensor. Returns false if the name is not found or not all zeros.
+func (m *Model) IsZeroInitializer(name string) bool {
+	tp, found := m.VariableNameToValue[name]
+	if !found || tp == nil {
+		return false
+	}
+
+	// Check raw data first (most common storage).
+	switch {
+	case len(tp.RawData) > 0:
+		for _, b := range tp.RawData {
+			if b != 0 {
+				return false
+			}
+		}
+		return true
+	case len(tp.Int32Data) > 0:
+		for _, v := range tp.Int32Data {
+			if v != 0 {
+				return false
+			}
+		}
+		return true
+	case len(tp.Int64Data) > 0:
+		for _, v := range tp.Int64Data {
+			if v != 0 {
+				return false
+			}
+		}
+		return true
+	case len(tp.FloatData) > 0:
+		for _, v := range tp.FloatData {
+			if v != 0 {
+				return false
+			}
+		}
+		return true
+	case len(tp.DoubleData) > 0:
+		for _, v := range tp.DoubleData {
+			if v != 0 {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Empty tensors have zero elements, including scalars stored with no explicit
+	// data and shapes with a zero-sized dimension such as [batchSize, 0].
+	if len(tp.Dims) == 0 {
+		return true
+	}
+	for _, dim := range tp.Dims {
+		if dim == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // convertQuantizeLinear converts the corresponding ONNX node to a GoMLX node.
 //
 // Not yet supporting block quantization.
@@ -2779,8 +2925,8 @@ func convertQuantizeLinear(nodeProto *protos.NodeProto, inputs []*Node) *Node {
 	// - blockSize: optional, only active if != 0. Not yet implemented.
 	// - output_dtype: optional, specifies the output dtype.
 	// - saturate: optional, for float8 types only.
-	targetAxis := getIntAttrOr(nodeProto, "axis", 1)
-	blockSize := getIntAttrOr(nodeProto, "blockSize", 0)
+	targetAxis := GetIntAttrOr(nodeProto, "axis", 1)
+	blockSize := GetIntAttrOr(nodeProto, "blockSize", 0)
 	if blockSize != 0 {
 		exceptions.Panicf("QuantizeLinear: support for attribute 'block_size' is not yet implemented")
 	}
@@ -2798,7 +2944,7 @@ func convertQuantizeLinear(nodeProto *protos.NodeProto, inputs []*Node) *Node {
 		outputDType = yZeroPoint.DType()
 	} else {
 		// Default to int8 if no zero point provided
-		outputDType = getDTypeAttrOr(nodeProto, "output_dtype", dtypes.Int8)
+		outputDType = GetDTypeAttrOr(nodeProto, "output_dtype", dtypes.Int8)
 	}
 
 	return onnxQuantizeLinear(x, yScale, yZeroPoint, targetAxis, outputDType)
@@ -3050,18 +3196,12 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 	bInt32 := ConvertDType(b, dtypes.Int32)
 
 	// Subtract zero points if provided
-	if aZeroPoint != nil && !aZeroPoint.IsScalar() || (aZeroPoint != nil && aZeroPoint.Shape().Size() > 0) {
-		aZeroPointInt32 := ConvertDType(aZeroPoint, dtypes.Int32)
-		aInt32 = Sub(aInt32, aZeroPointInt32)
-	} else if aZeroPoint != nil {
+	if aZeroPoint != nil {
 		aZeroPointInt32 := ConvertDType(aZeroPoint, dtypes.Int32)
 		aInt32 = Sub(aInt32, aZeroPointInt32)
 	}
 
-	if bZeroPoint != nil && !bZeroPoint.IsScalar() || (bZeroPoint != nil && bZeroPoint.Shape().Size() > 0) {
-		bZeroPointInt32 := ConvertDType(bZeroPoint, dtypes.Int32)
-		bInt32 = Sub(bInt32, bZeroPointInt32)
-	} else if bZeroPoint != nil {
+	if bZeroPoint != nil {
 		bZeroPointInt32 := ConvertDType(bZeroPoint, dtypes.Int32)
 		bInt32 = Sub(bInt32, bZeroPointInt32)
 	}
@@ -3081,10 +3221,13 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 	scaledResult := Mul(matmulFloat, combinedScale)
 
 	// Add output zero point and convert back to quantized type
-	outputDType := yZeroPoint.DType()
+	var outputDType dtypes.DType
 	if yZeroPoint != nil {
+		outputDType = yZeroPoint.DType()
 		yZeroPointFloat := ConvertDType(yZeroPoint, scaleDType)
 		scaledResult = Add(scaledResult, yZeroPointFloat)
+	} else {
+		outputDType = a.DType()
 	}
 
 	// Round and clip to valid quantized range
@@ -3123,16 +3266,9 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 //
 // The If operator evaluates a boolean condition and executes one of two sub-graphs.
 //
-// IMPORTANT PERFORMANCE NOTE: Unlike traditional conditional execution where only one branch
-// is evaluated, this implementation evaluates BOTH the then_branch and else_branch sub-graphs
-// and uses the Where operator to select the appropriate result. This is because GoMLX doesn't
-// yet support control flow operators (though XLA's StableHLO+PJRT do support them). While this
-// ensures correctness, it means both branches will be computed regardless of the condition value,
-// which may impact performance for expensive branch operations.
-//
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__If.html
-func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func convertIf(ctx *context.Context, m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	if len(inputs) != 1 {
 		exceptions.Panicf("If: expected exactly 1 input (condition), got %d", len(inputs))
 	}
@@ -3151,8 +3287,8 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 	}
 
 	// Get the then_branch and else_branch sub-graphs from attributes
-	thenBranchAttr := getNodeAttr(node, "then_branch", true)
-	elseBranchAttr := getNodeAttr(node, "else_branch", true)
+	thenBranchAttr := GetNodeAttr(node, "then_branch", true)
+	elseBranchAttr := GetNodeAttr(node, "else_branch", true)
 
 	if thenBranchAttr.Type != protos.AttributeProto_GRAPH {
 		exceptions.Panicf("If: then_branch must be a GRAPH attribute, got %s", thenBranchAttr.Type)
@@ -3168,52 +3304,86 @@ func convertIf(m *Model, convertedOutputs map[string]*Node, node *protos.NodePro
 		exceptions.Panicf("If: then_branch or else_branch graph is nil")
 	}
 
-	// Execute both branches
-	// Note: In a true conditional, only one branch would execute. Here we execute both
-	// and use Where to select. This is necessary because GoMLX doesn't yet support control flow.
 	g := cond.Graph()
 
-	// Convert then_branch sub-graph
-	// Note: convertSubGraph will update convertedOutputs with any main model nodes it converts
-	thenResults := m.convertSubGraph(g, thenGraph, convertedOutputs)
-
-	// Convert else_branch sub-graph (will see nodes converted by then_branch via convertedOutputs)
-	elseResults := m.convertSubGraph(g, elseGraph, convertedOutputs)
-
-	// Both branches must produce the same number of outputs
-	if len(thenResults) != len(elseResults) {
-		exceptions.Panicf("If: then_branch produced %d outputs but else_branch produced %d outputs",
-			len(thenResults), len(elseResults))
+	// Try to resolve the condition statically. This avoids building both branches
+	// when only one is valid (e.g. first decoder step with 0-dim KV cache).
+	if condValue := tryMaterializeBool(m, node.Input[0], convertedOutputs, cond); condValue != nil {
+		var branchGraph *protos.GraphProto
+		if *condValue {
+			branchGraph = thenGraph
+		} else {
+			branchGraph = elseGraph
+		}
+		results := m.convertSubGraph(ctx, g, branchGraph, convertedOutputs)
+		for i, result := range results {
+			if i < len(node.Output) && node.Output[i] != "" {
+				convertedOutputs[node.Output[i]] = result
+			}
+		}
+		if len(results) > 0 {
+			return results[0]
+		}
+		return nil
 	}
 
-	// Use Where to select between then and else results based on condition
-	// For multiple outputs, we handle the first one here and store the rest
-	results := make([]*Node, len(thenResults))
-	for i := range thenResults {
-		thenOut := thenResults[i]
-		elseOut := elseResults[i]
+	// Use GoMLX's native If with closures for true conditional execution.
+	// Each branch is built inside a closure so only the taken branch executes at runtime,
+	// avoiding issues with structurally invalid dead branches (e.g. 0-dim tensors).
+	//
+	// NewClosure immediately traces the closure body during graph construction, so both
+	// branches are built. Each gets a snapshot of convertedOutputs to prevent the true
+	// branch's convertSubGraph from polluting the false branch's name resolution.
+	trueBranch := NewClosure(g, func(branchG *Graph) []*Node {
+		return m.convertSubGraph(ctx, branchG, thenGraph, maps.Clone(convertedOutputs))
+	})
+	falseBranch := NewClosure(g, func(branchG *Graph) []*Node {
+		return m.convertSubGraph(ctx, branchG, elseGraph, maps.Clone(convertedOutputs))
+	})
 
-		// Apply ONNX broadcasting rules to ensure compatible shapes
-		broadcasted := onnxBroadcastToCommonShape([]*Node{cond, thenOut, elseOut})
-		condBroadcast := broadcasted[0]
-		thenOut = broadcasted[1]
-		elseOut = broadcasted[2]
+	results := If(cond, trueBranch, falseBranch)
 
-		results[i] = Where(condBroadcast, thenOut, elseOut)
-	}
-
-	// Store additional outputs in convertedOutputs
 	for i, result := range results {
 		if i < len(node.Output) && node.Output[i] != "" {
 			convertedOutputs[node.Output[i]] = result
 		}
 	}
 
-	// Return the first output (convention for ops)
 	if len(results) > 0 {
 		return results[0]
 	}
 	return nil
+}
+
+// tryMaterializeBool attempts to resolve a boolean condition to a compile-time constant.
+// Returns nil if the condition cannot be statically determined.
+// The []bool type assertions below are safe because they are guarded by DType() == dtypes.Bool checks.
+func tryMaterializeBool(m *Model, inputName string, convertedOutputs map[string]*Node, condNode *Node) *bool {
+	// First check if the GoMLX node is already a constant.
+	if condNode.Type() == NodeTypeConstant {
+		v := condNode.ConstantValue()
+		if v.DType() == dtypes.Bool {
+			var result bool
+			v.ConstFlatData(func(flat any) {
+				result = flat.([]bool)[0]
+			})
+			return &result
+		}
+	}
+
+	// Try materializing via the ONNX constant expression path.
+	t, err := m.materializeConstantExpression(inputName, convertedOutputs)
+	if err != nil {
+		return nil
+	}
+	if t.DType() != dtypes.Bool || t.Size() != 1 {
+		return nil
+	}
+	var result bool
+	t.ConstFlatData(func(flat any) {
+		result = flat.([]bool)[0]
+	})
+	return &result
 }
 
 // convertTopK converts an ONNX TopK node to GoMLX.
@@ -3239,17 +3409,17 @@ func convertTopK(m *Model, convertedOutputs map[string]*Node, node *protos.NodeP
 	// Get K value - it's a scalar that needs to be materialized
 	kTensor, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 	if err != nil {
-		exceptions.Panicf("TopK: failed to materialize K for node %s: %v", nodeToString(node), err)
+		exceptions.Panicf("TopK: failed to materialize K for node %s: %v", NodeToString(node), err)
 	}
 	kValues := tensorToInts(kTensor)
 	if len(kValues) != 1 {
-		exceptions.Panicf("TopK: K must be a scalar, got %d values for node %s", len(kValues), nodeToString(node))
+		exceptions.Panicf("TopK: K must be a scalar, got %d values for node %s", len(kValues), NodeToString(node))
 	}
 	k := kValues[0]
 
 	// Get attributes
-	axis := getIntAttrOr(node, "axis", -1)
-	largest := getIntAttrOr(node, "largest", 1) == 1
+	axis := GetIntAttrOr(node, "axis", -1)
+	largest := GetIntAttrOr(node, "largest", 1) == 1
 	// Note: sorted attribute is ignored since GoMLX always returns sorted results,
 	// which is valid since ONNX says "order is undefined" when sorted=0
 
@@ -3296,8 +3466,8 @@ func convertArgMax(node *protos.NodeProto, inputs []*Node) *Node {
 	x := inputs[0]
 
 	// Get attributes
-	axis := getIntAttrOr(node, "axis", 0)
-	keepDims := getIntAttrOr(node, "keepdims", 1) == 1
+	axis := GetIntAttrOr(node, "axis", 0)
+	keepDims := GetIntAttrOr(node, "keepdims", 1) == 1
 	// Note: select_last_index is not supported; we always return first occurrence
 	// This matches the default ONNX behavior
 
@@ -3329,8 +3499,8 @@ func convertArgMin(node *protos.NodeProto, inputs []*Node) *Node {
 	x := inputs[0]
 
 	// Get attributes
-	axis := getIntAttrOr(node, "axis", 0)
-	keepDims := getIntAttrOr(node, "keepdims", 1) == 1
+	axis := GetIntAttrOr(node, "axis", 0)
+	keepDims := GetIntAttrOr(node, "keepdims", 1) == 1
 	// Note: select_last_index is not supported; we always return first occurrence
 
 	// Use BottomK with k=1 to get the index of the minimum element
@@ -3362,8 +3532,8 @@ func convertResize(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 	x := inputs[0]
 	inputDims := x.Shape().Dimensions
 
-	mode := getStringAttrOr(node, "mode", "nearest")
-	coordTransformMode := getStringAttrOr(node, "coordinate_transformation_mode", "half_pixel")
+	mode := GetStringAttrOr(node, "mode", "nearest")
+	coordTransformMode := GetStringAttrOr(node, "coordinate_transformation_mode", "half_pixel")
 
 	// Resolve target output sizes from either the "sizes" or "scales" input.
 	outputSizes := resizeOutputSizes(m, convertedOutputs, node, inputDims)
@@ -3398,7 +3568,7 @@ func convertResize(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 		// GoMLX doesn't support cubic; bilinear is the closest available.
 		config.Bilinear()
 	default:
-		exceptions.Panicf("Resize: unsupported mode %q in %s", mode, nodeToString(node))
+		exceptions.Panicf("Resize: unsupported mode %q in %s", mode, NodeToString(node))
 	}
 
 	switch coordTransformMode {
@@ -3410,7 +3580,7 @@ func convertResize(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 		config.HalfPixelCenters(false)
 	case "tf_crop_and_resize":
 		exceptions.Panicf("Resize: coordinate_transformation_mode %q is not supported in %s",
-			coordTransformMode, nodeToString(node))
+			coordTransformMode, NodeToString(node))
 	default:
 		config.HalfPixelCenters(false)
 	}
@@ -3427,13 +3597,13 @@ func resizeOutputSizes(m *Model, convertedOutputs map[string]*Node, node *protos
 	if len(node.Input) > 3 && node.Input[3] != "" {
 		sizesT, err := m.materializeConstantExpression(node.Input[3], convertedOutputs)
 		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'sizes' for node %s", nodeToString(node)))
+			panic(errors.WithMessagef(err, "while converting 'sizes' for node %s", NodeToString(node)))
 		}
 		if sizesT.Size() > 0 {
 			sizes := tensorToInts(sizesT)
 			if len(sizes) != rank {
 				exceptions.Panicf("Resize: sizes length (%d) != input rank (%d) in %s",
-					len(sizes), rank, nodeToString(node))
+					len(sizes), rank, NodeToString(node))
 			}
 			return sizes
 		}
@@ -3443,13 +3613,13 @@ func resizeOutputSizes(m *Model, convertedOutputs map[string]*Node, node *protos
 	if len(node.Input) > 2 && node.Input[2] != "" {
 		scalesT, err := m.materializeConstantExpression(node.Input[2], convertedOutputs)
 		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'scales' for node %s", nodeToString(node)))
+			panic(errors.WithMessagef(err, "while converting 'scales' for node %s", NodeToString(node)))
 		}
 		if scalesT.Size() > 0 {
 			scales := tensorToFloat64s(scalesT)
 			if len(scales) != rank {
 				exceptions.Panicf("Resize: scales length (%d) != input rank (%d) in %s",
-					len(scales), rank, nodeToString(node))
+					len(scales), rank, NodeToString(node))
 			}
 			out := make([]int, rank)
 			for i, s := range scales {
