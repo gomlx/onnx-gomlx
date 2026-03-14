@@ -41,7 +41,7 @@ type Model struct {
 	// backend used for ONNX-conversion time tensor processing.
 	backend backends.Backend
 
-	// allowDTypePromotion enables automatic dtype promotion for mixed-precision models.
+	// allowDTypePromotion enables automatic dtype promotion for ops where the operands have different dtypes.
 	// By default (false), dtype mismatches will panic per ONNX spec.
 	allowDTypePromotion bool
 
