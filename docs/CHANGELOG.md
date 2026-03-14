@@ -1,4 +1,4 @@
-# Next
+# v0.3.6: More ops and fused ops; Added support for model [Florence-2](https://huggingface.co/microsoft/Florence-2-large); `onnx` package refactored.
 
 - Package `onnx`: split implementation into `internal/onnxgomlx/...`, `onnx` is now just a public API.
 - `Mod` operator: Supports both fmod=1 (C-style, sign follows dividend) and fmod=0 (Python-style, sign follows divisor) with broadcasting and dtype promotion
@@ -7,6 +7,7 @@
 - `isVariableConstant` loosening: Float variables with "const" in the name are now accepted as materializable constants (needed when Concat dtype promotion casts Float32 constants to Int64).
 - Sub-graph name shadowing fix: convertSubGraph now saves and restores parent entries in nodeOutputToNode / variableNameToValue instead of unconditionally deleting them on cleanup.
 - `convertIf()` rework: Uses GoMLX's native If with closures instead of the Where-based approach.
+- Added support for [Florence2 model](https://huggingface.co/microsoft/Florence-2-large); 
 - Updated GoMLX dependency to v0.27.0.
 
 # v0.3.5: New ops for various models support (Gemma, Snowflake,CLAP, etc); Many fixes and improvements.

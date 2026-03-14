@@ -1,5 +1,7 @@
 // Package onnx provides the public interface for ONNX models in GoMLX.
 //
+// The a parsed ONNX Model can be used to on-the-fly generate a GoMLX model.
+//
 // Use onnx/parser to parse ONNX models from either the proto contents, or reading from a file.
 package onnx
 
@@ -15,8 +17,12 @@ import (
 const DynamicDim = -1
 
 // Model interface represents a parsed ONNX file.
+//
 // It can be used to generate the corresponding GoMLX model graph and executed for inference or used on a training loop for fine-tuning.
 // It can also be used to populate a context with the variables of the ONNX model.
+//
+// See examples of usage in internal/benchmarks: there are a couple of small LLM models and the InceptionV3 ONNX models imported to
+// GoMLX there.
 type Model interface {
 	// Name of the model graph.
 	Name() string
