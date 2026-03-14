@@ -1,5 +1,6 @@
 # Next
 
+- Package `onnx`: split implementation into `internal/onnxgomlx/...`, `onnx` is now just a public API.
 - `Mod` operator: Supports both fmod=1 (C-style, sign follows dividend) and fmod=0 (Python-style, sign follows divisor) with broadcasting and dtype promotion
 - `onnxImplicitFloatPromotion` for float-only ops (Sqrt, Exp, etc.).
 - `Concat` dtype alignment: When dtype promotion is enabled, all Concat operands are cast to the first operand's dtype, preserving Int64 for shape/index tensors.
