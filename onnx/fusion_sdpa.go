@@ -142,7 +142,7 @@ func (m *Model) sdpaTryMatch(matmul1 *protos.NodeProto) *sdpaCandidate {
 	case "Mul":
 		// Could be post-scaled: MatMul → Mul(·, scalar)
 		// Check if this Mul has a constant scalar input (post-scale).
-		postScale := m.sdpaExtractScaleFromMul(scaleConsumer)
+		postScale := m.extractScaleFromMul(scaleConsumer)
 		if postScale != 0 {
 			scale = postScale
 			scaleNode = scaleConsumer
@@ -495,12 +495,16 @@ func (m *Model) sdpaExtractScaleFromDiv(node *protos.NodeProto) float64 {
 	return 1.0 / divisor
 }
 
-// sdpaExtractScaleFromMul extracts the scale factor from a Mul node: result = x * scale.
-func (m *Model) sdpaExtractScaleFromMul(node *protos.NodeProto) float64 {
+// extractScaleFromMul extracts the scale factor from a Mul node: result = x * scale.
+// The scalar constant may appear as either input.
+func (m *Model) extractScaleFromMul(node *protos.NodeProto) float64 {
 	if len(node.Input) < 2 {
 		return 0
 	}
-	return m.tryGetConstantScalar(node.Input[1])
+	if s := m.tryGetConstantScalar(node.Input[1]); s != 0 {
+		return s
+	}
+	return m.tryGetConstantScalar(node.Input[0])
 }
 
 // tryGetConstantScalar attempts to read a scalar float64 from a constant/initializer.
