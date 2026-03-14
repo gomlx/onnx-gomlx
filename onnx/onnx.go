@@ -35,6 +35,7 @@ type Model interface {
 	// NumInputs returns the number of inputs this graph takes.
 	NumInputs() int
 
+
 	// WithInputsAsConstants marks inputs to be considered as constants and not vary for different examples in training or inference.
 	WithInputsAsConstants(inputsAsConstants map[string]any)
 

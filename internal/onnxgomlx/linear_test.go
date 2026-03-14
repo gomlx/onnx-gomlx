@@ -9,6 +9,7 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/stretchr/testify/require"
 
 	_ "github.com/gomlx/gomlx/backends/default"
@@ -37,14 +38,14 @@ func TestEndToEnd(t *testing.T) {
 		require.NoError(t, err)
 		fmt.Printf("\tVariable %q: %s\n", v.ScopeAndName(), value)
 	}
-	vA := ctx.In(ModelScope).GetVariable("A")
+	vA := ctx.In(onnx.ModelScope).GetVariable("A")
 	require.NotNil(t, vA)
 	require.Equal(t, 1, vA.Shape().Rank())
 	require.Equal(t, 5, vA.Shape().Dim(0))
 	vAValue, err := vA.Value()
 	require.NoError(t, err)
 	require.Equal(t, []float32{100, 10, 1, 0.1, 0.01}, tensors.MustCopyFlatData[float32](vAValue))
-	vB := ctx.In(ModelScope).GetVariable("B")
+	vB := ctx.In(onnx.ModelScope).GetVariable("B")
 	require.NotNil(t, vB)
 	require.Equal(t, 0, vB.Shape().Rank())
 	vBValue, err := vB.Value()
@@ -56,7 +57,7 @@ func TestEndToEnd(t *testing.T) {
 	y := context.MustExecOnce(backend, ctx, func(ctx *context.Context, x *Node) *Node {
 		g := x.Graph()
 		outputs := model.CallGraph(ctx, g, map[string]*Node{"X": x})
-		vB = ctx.In(ModelScope).GetVariable("B")
+		vB = ctx.In(onnx.ModelScope).GetVariable("B")
 		vB.SetValueGraph(OnePlus(vB.ValueGraph(g)))
 		return outputs[0]
 	}, [][]float32{{1, 2, 3, 4, 5}}) // BatchSize = 1

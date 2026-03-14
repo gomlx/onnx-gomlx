@@ -2,6 +2,7 @@ package onnxgomlx
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"slices"
@@ -103,6 +104,17 @@ func (m *Model) checkOrPromoteDTypes(lhs, rhs *Node) (*Node, *Node) {
 	return lhs, rhs
 }
 
+// onnxImplicitFloatPromotion for float-only ops (Sqrt, Exp, etc.).
+// ONNX Runtime does this silently.
+//
+// This is orthogonal to allowDTypPromotion which promotes dtypes of mixed multiple operands.
+func (m *Model) onnxImplicitFloatPromotion(n *Node) *Node {
+	if n.DType().IsFloat() || n.DType().IsComplex() {
+		return n
+	}
+	return ConvertDType(n, dtypes.Float32)
+}
+
 // convertBinaryOp applies ONNX broadcasting rule before calling the fn.
 //
 // It differs from GoMLX and XLA in that it automatically prepend 1-dimensional axes to
@@ -113,6 +125,35 @@ func (m *Model) convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
 	lhs, rhs = operands[0], operands[1]
 	lhs, rhs = m.checkOrPromoteDTypes(lhs, rhs)
 	return fn(lhs, rhs)
+}
+
+// convertMod converts an ONNX Mod node to GoMLX.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Mod.html
+//
+// The fmod attribute (default 0) controls the behavior:
+//   - fmod=1: C-style fmod — the result has the same sign as the dividend.
+//     This maps directly to GoMLX's Mod/Rem.
+//   - fmod=0: Python-style modulo — the result has the same sign as the divisor.
+func (m *Model) convertMod(node *protos.NodeProto, inputs []*Node) *Node {
+	fmod := getIntAttrOr(node, "fmod", 0)
+
+	operands := onnxImplicitExpansion([]*Node{inputs[0], inputs[1]})
+	lhs, rhs := operands[0], operands[1]
+	lhs, rhs = m.checkOrPromoteDTypes(lhs, rhs)
+
+	r := Mod(lhs, rhs)
+	if fmod == 1 {
+		return r
+	}
+
+	// fmod=0: adjust C-style remainder to Python-style modulo.
+	// r and rhs have different signs exactly when r*rhs < 0;
+	// this also correctly skips adjustment when r == 0.
+	zero := ScalarZero(r.Graph(), r.DType())
+	needsAdjust := LessThan(Mul(r, rhs), zero)
+	return Where(needsAdjust, Add(r, rhs), r)
 }
 
 // convertMatMul handles dtype promotion before matrix multiplication.
@@ -567,8 +608,20 @@ func onnxFlatten(operand *Node, splitAxis int) *Node {
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Concat.html
-func convertConcat(node *protos.NodeProto, inputs []*Node) *Node {
+func (m *Model) convertConcat(node *protos.NodeProto, inputs []*Node) *Node {
 	axis := mustGetIntAttr(node, "axis")
+	if m.allowDTypePromotion && len(inputs) > 0 {
+		// Cast all operands to match the first operand's dtype.
+		// Unlike binary ops, Concat should preserve the semantic type set by
+		// the first operand (e.g. Int64 for shapes/indices) rather than
+		// promoting to a wider float type.
+		target := inputs[0].DType()
+		for i, n := range inputs[1:] {
+			if n.DType() != target {
+				inputs[i+1] = ConvertDType(n, target)
+			}
+		}
+	}
 	return Concatenate(inputs, axis)
 }
 
@@ -737,9 +790,19 @@ func (m *Model) convertPow(convertedOutputs map[string]*Node, node *protos.NodeP
 	case 1:
 		return inputs[0]
 	case 0.5:
-		return Sqrt(inputs[0])
+		x := inputs[0]
+		result := Sqrt(m.onnxImplicitFloatPromotion(x))
+		if x.DType().IsInt() {
+			result = ConvertDType(result, x.DType())
+		}
+		return result
 	case -0.5:
-		return Reciprocal(Sqrt(inputs[0]))
+		x := inputs[0]
+		result := Reciprocal(Sqrt(m.onnxImplicitFloatPromotion(x)))
+		if x.DType().IsInt() {
+			result = ConvertDType(result, x.DType())
+		}
+		return result
 	case -1:
 		return Reciprocal(inputs[0])
 	case -2:
@@ -3115,13 +3178,6 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 //
 // The If operator evaluates a boolean condition and executes one of two sub-graphs.
 //
-// IMPORTANT PERFORMANCE NOTE: Unlike traditional conditional execution where only one branch
-// is evaluated, this implementation evaluates BOTH the then_branch and else_branch sub-graphs
-// and uses the Where operator to select the appropriate result. This is because GoMLX doesn't
-// yet support control flow operators (though XLA's StableHLO+PJRT do support them). While this
-// ensures correctness, it means both branches will be computed regardless of the condition value,
-// which may impact performance for expensive branch operations.
-//
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__If.html
 func convertIf(ctx *context.Context, m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
@@ -3160,47 +3216,86 @@ func convertIf(ctx *context.Context, m *Model, convertedOutputs map[string]*Node
 		exceptions.Panicf("If: then_branch or else_branch graph is nil")
 	}
 
-	// Execute both branches
-	// Note: In a true conditional, only one branch would execute. Here we execute both
-	// and use Where to select. This is necessary because GoMLX doesn't yet support control flow.
 	g := cond.Graph()
 
-	// Convert then_branch sub-graph
-	// Note: convertSubGraph will update convertedOutputs with any main model nodes it converts
-	thenResults := m.convertSubGraph(ctx, g, thenGraph, convertedOutputs)
-
-	// Convert else_branch sub-graph (will see nodes converted by then_branch via convertedOutputs)
-	elseResults := m.convertSubGraph(ctx, g, elseGraph, convertedOutputs)
-
-	// Both branches must produce the same number of outputs
-	if len(thenResults) != len(elseResults) {
-		exceptions.Panicf("If: then_branch produced %d outputs but else_branch produced %d outputs",
-			len(thenResults), len(elseResults))
+	// Try to resolve the condition statically. This avoids building both branches
+	// when only one is valid (e.g. first decoder step with 0-dim KV cache).
+	if condValue := tryMaterializeBool(m, node.Input[0], convertedOutputs, cond); condValue != nil {
+		var branchGraph *protos.GraphProto
+		if *condValue {
+			branchGraph = thenGraph
+		} else {
+			branchGraph = elseGraph
+		}
+		results := m.convertSubGraph(ctx, g, branchGraph, convertedOutputs)
+		for i, result := range results {
+			if i < len(node.Output) && node.Output[i] != "" {
+				convertedOutputs[node.Output[i]] = result
+			}
+		}
+		if len(results) > 0 {
+			return results[0]
+		}
+		return nil
 	}
 
-	// Use Where to select between then and else results based on condition
-	// For multiple outputs, we handle the first one here and store the rest
-	results := make([]*Node, len(thenResults))
-	for i := range thenResults {
-		thenOut := thenResults[i]
-		elseOut := elseResults[i]
+	// Use GoMLX's native If with closures for true conditional execution.
+	// Each branch is built inside a closure so only the taken branch executes at runtime,
+	// avoiding issues with structurally invalid dead branches (e.g. 0-dim tensors).
+	//
+	// NewClosure immediately traces the closure body during graph construction, so both
+	// branches are built. Each gets a snapshot of convertedOutputs to prevent the true
+	// branch's convertSubGraph from polluting the false branch's name resolution.
+	trueBranch := NewClosure(g, func(branchG *Graph) []*Node {
+		return m.convertSubGraph(ctx, branchG, thenGraph, maps.Clone(convertedOutputs))
+	})
+	falseBranch := NewClosure(g, func(branchG *Graph) []*Node {
+		return m.convertSubGraph(ctx, branchG, elseGraph, maps.Clone(convertedOutputs))
+	})
 
-		// Use onnxWhere which handles both ONNX broadcasting and dtype promotion
-		results[i] = m.onnxWhere([]*Node{cond, thenOut, elseOut})
-	}
-
-	// Store additional outputs in convertedOutputs
+	results := If(cond, trueBranch, falseBranch)
 	for i, result := range results {
 		if i < len(node.Output) && node.Output[i] != "" {
 			convertedOutputs[node.Output[i]] = result
 		}
 	}
 
-	// Return the first output (convention for ops)
-	if len(results) == 0 {
-		exceptions.Panicf("If node %q produced no outputs", node.Name)
+	if len(results) > 0 {
+		return results[0]
 	}
-	return results[0]
+	return nil
+}
+
+
+// tryMaterializeBool attempts to resolve a boolean condition to a compile-time constant.
+// Returns nil if the condition cannot be statically determined.
+// The []bool type assertions below are safe because they are guarded by DType() == dtypes.Bool checks.
+func tryMaterializeBool(m *Model, inputName string, convertedOutputs map[string]*Node, condNode *Node) *bool {
+	// First check if the GoMLX node is already a constant.
+	if condNode.Type() == NodeTypeConstant {
+		v := condNode.ConstantValue()
+		if v.DType() == dtypes.Bool {
+			var result bool
+			v.ConstFlatData(func(flat any) {
+				result = flat.([]bool)[0]
+			})
+			return &result
+		}
+	}
+
+	// Try materializing via the ONNX constant expression path.
+	t, err := m.materializeConstantExpression(inputName, convertedOutputs)
+	if err != nil {
+		return nil
+	}
+	if t.DType() != dtypes.Bool || t.Size() != 1 {
+		return nil
+	}
+	var result bool
+	t.ConstFlatData(func(flat any) {
+		result = flat.([]bool)[0]
+	})
+	return &result
 }
 
 // convertTopK converts an ONNX TopK node to GoMLX.

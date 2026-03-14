@@ -83,7 +83,18 @@ func (m *Model) isVariableConstant(varName string) bool {
 	if err != nil {
 		panic(errors.WithMessagef(err, "ONNX variable %q has an invalid shape", varName))
 	}
-	return shape.DType.IsInt() && shape.Size() <= sizeLimit
+	if shape.Size() > sizeLimit {
+		return false
+	}
+	// Variables with "constant" in the name are treated as constants regardless of
+	// dtype — they may be float values that get cast to int via ConvertDType (e.g.
+	// when Concat dtype promotion casts a Float32 constant to Int64 for a shape).
+	if strings.Contains(lowerName, "const") {
+		return true
+	}
+	// For variables without "constant" in the name, only accept integer types
+	// since they're more likely to represent shape/axis metadata.
+	return shape.DType.IsInt()
 }
 
 // materializeConstantExpression materializes a node to its constant expression.

@@ -291,15 +291,20 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 	// Temporarily add sub-graph nodes to the model's nodeOutputToNode map.
 	// This is needed for materializeConstantExpression to work with sub-graph nodes.
 	// Note: this temporary mutation is not concurrency-safe, but graph construction is single-threaded.
+	// Save original entries so we can restore them (sub-graph outputs may shadow parent names).
 	for outputName, node := range subGraphNodeOutputToNode {
-		// Save original before overwriting
 		if orig, exists := m.NodeOutputToNode[outputName]; exists {
 			savedNodes[outputName] = orig
 		}
 		m.NodeOutputToNode[outputName] = node
 	}
+	for initName := range subGraphInitializers {
+		if orig, exists := m.VariableNameToValue[initName]; exists {
+			savedVariables[initName] = orig
+		}
+	}
 
-	// Consolidated cleanup: restore original entries or remove temporary ones
+	// Consolidated cleanup: restore original entries or remove temporary ones.
 	defer func() {
 		for initName := range subGraphInitializers {
 			if orig, wasSaved := savedVariables[initName]; wasSaved {
@@ -316,6 +321,7 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 			}
 		}
 	}()
+
 
 	// Recursive helper to convert a node output within the sub-graph
 	var convertSubGraphOutput func(outputName string)
@@ -457,6 +463,8 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 		result = m.convertBinaryOp(Mul, inputs[0], inputs[1])
 	case "Div":
 		result = m.convertBinaryOp(Div, inputs[0], inputs[1])
+	case "Mod":
+		result = m.convertMod(node, inputs)
 	case "Pow":
 		result = m.convertPow(convertedOutputs, node, inputs)
 	case "And":
@@ -482,15 +490,15 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 	case "GreaterOrEqual":
 		result = m.convertBinaryOp(GreaterOrEqual, inputs[0], inputs[1])
 
-	// Unary operators
+	// Unary operators (float/complex required)
 	case "Sqrt":
-		result = Sqrt(inputs[0])
+		result = Sqrt(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Exp":
-		result = Exp(inputs[0])
+		result = Exp(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Log":
-		result = Log(inputs[0])
+		result = Log(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Erf":
-		result = Erf(inputs[0])
+		result = Erf(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Relu":
 		result = activations.Relu(inputs[0])
 	case "Gelu":
@@ -504,9 +512,17 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 	case "Sign":
 		result = Sign(inputs[0])
 	case "Ceil":
-		result = Ceil(inputs[0])
+		if inputs[0].DType().IsInt() {
+			result = Identity(inputs[0])
+		} else {
+			result = Ceil(inputs[0])
+		}
 	case "Floor":
-		result = Floor(inputs[0])
+		if inputs[0].DType().IsInt() {
+			result = Identity(inputs[0])
+		} else {
+			result = Floor(inputs[0])
+		}
 	case "Identity":
 		result = Identity(inputs[0])
 	case "Not":
@@ -514,17 +530,19 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 	case "BitwiseNot":
 		result = BitwiseNot(inputs[0])
 	case "Tanh":
-		result = Tanh(inputs[0])
+		result = Tanh(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Sin":
-		result = Sin(inputs[0])
+		result = Sin(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Cos":
-		result = Cos(inputs[0])
+		result = Cos(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Sigmoid":
-		result = Sigmoid(inputs[0])
+		result = Sigmoid(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "HardSwish":
 		result = activations.HardSwish(inputs[0])
 	case "IsNaN":
 		result = IsNaN(inputs[0])
+	case "Reciprocal":
+		result = Inverse(m.onnxImplicitFloatPromotion(inputs[0]))
 
 	// Ops with equivalents:
 	case "MatMul":
@@ -556,7 +574,7 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 	case "Size":
 		result = convertSize(inputs)
 	case "Concat":
-		result = convertConcat(node, inputs)
+		result = m.convertConcat(node, inputs)
 	case "Softmax":
 		result = convertSoftmax(node, inputs)
 	case "Cast":
