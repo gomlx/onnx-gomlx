@@ -1,6 +1,8 @@
-# v0.3.6: More ops and fused ops; Added support for model [Florence-2](https://huggingface.co/microsoft/Florence-2-large); `onnx` package refactored.
+# v0.4.0: More ops and fused ops; Added support for model [Florence-2](https://huggingface.co/microsoft/Florence-2-large); `onnx` package refactored.
 
 - Package `onnx`: split implementation into `internal/onnxgomlx/...`, `onnx` is now just a public API.
+  - **API change**: it's a small change but `onnx.Model` is now an interface (it was a pointer to an object)
+    and the constructors reside in `onnx/parser`.
 - `Mod` operator: Supports both fmod=1 (C-style, sign follows dividend) and fmod=0 (Python-style, sign follows divisor) with broadcasting and dtype promotion
 - `onnxImplicitFloatPromotion` for float-only ops (Sqrt, Exp, etc.).
 - `Concat` dtype alignment: When dtype promotion is enabled, all Concat operands are cast to the first operand's dtype, preserving Int64 for shape/index tensors.
