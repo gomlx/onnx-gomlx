@@ -36,6 +36,7 @@ type Model interface {
 	NumInputs() int
 
 
+
 	// WithInputsAsConstants marks inputs to be considered as constants and not vary for different examples in training or inference.
 	WithInputsAsConstants(inputsAsConstants map[string]any)
 

@@ -3254,6 +3254,7 @@ func convertIf(ctx *context.Context, m *Model, convertedOutputs map[string]*Node
 	})
 
 	results := If(cond, trueBranch, falseBranch)
+
 	for i, result := range results {
 		if i < len(node.Output) && node.Output[i] != "" {
 			convertedOutputs[node.Output[i]] = result
@@ -3265,7 +3266,6 @@ func convertIf(ctx *context.Context, m *Model, convertedOutputs map[string]*Node
 	}
 	return nil
 }
-
 
 // tryMaterializeBool attempts to resolve a boolean condition to a compile-time constant.
 // Returns nil if the condition cannot be statically determined.
