@@ -485,13 +485,13 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 
 	// Unary operators (float/complex required)
 	case "Sqrt":
-		result = Sqrt(m.ensureFloat(inputs[0]))
+		result = Sqrt(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Exp":
-		result = Exp(m.ensureFloat(inputs[0]))
+		result = Exp(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Log":
-		result = Log(m.ensureFloat(inputs[0]))
+		result = Log(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Erf":
-		result = Erf(m.ensureFloat(inputs[0]))
+		result = Erf(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Relu":
 		result = activations.Relu(inputs[0])
 	case "Gelu":
@@ -523,19 +523,19 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 	case "BitwiseNot":
 		result = BitwiseNot(inputs[0])
 	case "Tanh":
-		result = Tanh(m.ensureFloat(inputs[0]))
+		result = Tanh(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Sin":
-		result = Sin(m.ensureFloat(inputs[0]))
+		result = Sin(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Cos":
-		result = Cos(m.ensureFloat(inputs[0]))
+		result = Cos(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Sigmoid":
-		result = Sigmoid(m.ensureFloat(inputs[0]))
+		result = Sigmoid(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "HardSwish":
 		result = activations.HardSwish(inputs[0])
 	case "IsNaN":
 		result = IsNaN(inputs[0])
 	case "Reciprocal":
-		result = Inverse(m.ensureFloat(inputs[0]))
+		result = Inverse(m.onnxImplicitFloatPromotion(inputs[0]))
 
 	// Ops with equivalents:
 	case "MatMul":
