@@ -1,4 +1,4 @@
-package onnx
+package onnxgomlx
 
 import (
 	"encoding/binary"
@@ -203,7 +203,6 @@ func parseExternalData(proto *protos.TensorProto) (*externalDataInfo, error) {
 
 	return info, nil
 }
-
 
 // tensorToGoMLXWithBaseDir converts a protos.TensorProto object to a tensors.Tensor object,
 // handling errors and different data types including external data.
@@ -497,10 +496,10 @@ func tensorProtoRawBytes(tp *protos.TensorProto) ([]byte, error) {
 	return nil, errors.Errorf("tensor %q has no supported data format for raw byte extraction", tp.Name)
 }
 
-// concatenateTensorProtos concatenates TensorProto data along the given axis.
+// ConcatenateTensorProtos concatenates TensorProto data along the given axis.
 // All tensors must have the same data type and matching dimensions on all axes
 // except the concatenation axis. Returns a new TensorProto with RawData format.
-func concatenateTensorProtos(tps []*protos.TensorProto, axis int) (*protos.TensorProto, error) {
+func ConcatenateTensorProtos(tps []*protos.TensorProto, axis int) (*protos.TensorProto, error) {
 	if len(tps) == 0 {
 		return nil, errors.New("no tensors to concatenate")
 	}

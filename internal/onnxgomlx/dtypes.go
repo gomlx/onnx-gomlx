@@ -1,5 +1,5 @@
 // Package togomlx contains several conversion utilities from ONNX and GoMLX.
-package onnx
+package onnxgomlx
 
 import (
 	"github.com/gomlx/gomlx/pkg/core/dtypes"

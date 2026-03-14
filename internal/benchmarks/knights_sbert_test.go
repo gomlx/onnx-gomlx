@@ -20,8 +20,9 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
-	"github.com/gomlx/onnx-gomlx/onnx"
+	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/go-benchmarks"
 	"github.com/janpfeifer/must"
 	"github.com/parquet-go/parquet-go"
@@ -188,7 +189,7 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 
 	// Build model
 	backend := graphtest.BuildTestBackend()
-	model := must.M1(onnx.ReadFile(onnxModelPath))
+	model := must.M1(parser.FromFile(onnxModelPath))
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()
@@ -395,7 +396,7 @@ func recursivelyTagNode(allNodes, usedNodes map[string]*protos.NodeProto, output
 // saveONNXModelWithOutput reads an ONNX model from fromPath, changes its output to
 // the node named newOutputNode, and then saves the modified model to toPath.
 func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBatchSize map[int]shapes.Shape) {
-	model := must.M1(onnx.ReadFile(fromPath))
+	model := must.M1(onnxgomlx.ReadFile(fromPath))
 
 	// Find the output shape for each batchSize.
 	shapePerBatchSize = make(map[int]shapes.Shape, len(BatchSizes))

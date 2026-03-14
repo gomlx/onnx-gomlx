@@ -1,4 +1,4 @@
-package onnx
+package onnxgomlx
 
 import (
 	"fmt"
@@ -23,7 +23,7 @@ func (m *Model) nonConstantDependencies(nodeOutputName string) (inputs, variable
 func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.Set[string],
 	nonConstInputs, variables []string, contextNodes []*protos.NodeProto) ([]string, []string, []*protos.NodeProto) {
 	visitedNodes.Insert(name)
-	if _, found := m.variableNameToValue[name]; found {
+	if _, found := m.VariableNameToValue[name]; found {
 		// Record a variable dependency.
 		if m.isVariableConstant(name) {
 			// Constant variable, ok.
@@ -32,16 +32,16 @@ func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.
 		variables = append(variables, name)
 		return nonConstInputs, variables, contextNodes
 	}
-	if m.inputsNameSet.Has(name) {
+	if m.InputsNameSet.Has(name) {
 		// Input dependency is recorded as non-constant only if the input is not fed as a constant.
-		if m.inputsAsConstants == nil || m.inputsAsConstants[name] == nil {
+		if m.InputsAsConstants == nil || m.InputsAsConstants[name] == nil {
 			nonConstInputs = append(nonConstInputs, name)
 		}
 		return nonConstInputs, variables, contextNodes
 	}
 
 	// Recurse into the inputs of the node that generated the `name` output.
-	node := m.nodeOutputToNode[name]
+	node := m.NodeOutputToNode[name]
 	if node == nil {
 		exceptions.Panicf("nonConstantDepedencies given an unknown node output name %q", name)
 		return nil, nil, nil
@@ -78,7 +78,7 @@ func (m *Model) isVariableConstant(varName string) bool {
 		// With less confidence...
 		sizeLimit = 1_000
 	}
-	tensorProto := m.variableNameToValue[varName]
+	tensorProto := m.VariableNameToValue[varName]
 	shape, err := Shape(tensorProto)
 	if err != nil {
 		panic(errors.WithMessagef(err, "ONNX variable %q has an invalid shape", varName))
@@ -120,7 +120,7 @@ func (m *Model) materializeConstantExpression(nodeOutputName string, convertedOu
 		varDesc := make([]string, 0, len(nonConstVariables))
 		for _, varName := range nonConstVariables {
 			// We discard the error because we know this conversion works already, to have reached this point.
-			shape, _ := Shape(m.variableNameToValue[varName])
+			shape, _ := Shape(m.VariableNameToValue[varName])
 			varDesc = append(varDesc, fmt.Sprintf("%q (%s)", varName, shape))
 		}
 		opsDesc := make([]string, 0, len(contextNodes))
@@ -167,11 +167,11 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 	}
 
 	// Check for constant variables.
-	if tensorNode, found := m.variableNameToValue[nodeOutputName]; found {
+	if tensorNode, found := m.VariableNameToValue[nodeOutputName]; found {
 		if !m.isVariableConstant(nodeOutputName) {
 			exceptions.Panicf("attempting to materialize as constant variable %q, which we don't think is constant", nodeOutputName)
 		}
-		t, err := tensorToGoMLXWithBaseDir(m.backend, tensorNode, m.baseDir(), m.getExternalDataReader())
+		t, err := tensorToGoMLXWithBaseDir(m.Backend, tensorNode, m.baseDir(), m.getExternalDataReader())
 		if err != nil {
 			panic(errors.WithMessagef(err, "attempting to materialize variable %q as constant", nodeOutputName))
 		}
@@ -182,7 +182,7 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 	}
 
 	// Find the node generating this output.
-	onnxNode, found := m.nodeOutputToNode[nodeOutputName]
+	onnxNode, found := m.NodeOutputToNode[nodeOutputName]
 	if !found {
 		exceptions.Panicf("ONNX node %q not found as the output of an Op, and not a constant either -- is this really a constant expression!?", nodeOutputName)
 	}

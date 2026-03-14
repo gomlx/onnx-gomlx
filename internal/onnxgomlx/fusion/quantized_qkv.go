@@ -1,11 +1,12 @@
-package onnx
+package fusion
 
 import (
 	"github.com/gomlx/gomlx/backends"
-	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
+	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/ml/nn"
+	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 )
 
 // QuantizedQKVDenseParams holds parameters for fused Q/K/V int8 projections sharing
@@ -14,9 +15,9 @@ import (
 type QuantizedQKVDenseParams struct {
 	FloatInputName string
 
-	WQName, WKName, WVName            string
+	WQName, WKName, WVName             string
 	ScaleQName, ScaleKName, ScaleVName string
-	BiasQName, BiasKName, BiasVName   string
+	BiasQName, BiasKName, BiasVName    string
 
 	QOutputName, KOutputName, VOutputName string
 
@@ -25,15 +26,15 @@ type QuantizedQKVDenseParams struct {
 	KVDim int // K and V output features (must be equal)
 }
 
-// quantizedQKVDenseCandidate implements FusionCandidate for fused quantized QKV projection.
+// quantizedQKVDenseCandidate implements onnxgomlx.FusionCandidate for fused quantized QKV projection.
 type quantizedQKVDenseCandidate struct {
 	params          *QuantizedQKVDenseParams
 	internalOutputs map[string]bool
 	externalInputs  []string
 }
 
-func (c *quantizedQKVDenseCandidate) Name() string       { return "QuantizedQKVDense" }
-func (c *quantizedQKVDenseCandidate) Score() float32      { return 70.0 }
+func (c *quantizedQKVDenseCandidate) Name() string   { return "QuantizedQKVDense" }
+func (c *quantizedQKVDenseCandidate) Score() float32 { return 70.0 }
 func (c *quantizedQKVDenseCandidate) OutputNames() []string {
 	return []string{c.params.QOutputName, c.params.KOutputName, c.params.VOutputName}
 }
@@ -88,21 +89,21 @@ func (c *quantizedQKVDenseCandidate) Emit(_ *context.Context, g *Graph, converte
 }
 
 func init() {
-	RegisterFusionDetector(detectQuantizedQKVDenseCandidates)
+	onnxgomlx.RegisterFusionDetector(detectQuantizedQKVDenseCandidates)
 }
 
 // detectQuantizedQKVDenseCandidates runs the individual quantized dense detector internally,
 // then merges triplets of QuantizedDense candidates sharing the same FloatInputName into
 // a single QuantizedQKVDense candidate. This reduces kernel launches (and SMEGuard transitions)
 // from 3 to 1 per attention layer.
-func detectQuantizedQKVDenseCandidates(m *Model) []FusionCandidate {
+func detectQuantizedQKVDenseCandidates(m *onnxgomlx.Model) []onnxgomlx.FusionCandidate {
 	// First, get all individual QuantizedDense candidates.
 	var qdCandidates []*quantizedDenseCandidate
 	for _, node := range m.Proto.Graph.Node {
 		if node.OpType != "MatMulInteger" || len(node.Input) < 2 || len(node.Output) == 0 {
 			continue
 		}
-		if cand := m.tryMatchQuantizedDense(node); cand != nil {
+		if cand := tryMatchQuantizedDense(m, node); cand != nil {
 			qdCandidates = append(qdCandidates, cand)
 		}
 	}
@@ -117,7 +118,7 @@ func detectQuantizedQKVDenseCandidates(m *Model) []FusionCandidate {
 		byInput[p.FloatInputName] = append(byInput[p.FloatInputName], cand)
 	}
 
-	var candidates []FusionCandidate
+	var candidates []onnxgomlx.FusionCandidate
 	for _, entries := range byInput {
 		if len(entries) != 3 {
 			continue

@@ -1,13 +1,14 @@
-package onnx
+package onnxgomlx
 
 import (
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/onnx-gomlx/onnx"
 )
 
 // ShapeForName returns the shapes.Shape for a named output, input, or initializer in the ONNX graph.
-// Dynamic dimensions are represented as -1.
+// Dynamic dimensions are represented as onnx.DynamicDim.
 // Returns a zero-value shapes.Shape (nil Dimensions, InvalidDType) if the name is not found or shape is unknown.
 func (m *Model) ShapeForName(name string) shapes.Shape {
 	graph := m.Proto.Graph
@@ -20,7 +21,7 @@ func (m *Model) ShapeForName(name string) shapes.Shape {
 		}
 	}
 	// Check initializers.
-	if tp, ok := m.variableNameToValue[name]; ok {
+	if tp, ok := m.VariableNameToValue[name]; ok {
 		dims := make([]int, len(tp.Dims))
 		for i, d := range tp.Dims {
 			dims[i] = int(d)
@@ -35,7 +36,7 @@ func (m *Model) ShapeForName(name string) shapes.Shape {
 }
 
 // ShapeFromValueInfo extracts a shapes.Shape from a ValueInfoProto.
-// Dynamic dimensions are returned as -1.
+// Dynamic dimensions are returned as onnx.DynamicDim.
 // Returns a zero-value shapes.Shape if the type is not a tensor or the shape is nil.
 func ShapeFromValueInfo(vi *protos.ValueInfoProto) shapes.Shape {
 	tt, ok := vi.Type.Value.(*protos.TypeProto_TensorType)
@@ -47,7 +48,7 @@ func ShapeFromValueInfo(vi *protos.ValueInfoProto) shapes.Shape {
 		if dv, ok := d.Value.(*protos.TensorShapeProto_Dimension_DimValue); ok {
 			dims[i] = int(dv.DimValue)
 		} else {
-			dims[i] = -1
+			dims[i] = onnx.DynamicDim
 		}
 	}
 	dt, err := dtypeForONNX(protos.TensorProto_DataType(tt.TensorType.ElemType))

@@ -1,4 +1,4 @@
-package onnx
+package onnxgomlx
 
 import (
 	"fmt"
@@ -1184,11 +1184,11 @@ func TestGroupQueryAttention(t *testing.T) {
 	// GQA with KV cache: past_key/past_value prepended.
 	graphtest.RunTestGraphFn(t, "GQA-kv-cache", func(g *Graph) (inputs, outputs []*Node) {
 		// batch=1, current seq=1, num_heads=1, kv_num_heads=1, head_size=2
-		q := Const(g, [][][]float32{{{0, 1}}})             // new query token
-		k := Const(g, [][][]float32{{{1, 1}}})             // new key token
-		v := Const(g, [][][]float32{{{0.5, 0.5}}})         // new value token
-		pastK := Const(g, [][][][]float32{{{{1, 0}}}})     // 1 cached key
-		pastV := Const(g, [][][][]float32{{{{1, 0}}}})     // 1 cached value
+		q := Const(g, [][][]float32{{{0, 1}}})         // new query token
+		k := Const(g, [][][]float32{{{1, 1}}})         // new key token
+		v := Const(g, [][][]float32{{{0.5, 0.5}}})     // new value token
+		pastK := Const(g, [][][][]float32{{{{1, 0}}}}) // 1 cached key
+		pastV := Const(g, [][][][]float32{{{{1, 0}}}}) // 1 cached value
 
 		node := &protos.NodeProto{
 			OpType: "GroupQueryAttention",
@@ -1372,8 +1372,8 @@ func TestIf(t *testing.T) {
 		}
 
 		model := &Model{
-			variableNameToValue: make(map[string]*protos.TensorProto),
-			nodeOutputToNode:    make(map[string]*protos.NodeProto),
+			VariableNameToValue: make(map[string]*protos.TensorProto),
+			NodeOutputToNode:    make(map[string]*protos.NodeProto),
 		}
 
 		convertedOutputs := make(map[string]*Node)
@@ -1442,8 +1442,8 @@ func TestIf(t *testing.T) {
 		}
 
 		model := &Model{
-			variableNameToValue: make(map[string]*protos.TensorProto),
-			nodeOutputToNode:    make(map[string]*protos.NodeProto),
+			VariableNameToValue: make(map[string]*protos.TensorProto),
+			NodeOutputToNode:    make(map[string]*protos.NodeProto),
 		}
 
 		convertedOutputs := make(map[string]*Node)
@@ -1542,8 +1542,8 @@ func TestIf(t *testing.T) {
 		}
 
 		model := &Model{
-			variableNameToValue: make(map[string]*protos.TensorProto),
-			nodeOutputToNode:    make(map[string]*protos.NodeProto),
+			VariableNameToValue: make(map[string]*protos.TensorProto),
+			NodeOutputToNode:    make(map[string]*protos.NodeProto),
 		}
 
 		convertedOutputs := make(map[string]*Node)
@@ -1630,8 +1630,8 @@ func TestIf(t *testing.T) {
 		}
 
 		model := &Model{
-			variableNameToValue: make(map[string]*protos.TensorProto),
-			nodeOutputToNode:    make(map[string]*protos.NodeProto),
+			VariableNameToValue: make(map[string]*protos.TensorProto),
+			NodeOutputToNode:    make(map[string]*protos.NodeProto),
 		}
 
 		convertedOutputs := make(map[string]*Node)
@@ -2107,8 +2107,8 @@ func TestConvertResize(t *testing.T) {
 		graphtest.RunTestGraphFn(t, name, func(g *Graph) (inputs, outputs []*Node) {
 			x, node, convertedOutputs := buildFn(g)
 			model := &Model{
-				variableNameToValue: make(map[string]*protos.TensorProto),
-				nodeOutputToNode:    make(map[string]*protos.NodeProto),
+				VariableNameToValue: make(map[string]*protos.TensorProto),
+				NodeOutputToNode:    make(map[string]*protos.NodeProto),
 			}
 			inputs = []*Node{x}
 			outputs = []*Node{convertResize(model, convertedOutputs, node, []*Node{x})}

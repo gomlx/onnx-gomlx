@@ -1,4 +1,4 @@
-package onnx
+package onnxgomlx
 
 import (
 	"io"

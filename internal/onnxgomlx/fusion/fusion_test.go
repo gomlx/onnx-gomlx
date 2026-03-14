@@ -1,4 +1,4 @@
-package onnx
+package fusion
 
 import (
 	"math"
@@ -7,6 +7,7 @@ import (
 	"github.com/gomlx/gomlx/backends/simplego"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -130,10 +131,10 @@ func runFusedVsUnfused(t *testing.T, graphProto *protos.GraphProto, inputs map[s
 	content, err := proto.Marshal(modelProto)
 	require.NoError(t, err)
 
-	mFused, err := Parse(content)
+	mFused, err := onnxgomlx.Parse(content)
 	require.NoError(t, err)
 
-	mUnfused, err := Parse(content)
+	mUnfused, err := onnxgomlx.Parse(content)
 	require.NoError(t, err)
 	mUnfused.DisableFusion()
 
@@ -180,8 +181,8 @@ func TestDetectSDPAPattern(t *testing.T) {
 	graph := makeSDPAGraph(nil)
 	m := buildTestModel(t, graph)
 
-	require.Len(t, m.detectedFusions, 1, "expected 1 fusion")
-	cand := m.detectedFusions["output"]
+	require.Len(t, m.DetectedFusions, 1, "expected 1 fusion")
+	cand := m.DetectedFusions["output"]
 	require.NotNil(t, cand, "expected fusion for 'output'")
 	assert.Equal(t, "SDPA", cand.Name())
 
@@ -203,8 +204,8 @@ func TestDetectSDPAPatternWithMask(t *testing.T) {
 	graph := makeSDPAGraph([]int64{4, 4})
 	m := buildTestModel(t, graph)
 
-	require.Len(t, m.detectedFusions, 1)
-	cand := m.detectedFusions["output"]
+	require.Len(t, m.DetectedFusions, 1)
+	cand := m.DetectedFusions["output"]
 	require.NotNil(t, cand)
 	assert.Equal(t, "SDPA", cand.Name())
 
@@ -218,8 +219,8 @@ func TestSDPAWithRank4Mask(t *testing.T) {
 	graph := makeSDPAGraph([]int64{1, 1, 4, 4})
 	m := buildTestModel(t, graph)
 
-	require.Len(t, m.detectedFusions, 1, "expected 1 fusion for rank-4 mask")
-	cand := m.detectedFusions["output"]
+	require.Len(t, m.DetectedFusions, 1, "expected 1 fusion for rank-4 mask")
+	cand := m.DetectedFusions["output"]
 	require.NotNil(t, cand)
 
 	sdpa, ok := cand.(*sdpaCandidate)
@@ -232,7 +233,7 @@ func TestSDPASkippedForRank5Mask(t *testing.T) {
 	graph := makeSDPAGraph([]int64{1, 1, 1, 4, 4})
 	m := buildTestModel(t, graph)
 
-	assert.Len(t, m.detectedFusions, 0, "expected no fusions for rank-5 mask")
+	assert.Len(t, m.DetectedFusions, 0, "expected no fusions for rank-5 mask")
 }
 
 // makePreScaledSDPAGraph builds a pre-scaled SDPA graph (Snowflake arctic-embed style):
@@ -300,8 +301,8 @@ func TestDetectPreScaledSDPAPattern(t *testing.T) {
 	graph := makePreScaledSDPAGraph()
 	m := buildTestModel(t, graph)
 
-	require.Len(t, m.detectedFusions, 1, "expected 1 fusion for pre-scaled SDPA")
-	cand := m.detectedFusions["output"]
+	require.Len(t, m.DetectedFusions, 1, "expected 1 fusion for pre-scaled SDPA")
+	cand := m.DetectedFusions["output"]
 	require.NotNil(t, cand)
 	assert.Equal(t, "SDPA", cand.Name())
 
@@ -343,11 +344,11 @@ func TestDetectQKVDensePattern(t *testing.T) {
 
 	m := buildTestModel(t, graph)
 
-	require.True(t, len(m.detectedFusions) >= 1, "expected at least 1 fusion")
+	require.True(t, len(m.DetectedFusions) >= 1, "expected at least 1 fusion")
 
-	candQ := m.detectedFusions["q_out"]
-	candK := m.detectedFusions["k_out"]
-	candV := m.detectedFusions["v_out"]
+	candQ := m.DetectedFusions["q_out"]
+	candK := m.DetectedFusions["k_out"]
+	candV := m.DetectedFusions["v_out"]
 	require.NotNil(t, candQ)
 	require.NotNil(t, candK)
 	require.NotNil(t, candV)
@@ -364,8 +365,8 @@ func TestDetectQKVDensePattern(t *testing.T) {
 	assert.Equal(t, 16, p.KVDim)
 
 	// Verify the fused weight was added to the model.
-	assert.Contains(t, m.variableNameToValue, "__fused_wQKV_x")
-	fusedW := m.variableNameToValue["__fused_wQKV_x"]
+	assert.Contains(t, m.VariableNameToValue, "__fused_wQKV_x")
+	fusedW := m.VariableNameToValue["__fused_wQKV_x"]
 	assert.Equal(t, []int64{64, 64}, fusedW.Dims) // 32 + 16 + 16 = 64
 }
 
@@ -405,7 +406,7 @@ func TestDetectQKVDenseWithBias(t *testing.T) {
 
 	m := buildTestModel(t, graph)
 
-	cand := m.detectedFusions["q_biased"]
+	cand := m.DetectedFusions["q_biased"]
 	require.NotNil(t, cand)
 	assert.Equal(t, "QKVDense", cand.Name())
 
@@ -425,10 +426,10 @@ func TestDetectQKVDenseWithBias(t *testing.T) {
 func TestDisableFusion(t *testing.T) {
 	graph := makeSDPAGraph(nil)
 	m := buildTestModel(t, graph)
-	require.NotEmpty(t, m.detectedFusions)
+	require.NotEmpty(t, m.DetectedFusions)
 
 	m.DisableFusion()
-	assert.Empty(t, m.detectedFusions)
+	assert.Empty(t, m.DetectedFusions)
 }
 
 // TestSDPAFusionIntegration runs the fused SDPA path and compares with unfused output.
@@ -560,7 +561,7 @@ func TestDetectDenseGeluPattern(t *testing.T) {
 
 	m := buildTestModel(t, graph)
 
-	cand := m.detectedFusions["gelu_out"]
+	cand := m.DetectedFusions["gelu_out"]
 	require.NotNil(t, cand, "expected fusion for 'gelu_out'")
 	assert.Equal(t, "DenseGelu", cand.Name())
 
@@ -596,7 +597,7 @@ func TestDetectDenseGeluNoBias(t *testing.T) {
 
 	m := buildTestModel(t, graph)
 
-	cand := m.detectedFusions["gelu_out"]
+	cand := m.DetectedFusions["gelu_out"]
 	require.NotNil(t, cand, "expected fusion for 'gelu_out'")
 	assert.Equal(t, "DenseGelu", cand.Name())
 
@@ -682,12 +683,12 @@ func TestFreeUnusedVariables(t *testing.T) {
 
 		m := buildTestModel(t, graph)
 		// Fusion should have detected QKV and created a fused weight.
-		require.Contains(t, m.variableNameToValue, "__fused_wQKV_x")
+		require.Contains(t, m.VariableNameToValue, "__fused_wQKV_x")
 
 		m.FreeUnusedVariables()
 
 		// Fused weight should be kept (referenced by fusion external inputs).
-		assert.Contains(t, m.variableNameToValue, "__fused_wQKV_x")
+		assert.Contains(t, m.VariableNameToValue, "__fused_wQKV_x")
 
 		// Original Wq/Wk/Wv are only referenced by the original MatMul node inputs,
 		// which are still in the graph. So they should be kept too (nodes still reference them).
@@ -696,7 +697,7 @@ func TestFreeUnusedVariables(t *testing.T) {
 		for _, init := range m.Proto.Graph.Initializer {
 			// Every remaining initializer should be referenced by something.
 			assert.True(t,
-				m.variableNameToValue[init.Name] != nil,
+				m.VariableNameToValue[init.Name] != nil,
 				"initializer %q should be in variableNameToValue", init.Name)
 		}
 	})
@@ -743,15 +744,15 @@ func TestFreeUnusedVariables(t *testing.T) {
 		}
 
 		m := buildTestModel(t, graph)
-		require.Contains(t, m.variableNameToValue, "unused")
+		require.Contains(t, m.VariableNameToValue, "unused")
 
 		m.FreeUnusedVariables()
 
-		assert.NotContains(t, m.variableNameToValue, "unused")
+		assert.NotContains(t, m.VariableNameToValue, "unused")
 		for _, init := range m.Proto.Graph.Initializer {
 			assert.NotEqual(t, "unused", init.Name)
 		}
-		assert.Contains(t, m.variableNameToValue, "W")
+		assert.Contains(t, m.VariableNameToValue, "W")
 	})
 }
 
@@ -801,8 +802,8 @@ func TestDetectMulScaledSDPAPattern(t *testing.T) {
 
 	m := buildTestModel(t, graph)
 
-	require.Len(t, m.detectedFusions, 1, "expected 1 fusion")
-	cand := m.detectedFusions["output"]
+	require.Len(t, m.DetectedFusions, 1, "expected 1 fusion")
+	cand := m.DetectedFusions["output"]
 	require.NotNil(t, cand)
 	assert.Equal(t, "SDPA", cand.Name())
 
@@ -815,13 +816,13 @@ func TestDetectMulScaledSDPAPattern(t *testing.T) {
 	assert.InDelta(t, float64(scaleVal), p.Scale, 1e-6)
 }
 
-// buildTestModel creates a Model from a GraphProto, wiring up all the maps that Parse() normally creates.
-func buildTestModel(t *testing.T, graph *protos.GraphProto) *Model {
+// buildTestModel creates a onnxgomlx.Model from a GraphProto, wiring up all the maps that onnxgomlx.Parse() normally creates.
+func buildTestModel(t *testing.T, graph *protos.GraphProto) *onnxgomlx.Model {
 	t.Helper()
 	modelProto := &protos.ModelProto{Graph: graph}
 	content, err := proto.Marshal(modelProto)
 	require.NoError(t, err)
-	m, err := Parse(content)
+	m, err := onnxgomlx.Parse(content)
 	require.NoError(t, err)
 	return m
 }
