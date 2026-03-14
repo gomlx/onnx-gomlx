@@ -1,6 +1,6 @@
 module github.com/gomlx/onnx-gomlx
 
-go 1.26
+go 1.25
 
 require (
 	github.com/chewxy/math32 v1.11.1
