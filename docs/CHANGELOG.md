@@ -1,3 +1,12 @@
+# Next
+
+- `Mod` operator: Supports both fmod=1 (C-style, sign follows dividend) and fmod=0 (Python-style, sign follows divisor) with broadcasting and dtype promotion
+- `onnxImplicitFloatPromotion` for float-only ops (Sqrt, Exp, etc.).
+- `Concat` dtype alignment: When dtype promotion is enabled, all Concat operands are cast to the first operand's dtype, preserving Int64 for shape/index tensors.
+- `isVariableConstant` loosening: Float variables with "const" in the name are now accepted as materializable constants (needed when Concat dtype promotion casts Float32 constants to Int64).
+- Sub-graph name shadowing fix: convertSubGraph now saves and restores parent entries in nodeOutputToNode / variableNameToValue instead of unconditionally deleting them on cleanup.
+- `convertIf()` rework: Uses GoMLX's native If with closures instead of the Where-based approach.
+
 # v0.3.5: New ops for various models support (Gemma, Snowflake,CLAP, etc); Many fixes and improvements.
 
 - Added quantized fusion patterns for dense layers, QKV projections, and scaled dot-product attention (SDPA). (by @ajroetker)
