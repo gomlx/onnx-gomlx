@@ -42,13 +42,16 @@ type Model interface {
 	NumInputs() int
 
 	// WithInputsAsConstants marks inputs to be considered as constants and not vary for different examples in training or inference.
-	WithInputsAsConstants(inputsAsConstants map[string]any)
+	WithInputsAsConstants(inputsAsConstants map[string]any) Model
 
 	// AllowDTypePromotion enables automatic dtype promotion for operations with mismatched types.
-	AllowDTypePromotion()
+	AllowDTypePromotion() Model
 
 	// PrioritizeFloat16 configures dtype promotion to prefer Float16 over Float32.
-	PrioritizeFloat16()
+	PrioritizeFloat16() Model
+
+	// WithBaseDir sets the base directory for the model. This is used for resolving external data file paths.
+	WithBaseDir(baseDir string) Model
 
 	// Write will write the ONNX model to the given writer (usually a file).
 	Write(w io.Writer) error
