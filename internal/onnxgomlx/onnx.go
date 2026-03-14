@@ -122,7 +122,7 @@ func Parse(contents []byte) (*Model, error) {
 		for _, outputName := range node.GetOutput() {
 			if otherNode, found := m.NodeOutputToNode[outputName]; found {
 				return nil, errors.Errorf("invalid graph: node output name %q used by 2 different nodes: (1) %s, (2) %s",
-					outputName, nodeToString(otherNode), nodeToString(node))
+					outputName, NodeToString(otherNode), NodeToString(node))
 			}
 			m.NodeOutputToNode[outputName] = node
 		}

@@ -1,9 +1,10 @@
-package onnxgomlx
+package fusion
 
 import (
 	"github.com/gomlx/gomlx/backends"
 	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
 	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 )
@@ -25,7 +26,7 @@ type QuantizedSDPAParams struct {
 	KIsTransposed bool
 }
 
-// quantizedSDPACandidate implements FusionCandidate for quantized SDPA.
+// quantizedSDPACandidate implements onnxgomlx.FusionCandidate for quantized SDPA.
 type quantizedSDPACandidate struct {
 	params          *QuantizedSDPAParams
 	outputName      string
@@ -71,7 +72,7 @@ func (c *quantizedSDPACandidate) Emit(_ *context.Context, g *Graph, convertedOut
 }
 
 func init() {
-	RegisterFusionDetector(detectQuantizedSDPACandidates)
+	onnxgomlx.RegisterFusionDetector(detectQuantizedSDPACandidates)
 }
 
 // detectQuantizedSDPACandidates scans the ONNX graph for the quantized attention chain:
@@ -79,14 +80,14 @@ func init() {
 //	DQL(Q) → MatMulInteger(Q_uint8, K_uint8^T) → Cast → Mul(qk_scale) → [Add(mask)] → Softmax
 //	→ DQL(attn) → MatMulInteger(attn_uint8, V_uint8) → Cast → Mul(av_scale) → output
 //
-// and returns FusionCandidates for each match.
-func detectQuantizedSDPACandidates(m *Model) []FusionCandidate {
-	var candidates []FusionCandidate
+// and returns onnxgomlx.FusionCandidates for each match.
+func detectQuantizedSDPACandidates(m *onnxgomlx.Model) []onnxgomlx.FusionCandidate {
+	var candidates []onnxgomlx.FusionCandidate
 	for _, node := range m.Proto.Graph.Node {
 		if node.OpType != "MatMulInteger" || len(node.Input) < 2 || len(node.Output) == 0 {
 			continue
 		}
-		if cand := m.tryMatchQuantizedSDPA(node); cand != nil {
+		if cand := tryMatchQuantizedSDPA(m, node); cand != nil {
 			candidates = append(candidates, cand)
 		}
 	}
@@ -95,7 +96,7 @@ func detectQuantizedSDPACandidates(m *Model) []FusionCandidate {
 
 // tryMatchQuantizedSDPA attempts to match a quantized SDPA chain starting from matmul1
 // (the candidate Q@K^T MatMulInteger).
-func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPACandidate {
+func tryMatchQuantizedSDPA(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *quantizedSDPACandidate {
 	consumers := m.Consumers
 	mm1Out := matmul1.Output[0]
 
@@ -130,7 +131,7 @@ func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPAC
 		if maskInputName == "" {
 			return nil
 		}
-		if !m.isMaskRankAcceptable(maskInputName) {
+		if !isMaskRankAcceptable(m, maskInputName) {
 			return nil
 		}
 		if len(addNode.Output) == 0 {
@@ -147,7 +148,7 @@ func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPAC
 	}
 
 	// Verify softmax axis is -1 (last axis).
-	softmaxAxis := getIntAttrOr(softmaxNode, "axis", -1)
+	softmaxAxis := onnxgomlx.GetIntAttrOr(softmaxNode, "axis", -1)
 	if softmaxAxis != -1 {
 		return nil
 	}
@@ -205,7 +206,7 @@ func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPAC
 	if qInputFound && qInputNode.OpType == "Mul" && len(qInputNode.Input) >= 2 {
 		for _, scalarIdx := range []int{0, 1} {
 			otherIdx := 1 - scalarIdx
-			scalar := m.tryGetConstantScalar(qInputNode.Input[scalarIdx])
+			scalar := tryGetConstantScalar(m, qInputNode.Input[scalarIdx])
 			if scalar != 0 {
 				qFloatName = qInputNode.Input[otherIdx]
 				attentionScale = scalar
@@ -221,7 +222,7 @@ func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPAC
 
 	// K: matmul1.Input[1] → possibly Transpose → DQL → K_float (BHSD layout)
 	kUint8Name := matmul1.Input[1]
-	kDqlNode, kFloatName, kTransposeNode, kNeedsHeadsFirst, kIsTransposed := m.traceQuantizedKBackward(kUint8Name)
+	kDqlNode, kFloatName, kTransposeNode, kNeedsHeadsFirst, kIsTransposed := traceQuantizedKBackward(m, kUint8Name)
 	if kDqlNode == nil {
 		return nil
 	}
@@ -291,16 +292,16 @@ func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPAC
 
 	// Extract numHeads/numKVHeads from shape info.
 	// First try standard ValueInfo shape extraction.
-	numHeads, numKVHeads := m.extractHeadCounts(qFloatName, kFloatName)
+	numHeads, numKVHeads := extractHeadCounts(m, qFloatName, kFloatName)
 	// If shapes are all dynamic, trace backward through Mul/Transpose/Reshape
 	// to find the head count from the Reshape shape constant.
 	if numHeads <= 1 {
-		if h := m.traceToReshapeForHeadCount(qFloatName); h > 0 {
+		if h := traceToReshapeForHeadCount(m, qFloatName); h > 0 {
 			numHeads = h
 		}
 	}
 	if numKVHeads <= 1 {
-		if h := m.traceToReshapeForHeadCount(kFloatName); h > 0 {
+		if h := traceToReshapeForHeadCount(m, kFloatName); h > 0 {
 			numKVHeads = h
 		}
 		if numKVHeads <= 1 {
@@ -341,7 +342,7 @@ func (m *Model) tryMatchQuantizedSDPA(matmul1 *protos.NodeProto) *quantizedSDPAC
 //
 // When kIsTransposed is true, kFloatName points to a K^T tensor (already transposed)
 // that needs the last two dims swapped before passing to the fused op.
-func (m *Model) traceQuantizedKBackward(uint8Name string) (dqlNode *protos.NodeProto, kFloatName string, transposeNode *protos.NodeProto, kNeedsHeadsFirst, kIsTransposed bool) {
+func traceQuantizedKBackward(m *onnxgomlx.Model, uint8Name string) (dqlNode *protos.NodeProto, kFloatName string, transposeNode *protos.NodeProto, kNeedsHeadsFirst, kIsTransposed bool) {
 	node, ok := m.NodeOutputToNode[uint8Name]
 	if !ok {
 		return
@@ -357,12 +358,12 @@ func (m *Model) traceQuantizedKBackward(uint8Name string) (dqlNode *protos.NodeP
 		kTransposedFloat := dqlNode.Input[0]
 
 		// Match standard K^T (swap last two axes).
-		tNode, preInput := m.matchKTranspose(kTransposedFloat)
+		tNode, preInput := matchKTranspose(m, kTransposedFloat)
 		if tNode != nil {
 			return dqlNode, preInput, tNode, false, false
 		}
 		// Try combined heads-first + K^T (e.g. perm [0,2,3,1]).
-		tNode, preInput, matched := m.matchCombinedKTranspose(kTransposedFloat)
+		tNode, preInput, matched := matchCombinedKTranspose(m, kTransposedFloat)
 		if matched {
 			return dqlNode, preInput, tNode, true, false
 		}
@@ -372,12 +373,12 @@ func (m *Model) traceQuantizedKBackward(uint8Name string) (dqlNode *protos.NodeP
 		// the pre-scale, so return the Mul output (K^T_scaled) and flag as transposed.
 		if mulNode, mulOk := m.NodeOutputToNode[kTransposedFloat]; mulOk && mulNode.OpType == "Mul" && len(mulNode.Input) >= 2 {
 			for _, transposeIdx := range []int{0, 1} {
-				tNode, _ = m.matchKTranspose(mulNode.Input[transposeIdx])
+				tNode, _ = matchKTranspose(m, mulNode.Input[transposeIdx])
 				if tNode != nil {
 					// Mul(K^T, scalar) — return Mul output as K^T_scaled.
 					return dqlNode, kTransposedFloat, nil, false, true
 				}
-				tNode, _, matched = m.matchCombinedKTranspose(mulNode.Input[transposeIdx])
+				tNode, _, matched = matchCombinedKTranspose(m, mulNode.Input[transposeIdx])
 				if matched {
 					// The combined transpose already placed heads in dim 1,
 					// so kNeedsHeadsFirst=false. Only need to swap last two dims.
@@ -392,7 +393,7 @@ func (m *Model) traceQuantizedKBackward(uint8Name string) (dqlNode *protos.NodeP
 	case "Transpose":
 		// K^T was applied after DQL (uint8 transpose).
 		// Validate that the permutation actually swaps the last two axes.
-		if tNode, _ := m.matchKTranspose(uint8Name); tNode == nil {
+		if tNode, _ := matchKTranspose(m, uint8Name); tNode == nil {
 			return nil, "", nil, false, false
 		}
 		transposeNode = node
@@ -415,7 +416,7 @@ func (m *Model) traceQuantizedKBackward(uint8Name string) (dqlNode *protos.NodeP
 // dimensions are dynamic (e.g. MiniLM-L6-v2 INT8).
 //
 // Typical path: Q_scaled (Mul) → Transpose(0,2,1,3) → Reshape([B, S, numHeads, headDim])
-func (m *Model) traceToReshapeForHeadCount(name string) int {
+func traceToReshapeForHeadCount(m *onnxgomlx.Model, name string) int {
 	current := name
 	for depth := 0; depth < 10; depth++ {
 		node, ok := m.NodeOutputToNode[current]
@@ -424,7 +425,7 @@ func (m *Model) traceToReshapeForHeadCount(name string) int {
 		}
 		switch node.OpType {
 		case "Reshape":
-			return m.extractReshapeHeadDim(node)
+			return extractReshapeHeadDim(m, node)
 		case "Transpose", "Mul", "Add", "Sub", "Div":
 			// Follow the first (data) input.
 			if len(node.Input) == 0 {
@@ -443,7 +444,7 @@ func (m *Model) traceToReshapeForHeadCount(name string) int {
 //   - Shape is a constant initializer: read directly
 //   - Shape is a Constant node output: read from attribute
 //   - Shape is a Concat of individual values: extract second-to-last constant element
-func (m *Model) extractReshapeHeadDim(reshapeNode *protos.NodeProto) int {
+func extractReshapeHeadDim(m *onnxgomlx.Model, reshapeNode *protos.NodeProto) int {
 	if len(reshapeNode.Input) < 2 {
 		return -1
 	}
@@ -474,7 +475,7 @@ func (m *Model) extractReshapeHeadDim(reshapeNode *protos.NodeProto) int {
 	if shapeNode.OpType == "Concat" && len(shapeNode.Input) >= 3 {
 		// numHeads is at index len-2 (e.g., index 2 in a 4-element Concat).
 		targetIdx := len(shapeNode.Input) - 2
-		return m.extractConstantInt64FromConcatInput(shapeNode.Input[targetIdx])
+		return extractConstantInt64FromConcatInput(m, shapeNode.Input[targetIdx])
 	}
 
 	return -1
@@ -482,7 +483,7 @@ func (m *Model) extractReshapeHeadDim(reshapeNode *protos.NodeProto) int {
 
 // extractConstantInt64FromConcatInput extracts a scalar int64 from a Concat element.
 // The element may be a Constant node producing a [1]-shaped int64 tensor.
-func (m *Model) extractConstantInt64FromConcatInput(name string) int {
+func extractConstantInt64FromConcatInput(m *onnxgomlx.Model, name string) int {
 	// Check initializer.
 	if tp, ok := m.VariableNameToValue[name]; ok {
 		vals := extractInt64SliceFromTensor(tp)

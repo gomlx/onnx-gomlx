@@ -1178,7 +1178,7 @@ func TestConcatenateTensorProtos(t *testing.T) {
 			Dims: []int64{2, 3}, DataType: int32(protos.TensorProto_FLOAT),
 			FloatData: []float32{7, 8, 9, 10, 11, 12},
 		}
-		result, err := concatenateTensorProtos([]*protos.TensorProto{a, b}, -1)
+		result, err := ConcatenateTensorProtos([]*protos.TensorProto{a, b}, -1)
 		require.NoError(t, err)
 		assert.Equal(t, []int64{2, 6}, result.Dims)
 
@@ -1199,7 +1199,7 @@ func TestConcatenateTensorProtos(t *testing.T) {
 			Dims: []int64{2}, DataType: int32(protos.TensorProto_FLOAT),
 			FloatData: []float32{4, 5},
 		}
-		result, err := concatenateTensorProtos([]*protos.TensorProto{a, b}, 0)
+		result, err := ConcatenateTensorProtos([]*protos.TensorProto{a, b}, 0)
 		require.NoError(t, err)
 		assert.Equal(t, []int64{5}, result.Dims)
 
@@ -1223,7 +1223,7 @@ func TestConcatenateTensorProtos(t *testing.T) {
 		a := &protos.TensorProto{Dims: []int64{2, 3}, DataType: int32(protos.TensorProto_FLOAT), RawData: aRaw}
 		b := &protos.TensorProto{Dims: []int64{2, 3}, DataType: int32(protos.TensorProto_FLOAT), RawData: bRaw}
 
-		result, err := concatenateTensorProtos([]*protos.TensorProto{a, b}, -1)
+		result, err := ConcatenateTensorProtos([]*protos.TensorProto{a, b}, -1)
 		require.NoError(t, err)
 		assert.Equal(t, []int64{2, 6}, result.Dims)
 
@@ -1239,7 +1239,7 @@ func TestConcatenateTensorProtos(t *testing.T) {
 			Dims: []int64{2, 3}, DataType: int32(protos.TensorProto_FLOAT),
 			FloatData: []float32{1, 2, 3, 4, 5, 6},
 		}
-		result, err := concatenateTensorProtos([]*protos.TensorProto{a}, 0)
+		result, err := ConcatenateTensorProtos([]*protos.TensorProto{a}, 0)
 		require.NoError(t, err)
 		assert.Equal(t, a, result) // Should return same pointer.
 	})
@@ -1247,25 +1247,25 @@ func TestConcatenateTensorProtos(t *testing.T) {
 	t.Run("ErrorDimensionMismatch", func(t *testing.T) {
 		a := &protos.TensorProto{Dims: []int64{2, 3}, DataType: int32(protos.TensorProto_FLOAT), FloatData: make([]float32, 6)}
 		b := &protos.TensorProto{Dims: []int64{3, 3}, DataType: int32(protos.TensorProto_FLOAT), FloatData: make([]float32, 9)}
-		_, err := concatenateTensorProtos([]*protos.TensorProto{a, b}, -1)
+		_, err := ConcatenateTensorProtos([]*protos.TensorProto{a, b}, -1)
 		require.Error(t, err)
 	})
 
 	t.Run("ErrorDTypeMismatch", func(t *testing.T) {
 		a := &protos.TensorProto{Dims: []int64{2}, DataType: int32(protos.TensorProto_FLOAT), FloatData: make([]float32, 2)}
 		b := &protos.TensorProto{Dims: []int64{2}, DataType: int32(protos.TensorProto_INT32), Int32Data: make([]int32, 2)}
-		_, err := concatenateTensorProtos([]*protos.TensorProto{a, b}, 0)
+		_, err := ConcatenateTensorProtos([]*protos.TensorProto{a, b}, 0)
 		require.Error(t, err)
 	})
 
 	t.Run("ErrorBadAxis", func(t *testing.T) {
 		a := &protos.TensorProto{Dims: []int64{2, 3}, DataType: int32(protos.TensorProto_FLOAT), FloatData: make([]float32, 6)}
-		_, err := concatenateTensorProtos([]*protos.TensorProto{a, a}, 5)
+		_, err := ConcatenateTensorProtos([]*protos.TensorProto{a, a}, 5)
 		require.Error(t, err)
 	})
 
 	t.Run("ErrorEmpty", func(t *testing.T) {
-		_, err := concatenateTensorProtos(nil, 0)
+		_, err := ConcatenateTensorProtos(nil, 0)
 		require.Error(t, err)
 	})
 }

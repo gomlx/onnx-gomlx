@@ -322,7 +322,6 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 		}
 	}()
 
-
 	// Recursive helper to convert a node output within the sub-graph
 	var convertSubGraphOutput func(outputName string)
 	convertSubGraphOutput = func(outputName string) {
@@ -681,7 +680,7 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 
 		// Ops not implemented:
 	default:
-		exceptions.Panicf("unimplemented ONNX op %q in %s", node.OpType, nodeToString(node))
+		exceptions.Panicf("unimplemented ONNX op %q in %s", node.OpType, NodeToString(node))
 	}
 	if result != nil {
 		convertedOutputs[node.Output[0]] = result

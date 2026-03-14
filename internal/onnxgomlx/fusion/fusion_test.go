@@ -1,4 +1,4 @@
-package onnxgomlx
+package fusion
 
 import (
 	"math"
@@ -7,6 +7,7 @@ import (
 	"github.com/gomlx/gomlx/backends/simplego"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -130,10 +131,10 @@ func runFusedVsUnfused(t *testing.T, graphProto *protos.GraphProto, inputs map[s
 	content, err := proto.Marshal(modelProto)
 	require.NoError(t, err)
 
-	mFused, err := Parse(content)
+	mFused, err := onnxgomlx.Parse(content)
 	require.NoError(t, err)
 
-	mUnfused, err := Parse(content)
+	mUnfused, err := onnxgomlx.Parse(content)
 	require.NoError(t, err)
 	mUnfused.DisableFusion()
 
@@ -815,13 +816,13 @@ func TestDetectMulScaledSDPAPattern(t *testing.T) {
 	assert.InDelta(t, float64(scaleVal), p.Scale, 1e-6)
 }
 
-// buildTestModel creates a Model from a GraphProto, wiring up all the maps that Parse() normally creates.
-func buildTestModel(t *testing.T, graph *protos.GraphProto) *Model {
+// buildTestModel creates a onnxgomlx.Model from a GraphProto, wiring up all the maps that onnxgomlx.Parse() normally creates.
+func buildTestModel(t *testing.T, graph *protos.GraphProto) *onnxgomlx.Model {
 	t.Helper()
 	modelProto := &protos.ModelProto{Graph: graph}
 	content, err := proto.Marshal(modelProto)
 	require.NoError(t, err)
-	m, err := Parse(content)
+	m, err := onnxgomlx.Parse(content)
 	require.NoError(t, err)
 	return m
 }

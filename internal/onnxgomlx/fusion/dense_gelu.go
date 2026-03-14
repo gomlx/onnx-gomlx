@@ -1,10 +1,11 @@
-package onnxgomlx
+package fusion
 
 import (
 	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
 	"github.com/gomlx/gomlx/pkg/ml/nn"
+	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 )
@@ -18,7 +19,7 @@ type DenseActivationParams struct {
 	ActivationType activations.Type
 }
 
-// denseActivationCandidate implements FusionCandidate for fused Dense+Activation.
+// denseActivationCandidate implements onnxgomlx.FusionCandidate for fused Dense+Activation.
 type denseActivationCandidate struct {
 	params          *DenseActivationParams
 	internalOutputs map[string]bool
@@ -47,7 +48,7 @@ func (c *denseActivationCandidate) Emit(_ *context.Context, g *Graph, convertedO
 }
 
 func init() {
-	RegisterFusionDetector(detectDenseActivationCandidates)
+	onnxgomlx.RegisterFusionDetector(detectDenseActivationCandidates)
 }
 
 // detectDenseActivationCandidates scans the ONNX graph for:
@@ -55,14 +56,14 @@ func init() {
 //	MatMul(x, W) → [Add(·, bias)] → Gelu(·)
 //
 // and returns FusionCandidates for each match.
-func detectDenseActivationCandidates(m *Model) []FusionCandidate {
+func detectDenseActivationCandidates(m *onnxgomlx.Model) []onnxgomlx.FusionCandidate {
 	consumers := m.Consumers
-	var candidates []FusionCandidate
+	var candidates []onnxgomlx.FusionCandidate
 	for _, node := range m.Proto.Graph.Node {
 		if node.OpType != "MatMul" || len(node.Input) < 2 || len(node.Output) == 0 {
 			continue
 		}
-		if cand := m.tryMatchDenseActivation(consumers, node); cand != nil {
+		if cand := tryMatchDenseActivation(m, consumers, node); cand != nil {
 			candidates = append(candidates, cand)
 		}
 	}
@@ -70,12 +71,12 @@ func detectDenseActivationCandidates(m *Model) []FusionCandidate {
 }
 
 // tryMatchDenseActivation attempts to match MatMul → [Add bias] → Gelu/FastGelu starting from a MatMul node.
-func (m *Model) tryMatchDenseActivation(consumers map[string][]*protos.NodeProto, matmulNode *protos.NodeProto) *denseActivationCandidate {
+func tryMatchDenseActivation(m *onnxgomlx.Model, consumers map[string][]*protos.NodeProto, matmulNode *protos.NodeProto) *denseActivationCandidate {
 	xName := matmulNode.Input[0]
 	weightName := matmulNode.Input[1]
 
 	// Weight must be a constant.
-	if !m.isConstant(weightName) {
+	if !m.IsConstant(weightName) {
 		return nil
 	}
 
@@ -93,7 +94,7 @@ func (m *Model) tryMatchDenseActivation(consumers map[string][]*protos.NodeProto
 	case "Add":
 		// MatMul → Add(bias) → Gelu/FastGelu?
 		biasName := onnxgraph.OtherBinaryOpInput(next, matmulOut)
-		if biasName == "" || !m.isConstant(biasName) {
+		if biasName == "" || !m.IsConstant(biasName) {
 			return nil
 		}
 		if len(next.Output) == 0 {

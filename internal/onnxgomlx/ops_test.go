@@ -2166,7 +2166,6 @@ func TestConvertResize(t *testing.T) {
 	}, [][][][]float32{{{{1, 2}, {3, 4}}}})
 }
 
-
 func TestMod(t *testing.T) {
 	// fmod=1 (C-style): result sign follows the dividend.
 	graphtest.RunTestGraphFn(t, "Mod(fmod=1, int)", func(g *Graph) (inputs, outputs []*Node) {
@@ -2335,5 +2334,3 @@ func TestConvertPadReflect(t *testing.T) {
 		},
 	}, -1)
 }
-
-

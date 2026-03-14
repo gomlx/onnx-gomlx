@@ -122,3 +122,39 @@ func (m *Model) isFusionGroupOutput(nodeOutputName string) FusionCandidate {
 func (m *Model) DisableFusion() {
 	m.DetectedFusions = nil
 }
+
+// IsConstant checks if a name refers to a constant (initializer or Constant node output).
+func (m *Model) IsConstant(name string) bool {
+	if _, ok := m.VariableNameToValue[name]; ok {
+		return true
+	}
+	if node, ok := m.NodeOutputToNode[name]; ok && node.OpType == "Constant" {
+		return true
+	}
+	return false
+}
+
+// TryGetConstantScalar attempts to read a scalar float64 from a constant/initializer.
+func (m *Model) TryGetConstantScalar(name string) float64 {
+	// Check initializers (variables).
+	if tp, ok := m.VariableNameToValue[name]; ok {
+		return TensorProtoToScalar(tp)
+	}
+	// Check if it's a Constant node output.
+	if node, ok := m.NodeOutputToNode[name]; ok && node.OpType == "Constant" {
+		return ConstantNodeToScalar(node)
+	}
+	return 0
+}
+
+// GetWeightOutputDim returns the output dimension of a weight matrix.
+// For a MatMul x @ W where x is [batch, inFeatures] and W is [inFeatures, outFeatures],
+// returns outFeatures. Returns -1 if unknown.
+func (m *Model) GetWeightOutputDim(weightName string) int {
+	s := m.ShapeForName(weightName)
+	if len(s.Dimensions) < 2 {
+		return -1
+	}
+	// Weight shape is [inFeatures, outFeatures] for standard MatMul.
+	return s.Dimensions[len(s.Dimensions)-1]
+}
