@@ -10,6 +10,7 @@ import (
 	"github.com/gomlx/gomlx/backends/simplego"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/support/sets"
+	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx/filesreader"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/pkg/errors"
@@ -47,7 +48,7 @@ type Model struct {
 
 	// ExternalDataReader manages memory-mapped external data files for efficient tensor loading.
 	// It is initialized lazily when external data is first accessed.
-	ExternalDataReader *ExternalDataReader
+	ExternalDataReader onnx.ExternalDataReader
 
 	// Consumers maps output names to the nodes that consume them. Built during detectFusionPatterns
 	// and used by fusion detectors to walk the graph.
@@ -162,16 +163,25 @@ func (m *Model) BaseDir() string {
 	return m.baseDir
 }
 
-// WithBaseDir sets the base directory for the model.
-// This is used for resolving external data file paths.
+// WithBaseDir sets the base directory for the model. This is used for resolving external data file paths.
+//
+// It defaults to the current directory (".") or, if the model was read from a file, to the directory of that file.
 func (m *Model) WithBaseDir(baseDir string) onnx.Model {
 	m.baseDir = baseDir
 	return m
 }
 
+// WithExternalDataReader configures the model to use a specialized ExternalDataReader.
+//
+// It defaults to a standard file reader that reads from files in the base directory (see WithBaseDir).
+func (m *Model) WithExternalDataReader(reader onnx.ExternalDataReader) onnx.Model {
+	m.ExternalDataReader = reader
+	return m
+}
+
 // getExternalDataReader returns the ExternalDataReader for this model, creating it lazily if needed.
 // Returns nil if the model has no base directory (e.g., parsed from bytes without a file path).
-func (m *Model) getExternalDataReader() *ExternalDataReader {
+func (m *Model) getExternalDataReader() onnx.ExternalDataReader {
 	if m.ExternalDataReader != nil {
 		return m.ExternalDataReader
 	}
@@ -179,7 +189,7 @@ func (m *Model) getExternalDataReader() *ExternalDataReader {
 	if baseDir == "" {
 		return nil
 	}
-	m.ExternalDataReader = NewExternalDataReader(baseDir)
+	m.ExternalDataReader = filesreader.New(baseDir)
 	return m.ExternalDataReader
 }
 

@@ -27,7 +27,7 @@ func (m *Model) VariablesToContext(ctx *context.Context) error {
 	ctx = ctx.In(onnx.ModelScope).Checked(false)
 	reader := m.getExternalDataReader()
 	for _, tensorProto := range m.Proto.Graph.Initializer {
-		tensor, err := tensorToGoMLXWithBaseDir(m.Backend, tensorProto, m.BaseDir(), reader)
+		tensor, err := ONNXTensorToGoMLX(m.Backend, tensorProto, reader)
 		if err != nil {
 			return errors.WithMessagef(err, "Model.VariablesToContext()")
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/pkg/errors"
 	"github.com/x448/float16"
 )
@@ -155,41 +156,37 @@ func tensorToGoMLX(backend backends.Backend, proto *protos.TensorProto) (t *tens
 	return nil, errors.Errorf("tensor %q shaped %s has no supported format of data in the ONNX model!?", proto.Name, shape)
 }
 
-// externalDataInfo holds parsed external data parameters from ONNX TensorProto.
-type externalDataInfo struct {
-	location string // path to external file (relative to model directory)
-	offset   int64  // byte offset in file, default 0
-	length   int64  // number of bytes to read, -1 means read to EOF
-}
+var ErrNoExternalData = errors.New("no external data")
 
 // parseExternalData extracts external data parameters from the TensorProto.
-// Returns nil if there is no external data.
-func parseExternalData(proto *protos.TensorProto) (*externalDataInfo, error) {
+// Returns an error ErrNoExternalData if there is no external data.
+func parseExternalData(proto *protos.TensorProto) (onnx.ExternalDataInfo, error) {
+	var info onnx.ExternalDataInfo
 	if len(proto.ExternalData) == 0 {
-		return nil, nil
+		return info, errors.Wrapf(ErrNoExternalData, "tensor %q has no external data", proto.Name)
 	}
 
-	info := &externalDataInfo{
-		offset: 0,
-		length: -1, // -1 means read to EOF
+	info = onnx.ExternalDataInfo{
+		Offset: 0,
+		Length: -1, // -1 means read to EOF
 	}
 
 	for _, entry := range proto.ExternalData {
 		switch entry.Key {
 		case "location":
-			info.location = entry.Value
+			info.Location = entry.Value
 		case "offset":
 			offset, err := strconv.ParseInt(entry.Value, 10, 64)
 			if err != nil {
-				return nil, errors.Wrapf(err, "invalid offset value %q for tensor %q", entry.Value, proto.Name)
+				return info, errors.Wrapf(err, "invalid offset value %q for tensor %q", entry.Value, proto.Name)
 			}
-			info.offset = offset
+			info.Offset = offset
 		case "length":
 			length, err := strconv.ParseInt(entry.Value, 10, 64)
 			if err != nil {
-				return nil, errors.Wrapf(err, "invalid length value %q for tensor %q", entry.Value, proto.Name)
+				return info, errors.Wrapf(err, "invalid length value %q for tensor %q", entry.Value, proto.Name)
 			}
-			info.length = length
+			info.Length = length
 		case "checksum":
 			// Checksum is optional and used for verification; we don't validate it currently
 		default:
@@ -197,20 +194,19 @@ func parseExternalData(proto *protos.TensorProto) (*externalDataInfo, error) {
 		}
 	}
 
-	if info.location == "" {
-		return nil, errors.Errorf("external data for tensor %q is missing required 'location' key", proto.Name)
+	if info.Location == "" {
+		return info, errors.Errorf("external data for tensor %q is missing required 'location' key", proto.Name)
 	}
 
 	return info, nil
 }
 
-// tensorToGoMLXWithBaseDir converts a protos.TensorProto object to a tensors.Tensor object,
+// ONNXTensorToGoMLX converts a protos.TensorProto object to a GoMLX tensors.Tensor object,
 // handling errors and different data types including external data.
-// baseDir is the directory containing the ONNX model file, used to resolve external data paths.
-// reader is an optional ExternalDataReader for memory-efficient external data loading.
-// If reader is nil and external data is present, it falls back to direct file I/O.
-// If baseDir is empty and external data is present, an error is returned.
-func tensorToGoMLXWithBaseDir(backend backends.Backend, proto *protos.TensorProto, baseDir string, reader *ExternalDataReader) (t *tensors.Tensor, err error) {
+//
+// externalReader is only used if the TensorProto specifies an external data location.
+func ONNXTensorToGoMLX(backend backends.Backend, proto *protos.TensorProto, externalReader onnx.ExternalDataReader) (
+	t *tensors.Tensor, err error) {
 	if proto == nil {
 		return nil, errors.New("ONNX TensorProto is nil")
 	}
@@ -229,6 +225,10 @@ func tensorToGoMLXWithBaseDir(backend backends.Backend, proto *protos.TensorProt
 
 	// Check for external data first
 	if len(proto.ExternalData) > 0 {
+		if externalReader == nil {
+			return nil, errors.Errorf(
+				"external data for tensor %q is present but no external data reader was provided", proto.Name)
+		}
 		info, err := parseExternalData(proto)
 		if err != nil {
 			return nil, err
@@ -238,11 +238,7 @@ func tensorToGoMLXWithBaseDir(backend backends.Backend, proto *protos.TensorProt
 		t = tensors.FromShape(shape)
 		t.MutableBytes(func(data []byte) {
 			// Use the reader if available (mmap path), otherwise fall back to direct I/O
-			if reader != nil {
-				err = reader.ReadInto(info, data)
-			} else {
-				err = readExternalDataDirect(baseDir, info, data)
-			}
+			err = externalReader.ReadInto(info, data)
 		})
 		if err != nil {
 			t.FinalizeAll()

@@ -264,7 +264,7 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 			continue
 		}
 		// Convert the initializer tensor to a GoMLX constant
-		tensor, err := tensorToGoMLXWithBaseDir(g.Backend(), initializerProto, m.BaseDir(), reader)
+		tensor, err := ONNXTensorToGoMLX(g.Backend(), initializerProto, reader)
 		if err != nil {
 			exceptions.Panicf("failed to convert sub-graph initializer %q: %v", initializerName, err)
 		}
@@ -338,7 +338,7 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 		// Check if it's a model-level initializer (variable)
 		if initializerProto, found := m.VariableNameToValue[outputName]; found {
 			// Convert the model-level initializer to a constant in the sub-graph
-			tensor, err := tensorToGoMLXWithBaseDir(g.Backend(), initializerProto, m.BaseDir(), reader)
+			tensor, err := ONNXTensorToGoMLX(g.Backend(), initializerProto, reader)
 			if err != nil {
 				exceptions.Panicf("failed to convert model initializer %q in sub-graph: %v", outputName, err)
 			}

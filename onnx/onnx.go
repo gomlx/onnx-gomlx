@@ -51,7 +51,15 @@ type Model interface {
 	PrioritizeFloat16() Model
 
 	// WithBaseDir sets the base directory for the model. This is used for resolving external data file paths.
+	// This must be set before any reading of the model data (e.g.: VariablesToContext or CallGraph).
+	//
+	// It defaults to the current directory (".") or, if the model was read from a file, to the directory of that file.
 	WithBaseDir(baseDir string) Model
+
+	// WithExternalDataReader configures the model to use a specialized ExternalDataReader.
+	//
+	// It defaults to a standard file reader that reads from files in the base directory (see WithBaseDir).
+	WithExternalDataReader(reader ExternalDataReader) Model
 
 	// Write will write the ONNX model to the given writer (usually a file).
 	Write(w io.Writer) error
@@ -95,3 +103,32 @@ type Model interface {
 
 // ModelScope is the default scope used for ONNX model variables in a GoMLX context.
 const ModelScope = "ONNX"
+
+// ExternalDataReader interface for reading ONNX tensors data from external files.
+//
+// ONNX-GoMLX provides a default implementation that reads from files in BaseDir (see WithBaseDir),
+// but if users has the files located in a different place (some Cloud storage, or remotely someway),
+// they can implement this interface to read the data.
+//
+// Notice an implementation of this interface should keep the file handles open, as tensors can
+// potentially be read from an undefined order.
+// Close will be called at the end of series of calls (like when executing Model.VariablesToContext).
+type ExternalDataReader interface {
+	// ReadInto reads the data (for a tensor) from a file (Location) and offset, into the given output slice of bytes.
+	ReadInto(info ExternalDataInfo, output []byte) error
+
+	// Close is called at the end of session of reading tensor data, it allows the implementation to free
+	// resources (close files).
+	//
+	// This shouldn't be seen as permanent: the Model may call ReadInto again,
+	// if the user call Model.VariablesToContext again, for instance.
+	// So one should keep the ability to re-open any resources one may need.
+	Close() error
+}
+
+// ExternalDataInfo holds parsed external data parameters from an ONNX TensorProto.
+type ExternalDataInfo struct {
+	Location string // path to external file (relative to model directory)
+	Offset   int64  // byte offset in file, default 0
+	Length   int64  // number of bytes to read, -1 means read to EOF
+}

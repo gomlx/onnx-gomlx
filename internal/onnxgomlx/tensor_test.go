@@ -11,7 +11,9 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
+	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx/filesreader"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/x448/float16"
@@ -527,9 +529,8 @@ func TestParseExternalData(t *testing.T) {
 		proto := &protos.TensorProto{
 			Name: "test",
 		}
-		info, err := parseExternalData(proto)
-		require.NoError(t, err)
-		require.Nil(t, info)
+		_, err := parseExternalData(proto)
+		require.ErrorIs(t, err, ErrNoExternalData)
 	})
 
 	t.Run("LocationOnly", func(t *testing.T) {
@@ -542,9 +543,9 @@ func TestParseExternalData(t *testing.T) {
 		info, err := parseExternalData(proto)
 		require.NoError(t, err)
 		require.NotNil(t, info)
-		require.Equal(t, "weights.bin", info.location)
-		require.Equal(t, int64(0), info.offset)
-		require.Equal(t, int64(-1), info.length)
+		require.Equal(t, "weights.bin", info.Location)
+		require.Equal(t, int64(0), info.Offset)
+		require.Equal(t, int64(-1), info.Length)
 	})
 
 	t.Run("AllFields", func(t *testing.T) {
@@ -560,9 +561,9 @@ func TestParseExternalData(t *testing.T) {
 		info, err := parseExternalData(proto)
 		require.NoError(t, err)
 		require.NotNil(t, info)
-		require.Equal(t, "weights.bin", info.location)
-		require.Equal(t, int64(1024), info.offset)
-		require.Equal(t, int64(4096), info.length)
+		require.Equal(t, "weights.bin", info.Location)
+		require.Equal(t, int64(1024), info.Offset)
+		require.Equal(t, int64(4096), info.Length)
 	})
 
 	t.Run("MissingLocation", func(t *testing.T) {
@@ -636,8 +637,12 @@ func TestTensorToGoMLXWithBaseDir_ExternalData(t *testing.T) {
 			},
 		}
 
+		// Create reader and use it
+		reader := filesreader.New(tmpDir)
+		defer reader.Close()
+
 		// Load tensor
-		tensor, err := tensorToGoMLXWithBaseDir(backend, proto, tmpDir, nil)
+		tensor, err := ONNXTensorToGoMLX(backend, proto, reader)
 		require.NoError(t, err)
 		require.NotNil(t, tensor)
 		defer tensor.FinalizeAll()
@@ -678,7 +683,11 @@ func TestTensorToGoMLXWithBaseDir_ExternalData(t *testing.T) {
 			},
 		}
 
-		tensor, err := tensorToGoMLXWithBaseDir(backend, proto, tmpDir, nil)
+		// Create reader and use it
+		reader := filesreader.New(tmpDir)
+		defer reader.Close()
+
+		tensor, err := ONNXTensorToGoMLX(backend, proto, reader)
 		require.NoError(t, err)
 		require.NotNil(t, tensor)
 		defer tensor.FinalizeAll()
@@ -713,7 +722,11 @@ func TestTensorToGoMLXWithBaseDir_ExternalData(t *testing.T) {
 			},
 		}
 
-		tensor, err := tensorToGoMLXWithBaseDir(backend, proto, tmpDir, nil)
+		// Create reader and use it
+		reader := filesreader.New(tmpDir)
+		defer reader.Close()
+
+		tensor, err := ONNXTensorToGoMLX(backend, proto, reader)
 		require.NoError(t, err)
 		require.NotNil(t, tensor)
 		defer tensor.FinalizeAll()
@@ -753,7 +766,11 @@ func TestTensorToGoMLXWithBaseDir_ExternalData(t *testing.T) {
 			},
 		}
 
-		tensor, err := tensorToGoMLXWithBaseDir(backend, proto, tmpDir, nil)
+		// Create reader and use it
+		reader := filesreader.New(tmpDir)
+		defer reader.Close()
+
+		tensor, err := ONNXTensorToGoMLX(backend, proto, reader)
 		require.NoError(t, err)
 		require.NotNil(t, tensor)
 		defer tensor.FinalizeAll()
@@ -774,24 +791,13 @@ func TestTensorToGoMLXWithBaseDir_ExternalData(t *testing.T) {
 			},
 		}
 
-		_, err := tensorToGoMLXWithBaseDir(backend, proto, tmpDir, nil)
+		// Create reader and use it
+		reader := filesreader.New(tmpDir)
+		defer reader.Close()
+
+		_, err := ONNXTensorToGoMLX(backend, proto, reader)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "failed to open external data file")
-	})
-
-	t.Run("EmptyBaseDir", func(t *testing.T) {
-		proto := &protos.TensorProto{
-			Name:     "test_tensor",
-			Dims:     []int64{2},
-			DataType: int32(protos.TensorProto_FLOAT),
-			ExternalData: []*protos.StringStringEntryProto{
-				{Key: "location", Value: "weights.bin"},
-			},
-		}
-
-		_, err := tensorToGoMLXWithBaseDir(backend, proto, "", nil)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "base directory is required")
 	})
 
 	t.Run("SizeMismatch", func(t *testing.T) {
@@ -820,7 +826,11 @@ func TestTensorToGoMLXWithBaseDir_ExternalData(t *testing.T) {
 			},
 		}
 
-		_, err = tensorToGoMLXWithBaseDir(backend, proto, tmpDir, nil)
+		// Create reader and use it
+		reader := filesreader.New(tmpDir)
+		defer reader.Close()
+
+		_, err = ONNXTensorToGoMLX(backend, proto, reader)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "bytes")
 	})
@@ -848,7 +858,7 @@ func TestExternalDataReader(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create reader and use it
-		reader := NewExternalDataReader(tmpDir)
+		reader := filesreader.New(tmpDir)
 		defer reader.Close()
 
 		proto := &protos.TensorProto{
@@ -860,7 +870,7 @@ func TestExternalDataReader(t *testing.T) {
 			},
 		}
 
-		tensor, err := tensorToGoMLXWithBaseDir(backend, proto, tmpDir, reader)
+		tensor, err := ONNXTensorToGoMLX(backend, proto, reader)
 		require.NoError(t, err)
 		require.NotNil(t, tensor)
 		defer tensor.FinalizeAll()
@@ -901,7 +911,7 @@ func TestExternalDataReader(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create reader
-		reader := NewExternalDataReader(tmpDir)
+		reader := filesreader.New(tmpDir)
 		defer reader.Close()
 
 		// Load first tensor
@@ -915,7 +925,7 @@ func TestExternalDataReader(t *testing.T) {
 				{Key: "length", Value: "8"},
 			},
 		}
-		tensor1, err := tensorToGoMLXWithBaseDir(backend, proto1, tmpDir, reader)
+		tensor1, err := ONNXTensorToGoMLX(backend, proto1, reader)
 		require.NoError(t, err)
 		defer tensor1.FinalizeAll()
 
@@ -930,7 +940,7 @@ func TestExternalDataReader(t *testing.T) {
 				{Key: "length", Value: "12"},
 			},
 		}
-		tensor2, err := tensorToGoMLXWithBaseDir(backend, proto2, tmpDir, reader)
+		tensor2, err := ONNXTensorToGoMLX(backend, proto2, reader)
 		require.NoError(t, err)
 		defer tensor2.FinalizeAll()
 
@@ -942,96 +952,21 @@ func TestExternalDataReader(t *testing.T) {
 		require.InDeltaSlice(t, data2, result2, 0.0001)
 	})
 
-	t.Run("ReaderCaching", func(t *testing.T) {
-		tmpDir := t.TempDir()
-
-		// Create external data file
-		data := []float32{1.0, 2.0}
-		rawBytes := make([]byte, len(data)*4)
-		for i, val := range data {
-			bits := *(*uint32)(unsafe.Pointer(&val))
-			rawBytes[i*4] = byte(bits)
-			rawBytes[i*4+1] = byte(bits >> 8)
-			rawBytes[i*4+2] = byte(bits >> 16)
-			rawBytes[i*4+3] = byte(bits >> 24)
-		}
-		externalFile := filepath.Join(tmpDir, "cached.bin")
-		err := os.WriteFile(externalFile, rawBytes, 0644)
-		require.NoError(t, err)
-
-		reader := NewExternalDataReader(tmpDir)
-		defer reader.Close()
-
-		info := &externalDataInfo{
-			location: "cached.bin",
-			offset:   0,
-			length:   8,
-		}
-
-		// Read multiple times - should reuse cached mmap
-		for i := 0; i < 3; i++ {
-			dst := make([]byte, 8)
-			err := reader.ReadInto(info, dst)
-			require.NoError(t, err)
-		}
-
-		// Verify only one file handle was created
-		require.Len(t, reader.files, 1)
-	})
-
 	t.Run("MissingFileMmap", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		reader := NewExternalDataReader(tmpDir)
+		reader := filesreader.New(tmpDir)
 		defer reader.Close()
-
-		info := &externalDataInfo{
-			location: "nonexistent.bin",
-			offset:   0,
-			length:   8,
+		info := onnx.ExternalDataInfo{
+			Location: "nonexistent.bin",
+			Offset:   0,
+			Length:   8,
 		}
 
 		dst := make([]byte, 8)
 		err := reader.ReadInto(info, dst)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "failed to open external data file")
-	})
-
-	t.Run("CloseReleasesResources", func(t *testing.T) {
-		tmpDir := t.TempDir()
-
-		// Create external data file
-		data := []float32{1.0, 2.0}
-		rawBytes := make([]byte, len(data)*4)
-		for i, val := range data {
-			bits := *(*uint32)(unsafe.Pointer(&val))
-			rawBytes[i*4] = byte(bits)
-			rawBytes[i*4+1] = byte(bits >> 8)
-			rawBytes[i*4+2] = byte(bits >> 16)
-			rawBytes[i*4+3] = byte(bits >> 24)
-		}
-		externalFile := filepath.Join(tmpDir, "close_test.bin")
-		err := os.WriteFile(externalFile, rawBytes, 0644)
-		require.NoError(t, err)
-
-		reader := NewExternalDataReader(tmpDir)
-
-		info := &externalDataInfo{
-			location: "close_test.bin",
-			offset:   0,
-			length:   8,
-		}
-
-		// Read to open a file handle
-		dst := make([]byte, 8)
-		err = reader.ReadInto(info, dst)
-		require.NoError(t, err)
-		require.Len(t, reader.files, 1)
-
-		// Close should release resources
-		err = reader.Close()
-		require.NoError(t, err)
-		require.Nil(t, reader.files)
 	})
 
 	t.Run("OffsetAndLengthMmap", func(t *testing.T) {
@@ -1053,7 +988,7 @@ func TestExternalDataReader(t *testing.T) {
 		err := os.WriteFile(externalFile, fileContent, 0644)
 		require.NoError(t, err)
 
-		reader := NewExternalDataReader(tmpDir)
+		reader := filesreader.New(tmpDir)
 		defer reader.Close()
 
 		proto := &protos.TensorProto{
@@ -1067,7 +1002,7 @@ func TestExternalDataReader(t *testing.T) {
 			},
 		}
 
-		tensor, err := tensorToGoMLXWithBaseDir(backend, proto, tmpDir, reader)
+		tensor, err := ONNXTensorToGoMLX(backend, proto, reader)
 		require.NoError(t, err)
 		require.NotNil(t, tensor)
 		defer tensor.FinalizeAll()
