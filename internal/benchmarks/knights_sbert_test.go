@@ -189,7 +189,7 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 
 	// Build model
 	backend := graphtest.BuildTestBackend()
-	model := must.M1(parser.FromFile(onnxModelPath))
+	model := must.M1(parser.ParseFile(onnxModelPath))
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()

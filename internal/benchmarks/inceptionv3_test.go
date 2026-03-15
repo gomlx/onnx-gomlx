@@ -59,7 +59,7 @@ func downloadInceptionV3Model() string {
 
 func benchGoMLXInceptionV3(t *testing.T) {
 	onnxModelPath := downloadInceptionV3Model()
-	model := must.M1(parser.FromFile(onnxModelPath))
+	model := must.M1(parser.ParseFile(onnxModelPath))
 	if *flagVerbose {
 		fmt.Printf("Model details:\n%s\n", model)
 	}
