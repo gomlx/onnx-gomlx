@@ -88,6 +88,11 @@ type Model interface {
 
 	// DisableFusion clears all detected fusions, forcing normal (unfused) conversion.
 	DisableFusion()
+
+	// ForceStaticShapes disables dynamic shape propagation even when the backend
+	// supports DynamicAxes. All shapes will be resolved to concrete values at
+	// graph build time.
+	ForceStaticShapes()
 }
 
 // ModelScope is the default scope used for ONNX model variables in a GoMLX context.

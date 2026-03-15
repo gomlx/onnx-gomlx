@@ -24,14 +24,35 @@ type DynamicShape struct {
 }
 
 // GoMLX returns a shapes.Shape representation of the DynamicShape.
-// Dimensions that are dynamic (-1) are set to onnx.DynamicDim.
+// Dimensions that are dynamic (-1) are set to shapes.DynamicDim and the
+// corresponding axis names from the ONNX model are preserved via
+// shapes.MakeDynamic so that the specialization system can resolve them.
 func (dshape DynamicShape) GoMLX() shapes.Shape {
-	s := shapes.Make(dshape.DType)
 	if dshape.Rank() == 0 {
-		return s
+		return shapes.Make(dshape.DType)
 	}
-	s.Dimensions = slices.Clone(dshape.Dimensions)
-	return s
+	hasDynamic := false
+	for _, d := range dshape.Dimensions {
+		if d == -1 {
+			hasDynamic = true
+			break
+		}
+	}
+	if !hasDynamic {
+		return shapes.Make(dshape.DType, dshape.Dimensions...)
+	}
+	axisNames := make([]string, len(dshape.Names))
+	for i, name := range dshape.Names {
+		if dshape.Dimensions[i] == -1 {
+			if name == UnnamedDynamicDimension {
+				axisNames[i] = fmt.Sprintf("dyn_%d", i)
+			} else {
+				axisNames[i] = name
+			}
+		}
+		// Static dims get empty axis name (unnamed).
+	}
+	return shapes.MakeDynamic(dshape.DType, slices.Clone(dshape.Dimensions), axisNames)
 }
 
 // UnnamedDynamicDimension is a placeholder name for an unnamed dynamic dimension, that doesn't necessarily match any other (in inputs/outputs).

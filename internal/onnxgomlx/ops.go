@@ -46,87 +46,16 @@ func onnxImplicitExpansion(operands []*Node) []*Node {
 
 // onnxBroadcastToCommonShape implements the full ONNX multidirectional broadcasting rule.
 // It first expands operands to the same rank (by prepending 1-dimensional axes), then
-// broadcasts all operands to a common shape where each dimension is the maximum across
-// all operands.
+// delegates to the core BroadcastToCommonShape which handles DynamicDim propagation
+// and axis name unification.
 //
 // This implements the ONNX broadcasting semantics as described in:
 // https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
 func onnxBroadcastToCommonShape(operands []*Node) []*Node {
-	// Step 1: Expand to common rank
+	// ONNX implicit expansion: prepend 1-dims to match the max rank.
 	operands = onnxImplicitExpansion(operands)
-
-	// Step 2: Find the maximum dimension for each axis.
-	// DynamicDim (-1) takes precedence over concrete dimensions: if any operand
-	// has DynamicDim for an axis, the broadcast target is DynamicDim (since the
-	// concrete value is unknown at graph build time and 1-dims will be broadcast
-	// to match it at execution time).
-	ranks := sliceMap(operands, func(n *Node) int { return n.Rank() })
-	maxRank := slices.Max(ranks)
-	maxDims := make([]int, maxRank)
-	for axis := range maxRank {
-		hasDynamic := false
-		maxConcrete := 0
-		for _, n := range operands {
-			d := 1
-			if !n.IsScalar() {
-				d = n.Shape().Dim(axis)
-			}
-			if d == shapes.DynamicDim {
-				hasDynamic = true
-			} else if d > maxConcrete {
-				maxConcrete = d
-			}
-		}
-		if hasDynamic {
-			maxDims[axis] = shapes.DynamicDim
-		} else {
-			maxDims[axis] = maxConcrete
-		}
-	}
-
-	// Step 3: Broadcast each operand to the common shape.
-	// When the target has DynamicDim axes, we collect axis names from operands
-	// that carry them (e.g., the operand with the dynamic batch dim) and build
-	// a target shapes.Shape with those names. BroadcastToShape preserves axis
-	// names so that the specialization system can resolve DynamicDim to concrete
-	// values at execution time.
-	//
-	// Collect axis names for DynamicDim axes from all operands.
-	dynamicAxisNames := make([]string, maxRank)
-	for axis := range maxRank {
-		if maxDims[axis] != shapes.DynamicDim {
-			continue
-		}
-		for _, n := range operands {
-			if name := n.Shape().AxisName(axis); name != "" {
-				dynamicAxisNames[axis] = name
-				break
-			}
-		}
-	}
-
-	result := make([]*Node, len(operands))
-	for ii, operand := range operands {
-		if operand.IsScalar() || slices.Equal(operand.Shape().Dimensions, maxDims) {
-			result[ii] = operand
-			continue
-		}
-		// Build the target shape with axis names for DynamicDim axes.
-		targetShape := shapes.Shape{
-			DType:      operand.DType(),
-			Dimensions: slices.Clone(maxDims),
-		}
-		for axis, name := range dynamicAxisNames {
-			if name != "" {
-				if targetShape.AxisNames == nil {
-					targetShape.AxisNames = make([]string, maxRank)
-				}
-				targetShape.AxisNames[axis] = name
-			}
-		}
-		result[ii] = BroadcastToShape(operand, targetShape)
-	}
-	return result
+	// Delegate to GoMLX core for broadcasting with DynamicDim support.
+	return BroadcastToCommonShape(operands...)
 }
 
 // checkOrPromoteDTypes checks that two operands have the same dtype -- panics if not.
@@ -1025,19 +954,15 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 			panic(errors.Errorf("step cannot be 0 for axis %d in node %s", axis, NodeToString(node)))
 		}
 
-		// For dynamic axes: if the Slice takes the full range (start=0, end=max),
-		// keep the axis dynamic. Otherwise, if the Slice takes a concrete sub-range
-		// that doesn't depend on the dimension size, compute concrete bounds.
 		if dynamicAxes[axis] {
-			// If start and end are both non-negative and don't reference dimSize,
-			// we can compute concrete slice bounds even for dynamic dims.
+			// Dynamic axis: if start and end are both non-negative, we can
+			// compute concrete slice bounds. Otherwise, keep full range —
+			// the actual slicing will happen at execution time via specialization.
 			if start >= 0 && end >= 0 {
 				effectiveStarts[axis] = start
 				effectiveEnds[axis] = end
 				effectiveSteps[axis] = step
 			}
-			// Otherwise (negative indices that reference dimSize), keep full range.
-			// The actual slicing will happen at execution time with concrete shapes.
 			continue
 		}
 
@@ -1050,15 +975,9 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		}
 
 		if step > 0 {
-			// Positive stepping
-			// start clamped to [0, dimSize]
-			// end clamped to [0, dimSize]
 			start = max(0, min(start, dimSize))
 			end = max(0, min(end, dimSize))
 		} else {
-			// Negative stepping (step < 0)
-			// start clamped to [0, dimSize-1]
-			// end clamped to [-1, dimSize-1]
 			start = max(0, min(start, dimSize-1))
 			end = max(-1, min(end, dimSize-1))
 		}
@@ -1068,52 +987,40 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		effectiveSteps[axis] = step
 	}
 
-	// Check if any axis produces an empty slice (start >= end for positive step,
-	// or start <= end for negative step). Per the ONNX spec, this should produce
-	// a zero-length result along that axis, but GoMLX's Slice doesn't support
-	// start == dimSize, so we handle it here.
+	// Check if any concrete axis produces an empty slice.
 	emptySlice := false
-	outputDims := make([]int, rank)
 	for i := 0; i < rank; i++ {
-		// Dynamic axes that keep the full range remain dynamic.
 		if dynamicAxes[i] && effectiveEnds[i] == shapes.DynamicDim {
-			outputDims[i] = shapes.DynamicDim
-			continue
+			continue // Dynamic full-range axes can't be empty.
 		}
 		start := effectiveStarts[i]
 		end := effectiveEnds[i]
 		step := effectiveSteps[i]
-		if step > 0 {
-			if start >= end {
-				emptySlice = true
-				outputDims[i] = 0
-			} else {
-				outputDims[i] = (end - start + step - 1) / step
-			}
-		} else {
-			if start <= end {
-				emptySlice = true
-				outputDims[i] = 0
-			} else {
-				outputDims[i] = (start - end + (-step) - 1) / (-step)
-			}
+		if (step > 0 && start >= end) || (step < 0 && start <= end) {
+			emptySlice = true
+			break
 		}
 	}
 	if emptySlice {
-		// For empty slices, replace any DynamicDim with 0 — the slice is empty
-		// regardless of the dynamic dimension's concrete value.
-		for i := range outputDims {
-			if outputDims[i] == shapes.DynamicDim {
-				outputDims[i] = 0
+		outputDims := make([]int, rank)
+		for i := 0; i < rank; i++ {
+			step := effectiveSteps[i]
+			start := effectiveStarts[i]
+			end := effectiveEnds[i]
+			if step > 0 {
+				outputDims[i] = max(0, (end-start+step-1)/step)
+			} else {
+				outputDims[i] = max(0, (start-end+(-step)-1)/(-step))
 			}
 		}
 		return Zeros(operand.Graph(), shapes.Make(operand.DType(), outputDims...))
 	}
 
+	// Build SliceAxisSpec for each axis. Dynamic full-range axes use AxisRange()
+	// which the core Slice function handles correctly with DynamicDim.
 	specs := make([]SliceAxisSpec, rank)
 	for i := 0; i < rank; i++ {
 		if dynamicAxes[i] && effectiveEnds[i] == shapes.DynamicDim {
-			// Dynamic axis taking full range.
 			specs[i] = AxisRange()
 		} else {
 			specs[i] = AxisRange(effectiveStarts[i], effectiveEnds[i]).Stride(effectiveSteps[i])

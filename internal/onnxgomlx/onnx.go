@@ -58,6 +58,11 @@ type Model struct {
 	// (attention.Core, attention.QKVProjection, nn.Dense) handle fused-vs-decomposed
 	// fallback internally, so all detected fusions are always active.
 	DetectedFusions map[string]FusionCandidate
+
+	// forceStaticShapes disables dynamic shape propagation even when the
+	// backend supports DynamicAxes. When true, all shapes are resolved to
+	// concrete values from the actual inputs at graph build time.
+	forceStaticShapes bool
 }
 
 // Ensure Model implements onnx.Model.
