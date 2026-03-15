@@ -87,7 +87,7 @@ func makeDynamicShapeFromProto(proto *protos.TypeProto_Tensor) (dshape DynamicSh
 			dshape.Names[ii] = dimParam.DimParam
 			dshape.Dimensions[ii] = -1
 		} else {
-			dshape.Names[ii] = "?" // Un-named dynamic dimension.
+			dshape.Names[ii] = UnnamedDynamicDimension // Un-named dynamic dimension.
 			dshape.Dimensions[ii] = -1
 		}
 	}
@@ -122,32 +122,21 @@ func (m *Model) DynamicAxesConfig(backend backends.Backend) [][]string {
 		return nil
 	}
 
-	// Pre-scan: avoid allocations when all inputs are static.
+	// Single pass: build axis names and detect whether any dynamic axis exists.
 	hasAnyDynamic := false
-	for _, dshape := range m.InputsShapes {
-		for _, dim := range dshape.Dimensions {
-			if dim == -1 {
-				hasAnyDynamic = true
-				break
-			}
-		}
-		if hasAnyDynamic {
-			break
-		}
-	}
-	if !hasAnyDynamic {
-		return nil
-	}
-
 	result := make([][]string, len(m.InputsShapes))
 	for i, dshape := range m.InputsShapes {
 		axisNames := make([]string, len(dshape.Dimensions))
 		for j, dim := range dshape.Dimensions {
 			if dim == -1 {
 				axisNames[j] = dynamicAxisName(dshape.Names[j], j)
+				hasAnyDynamic = true
 			}
 		}
 		result[i] = axisNames
+	}
+	if !hasAnyDynamic {
+		return nil
 	}
 	return result
 }
@@ -179,7 +168,7 @@ func (m *Model) ValidateInputs(inputsShapes ...shapes.Shape) error {
 						idx, name, wantShape, givenShape)
 				}
 			} else {
-				dimName := wantShape.Names[axis]
+				dimName := dynamicAxisName(wantShape.Names[axis], axis)
 				var found bool
 				wantDim, found = dimValues[dimName]
 				if !found {
