@@ -10,7 +10,6 @@ import (
 	"github.com/gomlx/gomlx/backends/simplego"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/support/sets"
-	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/pkg/errors"
@@ -165,7 +164,7 @@ func (m *Model) BaseDir() string {
 
 // WithBaseDir sets the base directory for the model.
 // This is used for resolving external data file paths.
-func (m *Model) WithBaseDir(baseDir string) onnxgomlx.Model {
+func (m *Model) WithBaseDir(baseDir string) onnx.Model {
 	m.baseDir = baseDir
 	return m
 }
@@ -231,7 +230,7 @@ func (m *Model) NumInputs() int {
 // This makes them become constants in the graph, and they shouldn't be passed to CallGraph as inputs.
 //
 // The value each input maps to will be converted to a tensors.FromAnyValue.
-func (m *Model) WithInputsAsConstants(inputsAsConstants map[string]any) onnxgomlx.Model {
+func (m *Model) WithInputsAsConstants(inputsAsConstants map[string]any) onnx.Model {
 	m.InputsAsConstants = inputsAsConstants
 	return m
 }
@@ -240,7 +239,7 @@ func (m *Model) WithInputsAsConstants(inputsAsConstants map[string]any) onnxgoml
 // mismatched types. By default, ONNX does not allow implicit casting, so
 // dtype mismatches will panic. Enable this for mixed-precision models
 // (e.g., from quantization-aware training or mixed-precision export).
-func (m *Model) AllowDTypePromotion() onnxgomlx.Model {
+func (m *Model) AllowDTypePromotion() onnx.Model {
 	m.allowDTypePromotion = true
 	return m
 }
@@ -248,7 +247,7 @@ func (m *Model) AllowDTypePromotion() onnxgomlx.Model {
 // PrioritizeFloat16 configures dtype promotion to prefer Float16 over Float32.
 // This leverages hardware-accelerated FP16 kernels on ARM64/NEON platforms.
 // Only effective when AllowDTypePromotion() is also called.
-func (m *Model) PrioritizeFloat16() onnxgomlx.Model {
+func (m *Model) PrioritizeFloat16() onnx.Model {
 	m.prioritizeFloat16 = true
 	return m
 }

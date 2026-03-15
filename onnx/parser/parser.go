@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
+	_ "github.com/gomlx/onnx-gomlx/internal/onnxgomlx/fusion"
 	"github.com/gomlx/onnx-gomlx/onnx"
 )
 
