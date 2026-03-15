@@ -107,11 +107,11 @@ const ModelScope = "ONNX"
 // ExternalDataReader interface for reading ONNX tensors data from external files.
 //
 // ONNX-GoMLX provides a default implementation that reads from files in BaseDir (see WithBaseDir),
-// but if users has the files located in a different place (some Cloud storage, or remotely someway),
-// they can implement this interface to read the data.
+// but if the user has the files located in a different place (e.g.: cloud storage, or remotely in some way),
+// they can provide an implementation of this interface to read the data.
 //
-// Notice an implementation of this interface should keep the file handles open, as tensors can
-// potentially be read from an undefined order.
+// Notice an implementation should keep the file handles open, as tensors can
+// potentially be read in an undefined order.
 // Close will be called at the end of series of calls (like when executing Model.VariablesToContext).
 type ExternalDataReader interface {
 	// ReadInto reads the data (for a tensor) from a file (Location) and offset, into the given output slice of bytes.
@@ -122,7 +122,7 @@ type ExternalDataReader interface {
 	// Close is called at the end of session of reading tensor data, it allows the implementation to free
 	// resources (close files).
 	//
-	// This shouldn't be seen as permanent: the Model may call ReadInto again,
+	// This shouldn't be seen as permanent: the Model may call ReadInto again after a call to Close,
 	// if the user call Model.VariablesToContext again, for instance.
 	// So one should keep the ability to re-open any resources one may need.
 	Close() error
