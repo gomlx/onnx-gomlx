@@ -1,12 +1,18 @@
 # v0.4.1: API adjustment
 
+- Package `onnx`:
+  - Added `WithBaseDir()` to set the directory where to read external data files from -- if using the default 
+    external data reader.
+  - Added `ExternalDataReader` interface
+  - Added `WithExternalDataReader()` to configure an specialized external data reader.
+  - Configuration methods now return a `Model` so configuration calls can be cascaded.
 - Package `onnx/parser`: 
   - `Parse(data []bytes) (*Model, error)`
   - `ParseFile(filePath string) (*Model, error)`
   - `ParseFromReader(reader io.Reader) (*Model, error)`
-- Package `onnx`:
-  - Configuration methods now return a `Model` so configuration calls can be cascaded.
-  - Added `WithBaseDir()` to set the directory where to read external data files from.
+- Package `internal/onnxgomlx`:
+  - Implemented changes in `onnx` API (see above).
+  - Split default `ExternalDataReader` into package `internal/onnxgomlx/filesreader`. 
 
 # v0.4.0: More ops and fused ops; Added support for model [Florence-2](https://huggingface.co/microsoft/Florence-2-large); `onnx` package refactored.
 
