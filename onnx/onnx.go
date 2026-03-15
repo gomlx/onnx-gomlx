@@ -115,6 +115,8 @@ const ModelScope = "ONNX"
 // Close will be called at the end of series of calls (like when executing Model.VariablesToContext).
 type ExternalDataReader interface {
 	// ReadInto reads the data (for a tensor) from a file (Location) and offset, into the given output slice of bytes.
+	//
+	// The info.Length field should be ignored, instead read len(output) bytes (currently they always match).
 	ReadInto(info ExternalDataInfo, output []byte) error
 
 	// Close is called at the end of session of reading tensor data, it allows the implementation to free
@@ -130,5 +132,5 @@ type ExternalDataReader interface {
 type ExternalDataInfo struct {
 	Location string // path to external file (relative to model directory)
 	Offset   int64  // byte offset in file, default 0
-	Length   int64  // number of bytes to read, -1 means read to EOF
+	Length   int64  // number of the data bytes
 }
