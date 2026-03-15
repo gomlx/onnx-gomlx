@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gomlx/gomlx/backends"
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -92,6 +93,44 @@ func (dshape DynamicShape) String() string {
 		return fmt.Sprintf("(%s)", dshape.DType)
 	}
 	return fmt.Sprintf("(%s) [%s]", dshape.DType, strings.Join(dshape.Names, ", "))
+}
+
+// DynamicAxesConfig returns the dynamic axes configuration for each model input,
+// suitable for passing to Exec.WithDynamicAxes(). Each element corresponds to
+// an input in InputsNames order; axis names are non-empty for dynamic axes and
+// empty ("") for static axes.
+//
+// Returns nil if the backend does not support dynamic axes or ForceStaticShapes
+// has been called. The caller should skip WithDynamicAxes when nil is returned.
+func (m *Model) DynamicAxesConfig(backend backends.Backend) [][]string {
+	if m.forceStaticShapes {
+		return nil
+	}
+	if backend == nil || !backend.Capabilities().DynamicAxes {
+		return nil
+	}
+
+	var hasAnyDynamic bool
+	result := make([][]string, len(m.InputsShapes))
+	for i, dshape := range m.InputsShapes {
+		axisNames := make([]string, len(dshape.Dimensions))
+		for j, dim := range dshape.Dimensions {
+			if dim == -1 {
+				name := dshape.Names[j]
+				if name == UnnamedDynamicDimension {
+					name = fmt.Sprintf("dyn_%d", j)
+				}
+				axisNames[j] = name
+				hasAnyDynamic = true
+			}
+			// Static dims get empty axis name.
+		}
+		result[i] = axisNames
+	}
+	if !hasAnyDynamic {
+		return nil
+	}
+	return result
 }
 
 // ValidateInputs checks the inputs has a shape that is compatible with the DynamicShapes of the inputs for the model.

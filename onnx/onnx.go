@@ -8,6 +8,7 @@ package onnx
 import (
 	"io"
 
+	"github.com/gomlx/gomlx/backends"
 	. "github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/ml/context"
@@ -93,6 +94,11 @@ type Model interface {
 	// supports DynamicAxes. All shapes will be resolved to concrete values at
 	// graph build time.
 	ForceStaticShapes()
+
+	// DynamicAxesConfig returns the dynamic axes configuration for each model
+	// input, suitable for passing to Exec.WithDynamicAxes(). Returns nil if
+	// the backend does not support dynamic axes or ForceStaticShapes was called.
+	DynamicAxesConfig(backend backends.Backend) [][]string
 }
 
 // ModelScope is the default scope used for ONNX model variables in a GoMLX context.
