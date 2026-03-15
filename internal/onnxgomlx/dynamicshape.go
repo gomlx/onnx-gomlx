@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gomlx/gomlx/backends"
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -24,18 +25,51 @@ type DynamicShape struct {
 }
 
 // GoMLX returns a shapes.Shape representation of the DynamicShape.
-// Dimensions that are dynamic (-1) are set to onnx.DynamicDim.
+// Dimensions that are dynamic (-1) are set to shapes.DynamicDim and the
+// corresponding axis names from the ONNX model are preserved via
+// shapes.MakeDynamic so that the specialization system can resolve them.
 func (dshape DynamicShape) GoMLX() shapes.Shape {
-	s := shapes.Make(dshape.DType)
 	if dshape.Rank() == 0 {
-		return s
+		return shapes.Make(dshape.DType)
 	}
-	s.Dimensions = slices.Clone(dshape.Dimensions)
-	return s
+	hasDynamic := false
+	for _, d := range dshape.Dimensions {
+		if d == -1 {
+			hasDynamic = true
+			break
+		}
+	}
+	if !hasDynamic {
+		return shapes.Make(dshape.DType, dshape.Dimensions...)
+	}
+	axisNames := make([]string, len(dshape.Names))
+	for i, name := range dshape.Names {
+		if dshape.Dimensions[i] == -1 {
+			axisNames[i] = dynamicAxisName(name, i)
+		}
+	}
+	return shapes.MakeDynamic(dshape.DType, slices.Clone(dshape.Dimensions), axisNames)
 }
 
 // UnnamedDynamicDimension is a placeholder name for an unnamed dynamic dimension, that doesn't necessarily match any other (in inputs/outputs).
 const UnnamedDynamicDimension = "?"
+
+// dynamicAxisName returns the axis name for a dynamic dimension at the given
+// index. Unnamed dimensions ("?") get a positional name like "dyn_0".
+// This is the single source of truth for naming unnamed dynamic axes.
+func dynamicAxisName(name string, index int) string {
+	if name == UnnamedDynamicDimension {
+		return fmt.Sprintf("dyn_%d", index)
+	}
+	return name
+}
+
+// ForceStaticShapes disables dynamic shape propagation even when the backend
+// supports DynamicAxes. All shapes will be resolved to concrete values at
+// graph build time.
+func (m *Model) ForceStaticShapes() {
+	m.forceStaticShapes = true
+}
 
 // makeDynamicShapeFromProto converts from a tensor proto type to a DynamicShape.
 func makeDynamicShapeFromProto(proto *protos.TypeProto_Tensor) (dshape DynamicShape, err error) {
@@ -53,7 +87,7 @@ func makeDynamicShapeFromProto(proto *protos.TypeProto_Tensor) (dshape DynamicSh
 			dshape.Names[ii] = dimParam.DimParam
 			dshape.Dimensions[ii] = -1
 		} else {
-			dshape.Names[ii] = "?" // Un-named dynamic dimension.
+			dshape.Names[ii] = UnnamedDynamicDimension // Un-named dynamic dimension.
 			dshape.Dimensions[ii] = -1
 		}
 	}
@@ -71,6 +105,40 @@ func (dshape DynamicShape) String() string {
 		return fmt.Sprintf("(%s)", dshape.DType)
 	}
 	return fmt.Sprintf("(%s) [%s]", dshape.DType, strings.Join(dshape.Names, ", "))
+}
+
+// DynamicAxesConfig returns the dynamic axes configuration for each model input,
+// suitable for passing to Exec.WithDynamicAxes(). Each element corresponds to
+// an input in InputsNames order; axis names are non-empty for dynamic axes and
+// empty ("") for static axes.
+//
+// Returns nil if the backend does not support dynamic axes or ForceStaticShapes
+// has been called. The caller should skip WithDynamicAxes when nil is returned.
+func (m *Model) DynamicAxesConfig(backend backends.Backend) [][]string {
+	if m.forceStaticShapes {
+		return nil
+	}
+	if backend == nil || !backend.Capabilities().DynamicAxes {
+		return nil
+	}
+
+	// Single pass: build axis names and detect whether any dynamic axis exists.
+	hasAnyDynamic := false
+	result := make([][]string, len(m.InputsShapes))
+	for i, dshape := range m.InputsShapes {
+		axisNames := make([]string, len(dshape.Dimensions))
+		for j, dim := range dshape.Dimensions {
+			if dim == -1 {
+				axisNames[j] = dynamicAxisName(dshape.Names[j], j)
+				hasAnyDynamic = true
+			}
+		}
+		result[i] = axisNames
+	}
+	if !hasAnyDynamic {
+		return nil
+	}
+	return result
 }
 
 // ValidateInputs checks the inputs has a shape that is compatible with the DynamicShapes of the inputs for the model.
@@ -100,7 +168,7 @@ func (m *Model) ValidateInputs(inputsShapes ...shapes.Shape) error {
 						idx, name, wantShape, givenShape)
 				}
 			} else {
-				dimName := wantShape.Names[axis]
+				dimName := dynamicAxisName(wantShape.Names[axis], axis)
 				var found bool
 				wantDim, found = dimValues[dimName]
 				if !found {

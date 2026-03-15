@@ -46,39 +46,15 @@ func onnxImplicitExpansion(operands []*Node) []*Node {
 
 // onnxBroadcastToCommonShape implements the full ONNX multidirectional broadcasting rule.
 // It first expands operands to the same rank (by prepending 1-dimensional axes), then
-// broadcasts all operands to a common shape where each dimension is the maximum across
-// all operands.
+// delegates to the core BroadcastToCommonShape which handles DynamicDim propagation
+// and axis name unification.
 //
 // This implements the ONNX broadcasting semantics as described in:
 // https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
 func onnxBroadcastToCommonShape(operands []*Node) []*Node {
-	// Step 1: Expand to common rank
-	operands = onnxImplicitExpansion(operands)
-
-	// Step 2: Find the maximum dimension for each axis
-	ranks := sliceMap(operands, func(n *Node) int { return n.Rank() })
-	maxRank := slices.Max(ranks)
-	maxDims := make([]int, maxRank)
-	for axis := range maxRank {
-		allDims := sliceMap(operands, func(n *Node) int {
-			if n.IsScalar() {
-				return 1
-			}
-			return n.Shape().Dim(axis)
-		})
-		maxDims[axis] = slices.Max(allDims)
-	}
-
-	// Step 3: Broadcast each operand to the common shape
-	result := make([]*Node, len(operands))
-	for ii, operand := range operands {
-		if !operand.IsScalar() && !slices.Equal(operand.Shape().Dimensions, maxDims) {
-			result[ii] = BroadcastToDims(operand, maxDims...)
-		} else {
-			result[ii] = operand
-		}
-	}
-	return result
+	// BroadcastToCommonShape already expands operands to common rank via
+	// ExpandLeftToRank, so no need for onnxImplicitExpansion here.
+	return BroadcastToCommonShape(operands...)
 }
 
 // checkOrPromoteDTypes checks that two operands have the same dtype -- panics if not.
@@ -115,16 +91,18 @@ func (m *Model) onnxImplicitFloatPromotion(n *Node) *Node {
 	return ConvertDType(n, dtypes.Float32)
 }
 
-// convertBinaryOp applies ONNX broadcasting rule before calling the fn.
+// convertBinaryOp applies ONNX multidirectional broadcasting before calling fn.
 //
-// It differs from GoMLX and XLA in that it automatically prepend 1-dimensional axes to
-// any of the operands, if they differ in rank.
+// It expands operands to the same rank and broadcasts to a common shape,
+// propagating DynamicDim and axis names correctly. This ensures that
+// intermediate nodes created during rank expansion retain axis names
+// needed for shape specialization.
+//
 // It also handles dtype mismatches based on the Model's dtype promotion config.
 func (m *Model) convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
-	operands := onnxImplicitExpansion([]*Node{lhs, rhs})
-	lhs, rhs = operands[0], operands[1]
 	lhs, rhs = m.checkOrPromoteDTypes(lhs, rhs)
-	return fn(lhs, rhs)
+	operands := onnxBroadcastToCommonShape([]*Node{lhs, rhs})
+	return fn(operands[0], operands[1])
 }
 
 // convertMod converts an ONNX Mod node to GoMLX.
@@ -937,9 +915,16 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	effectiveEnds := make([]int, rank)
 	effectiveSteps := make([]int, rank)
 
+	// Track which axes are dynamic (DynamicDim) — we can't compute
+	// concrete start/end/step for these at graph build time.
+	dynamicAxes := make([]bool, rank)
 	for i := 0; i < rank; i++ {
+		dim := operand.Shape().Dim(i)
+		if dim == shapes.DynamicDim {
+			dynamicAxes[i] = true
+		}
 		effectiveStarts[i] = 0
-		effectiveEnds[i] = operand.Shape().Dim(i)
+		effectiveEnds[i] = dim
 		effectiveSteps[i] = 1
 	}
 
@@ -970,6 +955,18 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 			panic(errors.Errorf("step cannot be 0 for axis %d in node %s", axis, NodeToString(node)))
 		}
 
+		if dynamicAxes[axis] {
+			// Dynamic axis: if start and end are both non-negative, we can
+			// compute concrete slice bounds. Otherwise, keep full range —
+			// the actual slicing will happen at execution time via specialization.
+			if start >= 0 && end >= 0 {
+				effectiveStarts[axis] = start
+				effectiveEnds[axis] = end
+				effectiveSteps[axis] = step
+			}
+			continue
+		}
+
 		// Handle negative start and end indices by adding dimension size
 		if start < 0 {
 			start += dimSize
@@ -979,15 +976,9 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		}
 
 		if step > 0 {
-			// Positive stepping
-			// start clamped to [0, dimSize]
-			// end clamped to [0, dimSize]
 			start = max(0, min(start, dimSize))
 			end = max(0, min(end, dimSize))
 		} else {
-			// Negative stepping (step < 0)
-			// start clamped to [0, dimSize-1]
-			// end clamped to [-1, dimSize-1]
 			start = max(0, min(start, dimSize-1))
 			end = max(-1, min(end, dimSize-1))
 		}
@@ -997,39 +988,44 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		effectiveSteps[axis] = step
 	}
 
-	// Check if any axis produces an empty slice (start >= end for positive step,
-	// or start <= end for negative step). Per the ONNX spec, this should produce
-	// a zero-length result along that axis, but GoMLX's Slice doesn't support
-	// start == dimSize, so we handle it here.
+	// Check if any concrete axis produces an empty slice.
 	emptySlice := false
-	outputDims := make([]int, rank)
 	for i := 0; i < rank; i++ {
+		if dynamicAxes[i] && effectiveEnds[i] == shapes.DynamicDim {
+			continue // Dynamic full-range axes can't be empty.
+		}
 		start := effectiveStarts[i]
 		end := effectiveEnds[i]
 		step := effectiveSteps[i]
-		if step > 0 {
-			if start >= end {
-				emptySlice = true
-				outputDims[i] = 0
-			} else {
-				outputDims[i] = (end - start + step - 1) / step
-			}
-		} else {
-			if start <= end {
-				emptySlice = true
-				outputDims[i] = 0
-			} else {
-				outputDims[i] = (start - end + (-step) - 1) / (-step)
-			}
+		if (step > 0 && start >= end) || (step < 0 && start <= end) {
+			emptySlice = true
+			break
 		}
 	}
 	if emptySlice {
+		outputDims := make([]int, rank)
+		for i := 0; i < rank; i++ {
+			step := effectiveSteps[i]
+			start := effectiveStarts[i]
+			end := effectiveEnds[i]
+			if step > 0 {
+				outputDims[i] = max(0, (end-start+step-1)/step)
+			} else {
+				outputDims[i] = max(0, (start-end+(-step)-1)/(-step))
+			}
+		}
 		return Zeros(operand.Graph(), shapes.Make(operand.DType(), outputDims...))
 	}
 
+	// Build SliceAxisSpec for each axis. Dynamic full-range axes use AxisRange()
+	// which the core Slice function handles correctly with DynamicDim.
 	specs := make([]SliceAxisSpec, rank)
 	for i := 0; i < rank; i++ {
-		specs[i] = AxisRange(effectiveStarts[i], effectiveEnds[i]).Stride(effectiveSteps[i])
+		if dynamicAxes[i] && effectiveEnds[i] == shapes.DynamicDim {
+			specs[i] = AxisRange()
+		} else {
+			specs[i] = AxisRange(effectiveStarts[i], effectiveEnds[i]).Stride(effectiveSteps[i])
+		}
 	}
 
 	return Slice(operand, specs...)
