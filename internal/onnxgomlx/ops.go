@@ -91,16 +91,18 @@ func (m *Model) onnxImplicitFloatPromotion(n *Node) *Node {
 	return ConvertDType(n, dtypes.Float32)
 }
 
-// convertBinaryOp applies ONNX broadcasting rule before calling the fn.
+// convertBinaryOp applies ONNX multidirectional broadcasting before calling fn.
 //
-// It differs from GoMLX and XLA in that it automatically prepend 1-dimensional axes to
-// any of the operands, if they differ in rank.
+// It expands operands to the same rank and broadcasts to a common shape,
+// propagating DynamicDim and axis names correctly. This ensures that
+// intermediate nodes created during rank expansion retain axis names
+// needed for shape specialization.
+//
 // It also handles dtype mismatches based on the Model's dtype promotion config.
 func (m *Model) convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
-	operands := onnxImplicitExpansion([]*Node{lhs, rhs})
-	lhs, rhs = operands[0], operands[1]
 	lhs, rhs = m.checkOrPromoteDTypes(lhs, rhs)
-	return fn(lhs, rhs)
+	operands := onnxBroadcastToCommonShape([]*Node{lhs, rhs})
+	return fn(operands[0], operands[1])
 }
 
 // convertMod converts an ONNX Mod node to GoMLX.
