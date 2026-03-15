@@ -45,19 +45,31 @@ func (dshape DynamicShape) GoMLX() shapes.Shape {
 	axisNames := make([]string, len(dshape.Names))
 	for i, name := range dshape.Names {
 		if dshape.Dimensions[i] == -1 {
-			if name == UnnamedDynamicDimension {
-				axisNames[i] = fmt.Sprintf("dyn_%d", i)
-			} else {
-				axisNames[i] = name
-			}
+			axisNames[i] = dynamicAxisName(name, i)
 		}
-		// Static dims get empty axis name (unnamed).
 	}
 	return shapes.MakeDynamic(dshape.DType, slices.Clone(dshape.Dimensions), axisNames)
 }
 
 // UnnamedDynamicDimension is a placeholder name for an unnamed dynamic dimension, that doesn't necessarily match any other (in inputs/outputs).
 const UnnamedDynamicDimension = "?"
+
+// dynamicAxisName returns the axis name for a dynamic dimension at the given
+// index. Unnamed dimensions ("?") get a positional name like "dyn_0".
+// This is the single source of truth for naming unnamed dynamic axes.
+func dynamicAxisName(name string, index int) string {
+	if name == UnnamedDynamicDimension {
+		return fmt.Sprintf("dyn_%d", index)
+	}
+	return name
+}
+
+// ForceStaticShapes disables dynamic shape propagation even when the backend
+// supports DynamicAxes. All shapes will be resolved to concrete values at
+// graph build time.
+func (m *Model) ForceStaticShapes() {
+	m.forceStaticShapes = true
+}
 
 // makeDynamicShapeFromProto converts from a tensor proto type to a DynamicShape.
 func makeDynamicShapeFromProto(proto *protos.TypeProto_Tensor) (dshape DynamicShape, err error) {
@@ -110,25 +122,32 @@ func (m *Model) DynamicAxesConfig(backend backends.Backend) [][]string {
 		return nil
 	}
 
-	var hasAnyDynamic bool
+	// Pre-scan: avoid allocations when all inputs are static.
+	hasAnyDynamic := false
+	for _, dshape := range m.InputsShapes {
+		for _, dim := range dshape.Dimensions {
+			if dim == -1 {
+				hasAnyDynamic = true
+				break
+			}
+		}
+		if hasAnyDynamic {
+			break
+		}
+	}
+	if !hasAnyDynamic {
+		return nil
+	}
+
 	result := make([][]string, len(m.InputsShapes))
 	for i, dshape := range m.InputsShapes {
 		axisNames := make([]string, len(dshape.Dimensions))
 		for j, dim := range dshape.Dimensions {
 			if dim == -1 {
-				name := dshape.Names[j]
-				if name == UnnamedDynamicDimension {
-					name = fmt.Sprintf("dyn_%d", j)
-				}
-				axisNames[j] = name
-				hasAnyDynamic = true
+				axisNames[j] = dynamicAxisName(dshape.Names[j], j)
 			}
-			// Static dims get empty axis name.
 		}
 		result[i] = axisNames
-	}
-	if !hasAnyDynamic {
-		return nil
 	}
 	return result
 }

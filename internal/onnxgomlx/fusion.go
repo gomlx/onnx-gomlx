@@ -123,13 +123,6 @@ func (m *Model) DisableFusion() {
 	m.DetectedFusions = nil
 }
 
-// ForceStaticShapes disables dynamic shape propagation even when the backend
-// supports DynamicAxes. All shapes will be resolved to concrete values at
-// graph build time.
-func (m *Model) ForceStaticShapes() {
-	m.forceStaticShapes = true
-}
-
 // IsConstant checks if a name refers to a constant (initializer or Constant node output).
 func (m *Model) IsConstant(name string) bool {
 	if _, ok := m.VariableNameToValue[name]; ok {

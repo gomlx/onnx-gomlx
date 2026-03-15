@@ -52,9 +52,8 @@ func onnxImplicitExpansion(operands []*Node) []*Node {
 // This implements the ONNX broadcasting semantics as described in:
 // https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
 func onnxBroadcastToCommonShape(operands []*Node) []*Node {
-	// ONNX implicit expansion: prepend 1-dims to match the max rank.
-	operands = onnxImplicitExpansion(operands)
-	// Delegate to GoMLX core for broadcasting with DynamicDim support.
+	// BroadcastToCommonShape already expands operands to common rank via
+	// ExpandLeftToRank, so no need for onnxImplicitExpansion here.
 	return BroadcastToCommonShape(operands...)
 }
 
