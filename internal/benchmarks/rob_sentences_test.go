@@ -318,7 +318,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	repoModel := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repoModel.DownloadFile("model.onnx"))
 	backend := graphtest.BuildTestBackend()
-	model := must.M1(parser.FromFile(onnxModelPath))
+	model := must.M1(parser.ParseFile(onnxModelPath))
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()

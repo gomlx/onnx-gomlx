@@ -10,6 +10,7 @@ import (
 	"github.com/gomlx/gomlx/backends/simplego"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/support/sets"
+	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx/filesreader"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/pkg/errors"
@@ -18,9 +19,9 @@ import (
 
 // Model represents a parsed ONNX file.
 type Model struct {
-	ONNXFileName     string
-	Proto            protos.ModelProto
-	NodeOutputToNode map[string]*protos.NodeProto
+	ONNXFileName, baseDir string
+	Proto                 protos.ModelProto
+	NodeOutputToNode      map[string]*protos.NodeProto
 
 	// Names used for variables and inputs: these are like internal outputs, but they come not from a node,
 	// but from an input or variable. Used to introspect the graph.
@@ -47,7 +48,7 @@ type Model struct {
 
 	// ExternalDataReader manages memory-mapped external data files for efficient tensor loading.
 	// It is initialized lazily when external data is first accessed.
-	ExternalDataReader *ExternalDataReader
+	ExternalDataReader onnx.ExternalDataReader
 
 	// Consumers maps output names to the nodes that consume them. Built during detectFusionPatterns
 	// and used by fusion detectors to walk the graph.
@@ -66,7 +67,9 @@ var _ onnx.Model = &Model{}
 // Parse parses an ONNX model into an internal representation that can be used to build a GoMLX graph.
 func Parse(contents []byte) (*Model, error) {
 	// Parse the ONNX proto.
-	m := &Model{}
+	m := &Model{
+		baseDir: ".",
+	}
 	err := proto.Unmarshal(contents, &m.Proto)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to parse ONNX model proto")
@@ -146,33 +149,47 @@ func ReadFile(filePath string) (*Model, error) {
 		return nil, err
 	}
 	m.ONNXFileName = filePath
+	m.baseDir = filepath.Dir(filePath)
 	return m, nil
 }
 
 // Name of the model graph.
 func (m *Model) Name() string { return m.name }
 
-// baseDir returns the directory containing the ONNX model file.
+// BaseDir returns the directory containing the ONNX model file.
 // This is used for resolving external data file paths.
 // Returns an empty string if the model was not loaded from a file.
-func (m *Model) baseDir() string {
-	if m.ONNXFileName == "" {
-		return ""
-	}
-	return filepath.Dir(m.ONNXFileName)
+func (m *Model) BaseDir() string {
+	return m.baseDir
+}
+
+// WithBaseDir sets the base directory for the model. This is used for resolving external data file paths.
+//
+// It defaults to the current directory (".") or, if the model was read from a file, to the directory of that file.
+func (m *Model) WithBaseDir(baseDir string) onnx.Model {
+	m.baseDir = baseDir
+	return m
+}
+
+// WithExternalDataReader configures the model to use a specialized ExternalDataReader.
+//
+// It defaults to a standard file reader that reads from files in the base directory (see WithBaseDir).
+func (m *Model) WithExternalDataReader(reader onnx.ExternalDataReader) onnx.Model {
+	m.ExternalDataReader = reader
+	return m
 }
 
 // getExternalDataReader returns the ExternalDataReader for this model, creating it lazily if needed.
 // Returns nil if the model has no base directory (e.g., parsed from bytes without a file path).
-func (m *Model) getExternalDataReader() *ExternalDataReader {
+func (m *Model) getExternalDataReader() onnx.ExternalDataReader {
 	if m.ExternalDataReader != nil {
 		return m.ExternalDataReader
 	}
-	baseDir := m.baseDir()
+	baseDir := m.BaseDir()
 	if baseDir == "" {
 		return nil
 	}
-	m.ExternalDataReader = NewExternalDataReader(baseDir)
+	m.ExternalDataReader = filesreader.New(baseDir)
 	return m.ExternalDataReader
 }
 
@@ -223,23 +240,26 @@ func (m *Model) NumInputs() int {
 // This makes them become constants in the graph, and they shouldn't be passed to CallGraph as inputs.
 //
 // The value each input maps to will be converted to a tensors.FromAnyValue.
-func (m *Model) WithInputsAsConstants(inputsAsConstants map[string]any) {
+func (m *Model) WithInputsAsConstants(inputsAsConstants map[string]any) onnx.Model {
 	m.InputsAsConstants = inputsAsConstants
+	return m
 }
 
 // AllowDTypePromotion enables automatic dtype promotion for operations with
 // mismatched types. By default, ONNX does not allow implicit casting, so
 // dtype mismatches will panic. Enable this for mixed-precision models
 // (e.g., from quantization-aware training or mixed-precision export).
-func (m *Model) AllowDTypePromotion() {
+func (m *Model) AllowDTypePromotion() onnx.Model {
 	m.allowDTypePromotion = true
+	return m
 }
 
 // PrioritizeFloat16 configures dtype promotion to prefer Float16 over Float32.
 // This leverages hardware-accelerated FP16 kernels on ARM64/NEON platforms.
 // Only effective when AllowDTypePromotion() is also called.
-func (m *Model) PrioritizeFloat16() {
+func (m *Model) PrioritizeFloat16() onnx.Model {
 	m.prioritizeFloat16 = true
+	return m
 }
 
 // Write will write the ONNX model to the given writer (usually a file).

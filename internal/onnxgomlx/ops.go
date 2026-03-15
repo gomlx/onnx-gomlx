@@ -351,7 +351,7 @@ func convertConstant(m *Model, node *protos.NodeProto, g *Graph) *Node {
 	if valueAttr.T == nil {
 		panic(errors.Errorf("TENSOR attribute for ONNX node %s is nil!?", NodeToString(node)))
 	}
-	tensor, err := tensorToGoMLXWithBaseDir(m.Backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
+	tensor, err := ONNXTensorToGoMLX(m.Backend, valueAttr.T, m.getExternalDataReader())
 	if err != nil {
 		err = errors.WithMessagef(err, "while converting ONNX %s", NodeToString(node))
 		panic(err)
@@ -1341,7 +1341,7 @@ func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *p
 	valueAttr := GetNodeAttr(node, "value", false)
 	if valueAttr != nil {
 		assertNodeAttrType(node, valueAttr, protos.AttributeProto_TENSOR)
-		tensor, err := tensorToGoMLXWithBaseDir(m.Backend, valueAttr.T, m.baseDir(), m.getExternalDataReader())
+		tensor, err := ONNXTensorToGoMLX(m.Backend, valueAttr.T, m.getExternalDataReader())
 		if err != nil {
 			err = errors.WithMessagef(err, "while converting ONNX %s", NodeToString(node))
 			panic(err)
