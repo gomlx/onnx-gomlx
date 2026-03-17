@@ -256,8 +256,9 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	numWarmUps := 2 * (len(tokenizedExamples) + batchSize - 1) / batchSize
 	benchmarks.New(testFn).
-		WithWarmUps(128).
+		WithWarmUps(numWarmUps).
 		WithDuration(*flagBenchDuration).
 		WithHeader(withHeader).
 		Done()
