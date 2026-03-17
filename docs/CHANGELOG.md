@@ -1,5 +1,6 @@
 # v0.4.1: API adjustment
 
+- Updated dependency to GoMLX v0.27.1
 - Package `onnx`:
   - Added `WithBaseDir()` to set the directory where to read external data files from -- if using the default 
     external data reader.
