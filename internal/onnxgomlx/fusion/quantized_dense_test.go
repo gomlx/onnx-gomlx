@@ -7,11 +7,9 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
-	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/proto"
 
 	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
 )
@@ -26,18 +24,6 @@ func makeInt8TensorProto(name string, dims []int64, data []int8) *protos.TensorP
 		Name:     name,
 		Dims:     dims,
 		DataType: int32(protos.TensorProto_INT8),
-		RawData:  raw,
-	}
-}
-
-// makeUint8TensorProto creates a TensorProto with the given shape and uint8 data.
-func makeUint8TensorProto(name string, dims []int64, data []uint8) *protos.TensorProto {
-	raw := make([]byte, len(data))
-	copy(raw, data)
-	return &protos.TensorProto{
-		Name:     name,
-		Dims:     dims,
-		DataType: int32(protos.TensorProto_UINT8),
 		RawData:  raw,
 	}
 }
@@ -74,7 +60,7 @@ func makeValueInfoWithType(name string, dims []int64, elemType protos.TensorProt
 }
 
 // makeQuantizedDenseGraph builds the DQL → MatMulInteger → Cast → Mul(a_scale*B_scale) → Mul pattern.
-// If perChannelScale is true, bScale is [K] instead of scalar.
+// If perChannelScale is true, bScale is [N] (per output channel) instead of scalar.
 func makeQuantizedDenseGraph(K, N int, perChannelScale bool) *protos.GraphProto {
 	// B weights: [K, N] int8
 	bData := make([]int8, K*N)
@@ -209,15 +195,4 @@ func TestQuantizedDenseScalarScale(t *testing.T) {
 	result := results[0]
 	assert.Equal(t, dtypes.Float32, result.DType())
 	assert.Equal(t, []int{2, N}, result.Shape().Dimensions)
-}
-
-// buildQuantizedDenseTestModel is a helper to build a model from a graph proto for quantized dense tests.
-func buildQuantizedDenseTestModel(t *testing.T, graph *protos.GraphProto) *onnxgomlx.Model {
-	t.Helper()
-	modelProto := &protos.ModelProto{Graph: graph}
-	content, err := proto.Marshal(modelProto)
-	require.NoError(t, err)
-	m, err := onnxgomlx.Parse(content)
-	require.NoError(t, err)
-	return m
 }
