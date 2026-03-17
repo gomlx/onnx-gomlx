@@ -519,7 +519,7 @@ func ConcatenateTensorProtos(tps []*protos.TensorProto, axis int) (*protos.Tenso
 		if tps[i].DataType != tps[0].DataType {
 			return nil, errors.Errorf("tensor %d has DataType %d, expected %d", i, tps[i].DataType, tps[0].DataType)
 		}
-		for d := 0; d < ndim; d++ {
+		for d := range ndim {
 			if d != axis && tps[i].Dims[d] != tps[0].Dims[d] {
 				return nil, errors.Errorf("tensor %d dim %d is %d, expected %d", i, d, tps[i].Dims[d], tps[0].Dims[d])
 			}

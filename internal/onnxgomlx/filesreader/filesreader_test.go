@@ -37,7 +37,7 @@ func TestReaderCaching(t *testing.T) {
 	}
 
 	// Read multiple times - should reuse cached mmap
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		dst := make([]byte, 8)
 		err := reader.ReadInto(info, dst)
 		require.NoError(t, err)

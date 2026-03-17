@@ -142,9 +142,7 @@ func implParallelBenchmark[E any](
 	//   - We add some buffer because we don't want the preparation of the inputs (producer)
 	//     to be a bottleneck or even accounted for.
 	examplesChan := make(chan E, numWorkers)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		// Create input and output tensors.
 		for {
 			e := inputFn()
@@ -157,7 +155,7 @@ func implParallelBenchmark[E any](
 				// Move forward to produce the next input example.
 			}
 		}
-	}()
+	})
 
 	// Start consumers:
 	finishedCounter := make(chan struct{})
