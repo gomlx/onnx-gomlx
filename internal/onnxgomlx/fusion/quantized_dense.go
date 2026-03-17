@@ -25,8 +25,11 @@ type QuantizedDenseParams struct {
 	// BWeightName is the constant int8 weight [K, N].
 	BWeightName string
 
-	// BScaleName is the constant per-tensor weight scale (scalar float32).
+	// BScaleName is the constant weight scale: either scalar (per-tensor) or 1D [N] (per-channel).
 	BScaleName string
+
+	// PerChannelScale is true when BScale is per-channel [N] rather than scalar.
+	PerChannelScale bool
 
 	// AInputName is the quantized A input name from MatMulInteger.
 	// Set when no DynamicQuantizeLinear is present (DequantizeLinear variant).
@@ -91,10 +94,19 @@ func (c *quantizedDenseCandidate) Emit(_ *context.Context, g *Graph, convertedOu
 	b := convertedOutputs[p.BWeightName]
 	bScale := convertedOutputs[p.BScaleName]
 
-	// Build weight scales: nn.QuantizedDense expects [K, numGroups] where numGroups = ceil(N/groupSize).
-	// For per-tensor quantization (groupSize = N), numGroups = 1, so scales = [K, 1].
+	// Build weight scales: nn.QuantizedDense expects [K, numGroups] where numGroups = ceil(N/blockSize).
 	bScaleFloat := ConvertDType(bScale, dtypes.Float32)
-	fusedScales := ExpandAndBroadcast(bScaleFloat, []int{p.K, 1}, []int{0, 1})
+	var fusedScales *Node
+	var blockSize int
+	if p.PerChannelScale {
+		// Per-channel scale [N]: blockSize=1, numGroups=N, scale=[K, N].
+		fusedScales = ExpandAndBroadcast(bScaleFloat, []int{p.K, p.N}, []int{0})
+		blockSize = 1
+	} else {
+		// Per-tensor scalar scale: blockSize=N, numGroups=1, scale=[K, 1].
+		fusedScales = ExpandAndBroadcast(bScaleFloat, []int{p.K, 1}, []int{0, 1})
+		blockSize = p.N
+	}
 
 	var bias *Node
 	if p.BiasName != "" {
@@ -105,7 +117,7 @@ func (c *quantizedDenseCandidate) Emit(_ *context.Context, g *Graph, convertedOu
 		Scheme:    backends.QuantLinear,
 		Scale:     fusedScales,
 		BlockAxis: 1,
-		BlockSize: p.N,
+		BlockSize: blockSize,
 	}
 
 	var result *Node
@@ -213,6 +225,19 @@ func tryMatchQuantizedDense(m *onnxgomlx.Model, matMulNode *protos.NodeProto) *q
 	if bScaleName == "" {
 		return nil
 	}
+	// B scale must be scalar (per-tensor) or 1D [N] (per-channel).
+	perChannelScale := false
+	bScaleTP, bScaleFound := m.VariableNameToValue[bScaleName]
+	if !bScaleFound || bScaleTP == nil {
+		return nil
+	}
+	if isScalar := len(bScaleTP.Dims) == 0 || (len(bScaleTP.Dims) == 1 && bScaleTP.Dims[0] == 1); !isScalar {
+		if len(bScaleTP.Dims) == 1 && bScaleTP.Dims[0] == int64(N) {
+			perChannelScale = true
+		} else {
+			return nil // unsupported scale shape
+		}
+	}
 
 	resultMulOut := resultMulNode.Output[0]
 
@@ -270,13 +295,14 @@ func tryMatchQuantizedDense(m *onnxgomlx.Model, matMulNode *protos.NodeProto) *q
 	}
 
 	params := &QuantizedDenseParams{
-		FloatInputName: floatInputName,
-		BWeightName:    bName,
-		BScaleName:     bScaleName,
-		BiasName:       biasName,
-		K:              K,
-		N:              N,
-		HasGelu:        hasGelu,
+		FloatInputName:  floatInputName,
+		BWeightName:     bName,
+		BScaleName:      bScaleName,
+		PerChannelScale: perChannelScale,
+		BiasName:        biasName,
+		K:               K,
+		N:               N,
+		HasGelu:         hasGelu,
 	}
 
 	return &quantizedDenseCandidate{

@@ -24,6 +24,9 @@ type QuantizedQKVDenseParams struct {
 	K     int // input features (shared)
 	QDim  int // Q output features
 	KVDim int // K and V output features (must be equal)
+
+	// PerChannelScale is true when scales are per-channel [N] rather than scalar.
+	PerChannelScale bool
 }
 
 // quantizedQKVDenseCandidate implements onnxgomlx.FusionCandidate for fused quantized QKV projection.
@@ -53,15 +56,26 @@ func (c *quantizedQKVDenseCandidate) Emit(_ *context.Context, g *Graph, converte
 	scaleK := convertedOutputs[p.ScaleKName]
 	scaleV := convertedOutputs[p.ScaleVName]
 
-	// Concatenate int8 weights: [K, QDim] + [K, KVDim] + [K, KVDim] → [K, 3*QDim]
+	// Concatenate int8 weights: [K, QDim] + [K, KVDim] + [K, KVDim] → [K, totalN]
 	wQKV := Concatenate([]*Node{wQ, wK, wV}, 1)
-	groupSize := p.QDim // Each projection is one quantization group.
 
-	// Build scales [K, 3]: each scalar scale broadcast to [K, 1] then concatenated.
-	scaleQCol := ExpandAndBroadcast(ConvertDType(scaleQ, dtypes.Float32), []int{p.K, 1}, []int{0, 1})
-	scaleKCol := ExpandAndBroadcast(ConvertDType(scaleK, dtypes.Float32), []int{p.K, 1}, []int{0, 1})
-	scaleVCol := ExpandAndBroadcast(ConvertDType(scaleV, dtypes.Float32), []int{p.K, 1}, []int{0, 1})
-	fusedScales := Concatenate([]*Node{scaleQCol, scaleKCol, scaleVCol}, 1) // [K, 3]
+	var fusedScales *Node
+	var blockSize int
+	if p.PerChannelScale {
+		// Per-channel scales [QDim], [KVDim], [KVDim]: broadcast each to [K, dim] then concatenate.
+		scaleQCol := ExpandAndBroadcast(ConvertDType(scaleQ, dtypes.Float32), []int{p.K, p.QDim}, []int{0})
+		scaleKCol := ExpandAndBroadcast(ConvertDType(scaleK, dtypes.Float32), []int{p.K, p.KVDim}, []int{0})
+		scaleVCol := ExpandAndBroadcast(ConvertDType(scaleV, dtypes.Float32), []int{p.K, p.KVDim}, []int{0})
+		fusedScales = Concatenate([]*Node{scaleQCol, scaleKCol, scaleVCol}, 1) // [K, totalN]
+		blockSize = 1
+	} else {
+		// Scalar scales: broadcast each to [K, 1] then concatenate to [K, 3].
+		scaleQCol := ExpandAndBroadcast(ConvertDType(scaleQ, dtypes.Float32), []int{p.K, 1}, []int{0, 1})
+		scaleKCol := ExpandAndBroadcast(ConvertDType(scaleK, dtypes.Float32), []int{p.K, 1}, []int{0, 1})
+		scaleVCol := ExpandAndBroadcast(ConvertDType(scaleV, dtypes.Float32), []int{p.K, 1}, []int{0, 1})
+		fusedScales = Concatenate([]*Node{scaleQCol, scaleKCol, scaleVCol}, 1) // [K, 3]
+		blockSize = p.QDim // Each projection is one quantization group.
+	}
 
 	// Concatenate biases if present: [QDim] + [KVDim] + [KVDim] → [totalN]
 	var bias *Node
@@ -77,7 +91,7 @@ func (c *quantizedQKVDenseCandidate) Emit(_ *context.Context, g *Graph, converte
 		Scheme:    backends.QuantLinear,
 		Scale:     fusedScales,
 		BlockAxis: 1,
-		BlockSize: groupSize,
+		BlockSize: blockSize,
 	}
 	result := nn.QuantizedDense(floatInput, wQKV, quant, bias)
 
@@ -170,6 +184,11 @@ func tryMergeQuantizedQKV(entries []*quantizedDenseCandidate) *quantizedQKVDense
 		return nil
 	}
 
+	// All 3 must agree on scale type.
+	if qP.PerChannelScale != kP.PerChannelScale || qP.PerChannelScale != vP.PerChannelScale {
+		return nil
+	}
+
 	// Bias must be all-or-nothing.
 	hasBias := qP.BiasName != "" && kP.BiasName != "" && vP.BiasName != ""
 	noBias := qP.BiasName == "" && kP.BiasName == "" && vP.BiasName == ""
@@ -205,9 +224,10 @@ func tryMergeQuantizedQKV(entries []*quantizedDenseCandidate) *quantizedQKVDense
 		QOutputName:    entries[qIdx].outputName,
 		KOutputName:    entries[kIdx].outputName,
 		VOutputName:    entries[vIdx].outputName,
-		K:              K,
-		QDim:           qP.N,
-		KVDim:          kP.N,
+		K:               K,
+		QDim:            qP.N,
+		KVDim:           kP.N,
+		PerChannelScale: qP.PerChannelScale,
 	}
 	if hasBias {
 		qkvParams.BiasQName = qP.BiasName
