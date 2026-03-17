@@ -205,9 +205,9 @@ func tryMergeQuantizedQKV(entries []*quantizedDenseCandidate) *quantizedQKVDense
 		QOutputName:    entries[qIdx].outputName,
 		KOutputName:    entries[kIdx].outputName,
 		VOutputName:    entries[vIdx].outputName,
-		K:     K,
-		QDim:  qP.N,
-		KVDim: kP.N,
+		K:              K,
+		QDim:           qP.N,
+		KVDim:          kP.N,
 	}
 	if hasBias {
 		qkvParams.BiasQName = qP.BiasName
