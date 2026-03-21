@@ -2104,11 +2104,7 @@ func convertGlobalAveragePool(_ *Model, _ map[string]*Node, _ *protos.NodeProto,
 		window[i] = x.Shape().Dim(i + 2)
 	}
 	pool := MeanPool(x).ChannelsAxis(timage.ChannelsFirst).WindowPerAxis(window...)
-	out := pool.Done()
-	if out.Rank() > 2 {
-		out = Reshape(out, out.Shape().Dim(0), out.Shape().Dim(1))
-	}
-	return out
+	return pool.Done()
 }
 
 // convertBatchNormalization converts an ONNX BatchNormalization node to a GoMLX node.
