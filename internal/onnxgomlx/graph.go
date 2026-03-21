@@ -538,6 +538,8 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 		result = Sigmoid(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "HardSwish":
 		result = activations.HardSwish(inputs[0])
+	case "HardSigmoid":
+		result = convertHardSigmoid(node, m.onnxImplicitFloatPromotion(inputs[0]))
 	case "IsNaN":
 		result = IsNaN(inputs[0])
 	case "Reciprocal":
@@ -633,6 +635,8 @@ func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodePro
 		result = convertLSTM(m, convertedOutputs, node, inputs)
 	case "Conv":
 		result = convertConv(m, convertedOutputs, node, inputs)
+	case "ConvTranspose":
+		result = convertConvTranspose(m, convertedOutputs, node, inputs)
 	case "AveragePool":
 		result = convertAveragePool(m, convertedOutputs, node, inputs)
 	case "MaxPool":
