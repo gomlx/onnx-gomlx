@@ -418,7 +418,7 @@ func traceQuantizedKBackward(m *onnxgomlx.Model, uint8Name string) (dqlNode *pro
 // Typical path: Q_scaled (Mul) → Transpose(0,2,1,3) → Reshape([B, S, numHeads, headDim])
 func traceToReshapeForHeadCount(m *onnxgomlx.Model, name string) int {
 	current := name
-	for depth := 0; depth < 10; depth++ {
+	for range 10 {
 		node, ok := m.NodeOutputToNode[current]
 		if !ok {
 			return -1
@@ -532,9 +532,9 @@ func extractInt64SliceFromTensor(tp *protos.TensorProto) []int64 {
 	if tp.DataType == int32(protos.TensorProto_INT64) && len(tp.RawData) >= 8 {
 		n := len(tp.RawData) / 8
 		vals := make([]int64, n)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			var v int64
-			for j := 0; j < 8; j++ {
+			for j := range 8 {
 				v |= int64(tp.RawData[i*8+j]) << (j * 8)
 			}
 			vals[i] = v

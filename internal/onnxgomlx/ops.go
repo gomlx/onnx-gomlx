@@ -736,7 +736,7 @@ func convertEinsum(node *protos.NodeProto, inputs []*Node) *Node {
 // tensorToInts converts elements of the tensor to a slice of ints.
 func tensorToInts(t *tensors.Tensor) []int {
 	res := make([]int, t.Size())
-	intType := reflect.TypeOf(int(0))
+	intType := reflect.TypeFor[int]()
 	t.ConstFlatData(func(flat any) {
 		valueOf := reflect.ValueOf(flat)
 		for ii := range valueOf.Len() {
@@ -749,7 +749,7 @@ func tensorToInts(t *tensors.Tensor) []int {
 
 func tensorToFloat64s(t *tensors.Tensor) []float64 {
 	res := make([]float64, t.Size())
-	float64Type := reflect.TypeOf(float64(0))
+	float64Type := reflect.TypeFor[float64]()
 	t.ConstFlatData(func(flat any) {
 		valueOf := reflect.ValueOf(flat)
 		for ii := range valueOf.Len() {
@@ -778,7 +778,7 @@ func (m *Model) convertPow(convertedOutputs map[string]*Node, node *protos.NodeP
 
 	exponentV := reflect.ValueOf(exponentT.Value())
 	var exponent float64
-	float64T := reflect.TypeOf(exponent)
+	float64T := reflect.TypeFor[float64]()
 	if !exponentV.CanConvert(float64T) {
 		// Complex number exponent ?
 		return defaultPow()
@@ -899,7 +899,7 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	} else {
 		// default values according to spec
 		inputAxes = make([]int, rank)
-		for i := 0; i < rank; i++ {
+		for i := range rank {
 			inputAxes[i] = i
 		}
 	}
@@ -937,7 +937,7 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	effectiveEnds := make([]int, rank)
 	effectiveSteps := make([]int, rank)
 
-	for i := 0; i < rank; i++ {
+	for i := range rank {
 		effectiveStarts[i] = 0
 		effectiveEnds[i] = operand.Shape().Dim(i)
 		effectiveSteps[i] = 1
@@ -1003,7 +1003,7 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	// start == dimSize, so we handle it here.
 	emptySlice := false
 	outputDims := make([]int, rank)
-	for i := 0; i < rank; i++ {
+	for i := range rank {
 		start := effectiveStarts[i]
 		end := effectiveEnds[i]
 		step := effectiveSteps[i]
@@ -1028,7 +1028,7 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	}
 
 	specs := make([]SliceAxisSpec, rank)
-	for i := 0; i < rank; i++ {
+	for i := range rank {
 		specs[i] = AxisRange(effectiveStarts[i], effectiveEnds[i]).Stride(effectiveSteps[i])
 	}
 
@@ -2688,7 +2688,7 @@ func convertSplit(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	// Perform the split using SliceAxis
 	splits := make([]*Node, numOutputs)
 	currentStart := 0
-	for i := 0; i < numOutputs; i++ {
+	for i := range numOutputs {
 		end := currentStart + splitSizes[i]
 		splits[i] = SliceAxis(x, axis, AxisRange(currentStart, end))
 		currentStart = end
@@ -2813,12 +2813,7 @@ func (m *Model) IsZeroInitializer(name string) bool {
 	if len(tp.Dims) == 0 {
 		return true
 	}
-	for _, dim := range tp.Dims {
-		if dim == 0 {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(tp.Dims, 0)
 }
 
 // convertQuantizeLinear converts the corresponding ONNX node to a GoMLX node.

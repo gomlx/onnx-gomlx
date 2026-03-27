@@ -2,7 +2,6 @@ package fusion
 
 import (
 	"github.com/gomlx/gomlx/backends"
-	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/ml/nn"
@@ -53,15 +52,16 @@ func (c *quantizedQKVDenseCandidate) Emit(_ *context.Context, g *Graph, converte
 	scaleK := convertedOutputs[p.ScaleKName]
 	scaleV := convertedOutputs[p.ScaleVName]
 
-	// Concatenate int8 weights: [K, QDim] + [K, KVDim] + [K, KVDim] → [K, 3*QDim]
+	// Concatenate int8 weights: [K, QDim] + [K, KVDim] + [K, KVDim] → [K, totalN]
 	wQKV := Concatenate([]*Node{wQ, wK, wV}, 1)
-	groupSize := p.QDim // Each projection is one quantization group.
 
-	// Build scales [K, 3]: each scalar scale broadcast to [K, 1] then concatenated.
-	scaleQCol := ExpandAndBroadcast(ConvertDType(scaleQ, dtypes.Float32), []int{p.K, 1}, []int{0, 1})
-	scaleKCol := ExpandAndBroadcast(ConvertDType(scaleK, dtypes.Float32), []int{p.K, 1}, []int{0, 1})
-	scaleVCol := ExpandAndBroadcast(ConvertDType(scaleV, dtypes.Float32), []int{p.K, 1}, []int{0, 1})
-	fusedScales := Concatenate([]*Node{scaleQCol, scaleKCol, scaleVCol}, 1) // [K, 3]
+	// Build fused scales. broadcastQuantScale handles both scalar and per-channel [N] cases:
+	//   - Scalar: each becomes [K, 1], concatenated to [K, 3], blockSize = QDim
+	//   - Per-channel: each becomes [K, dim], concatenated to [K, totalN], blockSize = 1
+	scaleQCol, blockSize := broadcastQuantScale(scaleQ, p.K, p.QDim)
+	scaleKCol, _ := broadcastQuantScale(scaleK, p.K, p.KVDim)
+	scaleVCol, _ := broadcastQuantScale(scaleV, p.K, p.KVDim)
+	fusedScales := Concatenate([]*Node{scaleQCol, scaleKCol, scaleVCol}, 1)
 
 	// Concatenate biases if present: [QDim] + [KVDim] + [KVDim] → [totalN]
 	var bias *Node
@@ -77,7 +77,7 @@ func (c *quantizedQKVDenseCandidate) Emit(_ *context.Context, g *Graph, converte
 		Scheme:    backends.QuantLinear,
 		Scale:     fusedScales,
 		BlockAxis: 1,
-		BlockSize: groupSize,
+		BlockSize: blockSize,
 	}
 	result := nn.QuantizedDense(floatInput, wQKV, quant, bias)
 

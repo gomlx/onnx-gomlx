@@ -2,6 +2,7 @@ package onnxgomlx
 
 import (
 	"fmt"
+	"maps"
 	"runtime"
 
 	"github.com/gomlx/exceptions"
@@ -247,9 +248,7 @@ func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *p
 	localConvertedOutputs := make(map[string]*Node)
 
 	// Copy parent outputs into local context so sub-graph can reference them
-	for name, node := range parentConvertedOutputs {
-		localConvertedOutputs[name] = node
-	}
+	maps.Copy(localConvertedOutputs, parentConvertedOutputs)
 
 	// Convert sub-graph initializers (constants) to GoMLX nodes
 	// Also temporarily add them to model's variableNameToValue for materializeConstantExpression.
