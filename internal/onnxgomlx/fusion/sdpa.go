@@ -73,7 +73,7 @@ func (c *sdpaCandidate) Emit(ctx *context.Context, g *Graph, convertedOutputs ma
 		mask = convertedOutputs[p.MaskInputName]
 	}
 
-	output, _ := attention.Core(ctx, q, k, v, p.Scale, mask, 0, attention.LayoutBHSD, false, false)
+	output, _ := attention.Core(ctx, q, k, v, p.Scale, mask, nil, attention.LayoutBHSD, false, false)
 	convertedOutputs[c.outputName] = output
 }
 
