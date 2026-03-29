@@ -2404,7 +2404,7 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 	// Apply rotation using pre-computed cos/sin via RoPEWithCosSin.
 	// It handles splitting, rotation, recombination, and partial rotation
 	// (pass-through for dimensions beyond rotary_dim) automatically based on cos/sin dimensions.
-	result := pos.NewRoPEWithCosSin(cos, sin).WithInterleaved(interleaved).Apply(x, nil, x.Rank()-2)
+	result := pos.NewRoPEWithCosSin(cos, sin).WithInterleaved(interleaved).Encode(x, x.Rank()-2)
 
 	// If input was 3D, reshape back
 	if was3D {
@@ -2518,7 +2518,7 @@ func convertMultiHeadAttention(_ *Model, _ map[string]*Node, node *protos.NodePr
 	if scale <= 0 {
 		scaleValue = 1.0 / math.Sqrt(float64(headDim))
 	}
-	output, _ := attention.Core(nil, query, key, value, scaleValue, attentionMask, 0, attention.LayoutBHSD, false, false)
+	output, _ := attention.Core(nil, query, key, value, scaleValue, attentionMask, nil, attention.LayoutBHSD, false, false)
 
 	// Reshape back to 3D if input was 3D
 	if was3D {
@@ -2624,7 +2624,7 @@ func convertGroupQueryAttention(_ *Model, convertedOutputs map[string]*Node, nod
 	}
 	// Pass the boolean mask directly — Core auto-detects boolean masks and uses MaskedSoftmax.
 	// K/V retain their original numKVHeads; Core handles GQA head mapping natively.
-	output, _ := attention.Core(nil, query, presentKey, presentValue, scaleValue, mask, 0, attention.LayoutBHSD, false, false)
+	output, _ := attention.Core(nil, query, presentKey, presentValue, scaleValue, mask, nil, attention.LayoutBHSD, false, false)
 
 	// Reshape output: (batch, num_heads, qSeqLen, head_size) -> (batch, qSeqLen, num_heads * head_size)
 	output = TransposeAllDims(output, 0, 2, 1, 3)

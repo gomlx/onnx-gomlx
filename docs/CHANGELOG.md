@@ -1,3 +1,7 @@
+# Next
+
+- Updates to modified GoMLX transformer API.
+
 # v0.4.1: API adjustment
 
 - Updated dependency to GoMLX v0.27.1
