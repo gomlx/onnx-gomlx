@@ -1,6 +1,6 @@
-# Next
+# v0.4.2: Updated dependencies.
 
-- Updates to modified GoMLX transformer API.
+- Updated dependency to GoMLX v0.27.3 and go-huggingface v0.3.5.
 
 # v0.4.1: API adjustment
 

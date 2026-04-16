@@ -6,8 +6,8 @@ require (
 	github.com/chewxy/math32 v1.11.1
 	github.com/daulet/tokenizers v1.25.0
 	github.com/gomlx/exceptions v0.0.3
-	github.com/gomlx/go-huggingface v0.3.5-0.20260416060721-afdeaad73e81
-	github.com/gomlx/gomlx v0.27.3-0.20260415090640-b453aed981ef
+	github.com/gomlx/go-huggingface v0.3.5
+	github.com/gomlx/gomlx v0.27.3
 	github.com/janpfeifer/go-benchmarks v0.1.1
 	github.com/janpfeifer/must v0.2.0
 	github.com/parquet-go/parquet-go v0.29.0
