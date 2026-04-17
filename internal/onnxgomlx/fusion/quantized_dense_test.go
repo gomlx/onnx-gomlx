@@ -3,8 +3,8 @@ package fusion
 import (
 	"testing"
 
+	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/gomlx/backends/simplego"
-	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
