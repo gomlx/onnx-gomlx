@@ -1244,7 +1244,7 @@ func TestTensorProtoToScalar(t *testing.T) {
 			name: "FLOAT16_RawData",
 			tp: func() *protos.TensorProto {
 				// float16 for 1.5: use the float16 package to get exact bits.
-				h := float16.Fromfloat32(1.5)
+				h := float16.FromFloat32(1.5)
 				raw := make([]byte, 2)
 				binary.LittleEndian.PutUint16(raw, uint16(h))
 				return &protos.TensorProto{Dims: []int64{}, DataType: int32(protos.TensorProto_FLOAT16), RawData: raw}
