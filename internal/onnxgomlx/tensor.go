@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/gomlx/compute/dtypes"
+	"github.com/gomlx/compute/dtypes/float16"
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/backends"
@@ -15,7 +16,6 @@ import (
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/pkg/errors"
-	"github.com/x448/float16"
 )
 
 // DefaultDeviceNum is the device number used in local graph operations

@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/gomlx/compute/dtypes"
+	"github.com/gomlx/compute/dtypes/float16"
 	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx/filesreader"
@@ -16,7 +17,6 @@ import (
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/x448/float16"
 
 	_ "github.com/gomlx/gomlx/backends/default"
 )
