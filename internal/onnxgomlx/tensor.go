@@ -9,7 +9,7 @@ import (
 	"github.com/gomlx/compute/dtypes/float16"
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
-	"github.com/gomlx/gomlx/backends"
+	"github.com/gomlx/compute"
 	"github.com/gomlx/gomlx/backends/simplego"
 	. "github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
@@ -20,7 +20,7 @@ import (
 
 // DefaultDeviceNum is the device number used in local graph operations
 // (like converting tensors for different types).
-var DefaultDeviceNum = backends.DeviceNum(0)
+var DefaultDeviceNum = compute.DeviceNum(0)
 
 // Shape converts an ONNX data type and shape to GoMLX shapes.Shape (it includes the dtype).
 func Shape(proto *protos.TensorProto) (shape shapes.Shape, err error) {
@@ -64,7 +64,7 @@ func SparseShape(proto *protos.SparseTensorProto) (shape shapes.Shape, err error
 // TODO: It assumes it was saved in the same endian-ness and row-major order. Check/adjust if not.
 func checkAndCreateTensorFromProto[T interface {
 	float32 | float64 | int32 | int64 | uint64
-}](backend backends.Backend, proto *protos.TensorProto, onnxData []T, shape shapes.Shape) (*tensors.Tensor, error) {
+}](backend compute.Backend, proto *protos.TensorProto, onnxData []T, shape shapes.Shape) (*tensors.Tensor, error) {
 	if onnxData == nil {
 		// Not this type of data.
 		return nil, nil
@@ -94,7 +94,7 @@ func checkAndCreateTensorFromProto[T interface {
 }
 
 // tensorToGoMLX converts a protos.TensorProto object to a tensors.Tensor object, handling errors and different data types.
-func tensorToGoMLX(backend backends.Backend, proto *protos.TensorProto) (t *tensors.Tensor, err error) {
+func tensorToGoMLX(backend compute.Backend, proto *protos.TensorProto) (t *tensors.Tensor, err error) {
 	if proto == nil {
 		return nil, errors.New("ONNX TensorProto is nil")
 	}
@@ -205,7 +205,7 @@ func parseExternalData(proto *protos.TensorProto) (onnx.ExternalDataInfo, error)
 // handling errors and different data types including external data.
 //
 // externalReader is only used if the TensorProto specifies an external data location.
-func ONNXTensorToGoMLX(backend backends.Backend, proto *protos.TensorProto, externalReader onnx.ExternalDataReader) (
+func ONNXTensorToGoMLX(backend compute.Backend, proto *protos.TensorProto, externalReader onnx.ExternalDataReader) (
 	t *tensors.Tensor, err error) {
 	if proto == nil {
 		return nil, errors.New("ONNX TensorProto is nil")

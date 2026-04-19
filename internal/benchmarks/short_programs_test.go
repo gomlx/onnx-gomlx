@@ -21,7 +21,7 @@ import (
 	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
-	"github.com/gomlx/gomlx/backends"
+	"github.com/gomlx/compute"
 	"github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
@@ -36,7 +36,7 @@ func init() {
 }
 
 var (
-	DefaultDeviceNum = backends.DeviceNum(0)
+	DefaultDeviceNum = compute.DeviceNum(0)
 
 	TestShapes = []shapes.Shape{
 		//shapes.Make(dtypes.Float32, 1, 1),
@@ -211,14 +211,14 @@ func BenchmarkSmallXLADirect(b *testing.B) {
 
 					// WarmUp:
 					for range 10 {
-						tmpOutput := g.RunWithBuffers([]backends.Buffer{xBuf}, []bool{false}, DefaultDeviceNum)[0]
+						tmpOutput := g.RunWithBuffers([]compute.Buffer{xBuf}, []bool{false}, DefaultDeviceNum)[0]
 						tmpOutput.FinalizeAll()
 					}
 
 					// Run test:
 					b.ResetTimer()
 					for b.Loop() {
-						tmpOutput := g.RunWithBuffers([]backends.Buffer{xBuf}, []bool{false}, DefaultDeviceNum)[0]
+						tmpOutput := g.RunWithBuffers([]compute.Buffer{xBuf}, []bool{false}, DefaultDeviceNum)[0]
 						tmpOutput.FinalizeAll()
 					}
 				})

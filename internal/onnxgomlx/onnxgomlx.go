@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/gomlx/compute/shapes"
-	"github.com/gomlx/gomlx/backends"
+	"github.com/gomlx/compute"
 	"github.com/gomlx/gomlx/backends/simplego"
 	"github.com/gomlx/gomlx/pkg/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx/filesreader"
@@ -36,7 +36,7 @@ type Model struct {
 	InputsAsConstants map[string]any
 
 	// Backend used for ONNX-conversion time tensor processing.
-	Backend backends.Backend
+	Backend compute.Backend
 
 	// allowDTypePromotion enables automatic dtype promotion for mixed-precision models.
 	// By default (false), dtype mismatches will panic per ONNX spec.
