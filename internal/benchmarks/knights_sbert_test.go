@@ -17,9 +17,9 @@ import (
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/go-huggingface/hub"
 	"github.com/gomlx/gomlx/pkg/core/graph"
-	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/pkg/support/testutil"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
@@ -188,7 +188,7 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 	}
 
 	// Build model
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 	model := must.M1(parser.ParseFile(onnxModelPath))
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
@@ -401,7 +401,7 @@ func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBa
 
 	// Find the output shape for each batchSize.
 	shapePerBatchSize = make(map[int]shapes.Shape, len(BatchSizes))
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()

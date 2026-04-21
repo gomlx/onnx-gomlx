@@ -16,9 +16,9 @@ import (
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/go-huggingface/hub"
 	"github.com/gomlx/gomlx/pkg/core/graph"
-	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/pkg/support/testutil"
 	"github.com/gomlx/gomlx/pkg/support/xsync"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/go-benchmarks"
@@ -315,7 +315,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	// Build model
 	repoModel := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repoModel.DownloadFile("model.onnx"))
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 	model := must.M1(parser.ParseFile(onnxModelPath))
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))

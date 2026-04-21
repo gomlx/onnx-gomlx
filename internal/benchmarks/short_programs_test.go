@@ -23,8 +23,8 @@ import (
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/gomlx/pkg/core/graph"
-	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
+	"github.com/gomlx/gomlx/pkg/support/testutil"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/must"
 	ort "github.com/yalue/onnxruntime_go"
@@ -118,7 +118,7 @@ func parallelizeGoVectorFunc(fn goVectorFunc) goVectorFunc {
 // We try not to count the time for tensor transfers in and out.
 func BenchmarkSmallXLAExec(b *testing.B) {
 	// Check conversion.
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 	execs := make([]*graph.Exec, numPrograms)
 	for progIdx, program := range SmallTestPrograms {
 		model := must.M1(parser.ParseFile(program[0]))
@@ -171,7 +171,7 @@ func BenchmarkSmallXLAExec(b *testing.B) {
 // We try not to count the time for tensor transfers in and out.
 func BenchmarkSmallXLADirect(b *testing.B) {
 	// Create executables.
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 	numShapes := len(TestShapes)
 	graphPerShapePerProgram := make([][]*graph.Graph, numShapes)
 	inputTensors := make([]*tensors.Tensor, numShapes)

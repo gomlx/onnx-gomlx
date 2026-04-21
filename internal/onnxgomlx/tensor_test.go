@@ -10,8 +10,8 @@ import (
 
 	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/compute/dtypes/float16"
-	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
+	"github.com/gomlx/gomlx/pkg/support/testutil"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx/filesreader"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
@@ -134,7 +134,7 @@ func TestSparseShape(t *testing.T) {
 
 // TestTensorToGoMLX tests the tensorToGoMLX() function for ONNX→GoMLX conversion
 func TestTensorToGoMLX(t *testing.T) {
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 
 	t.Run("NilProto", func(t *testing.T) {
 		_, err := tensorToGoMLX(backend, nil)
@@ -434,7 +434,7 @@ func TestTensorValueToONNX(t *testing.T) {
 
 // TestRoundTripConversion tests GoMLX→ONNX→GoMLX conversion preserves data
 func TestRoundTripConversion(t *testing.T) {
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 
 	tests := []struct {
 		name      string
@@ -607,7 +607,7 @@ func TestParseExternalData(t *testing.T) {
 
 // TestTensorToGoMLXWithBaseDir_ExternalData tests external data loading
 func TestTensorToGoMLXWithBaseDir_ExternalData(t *testing.T) {
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 
 	t.Run("BasicExternalData", func(t *testing.T) {
 		// Create a temporary directory for the test
@@ -838,7 +838,7 @@ func TestTensorToGoMLXWithBaseDir_ExternalData(t *testing.T) {
 
 // TestExternalDataReader tests the ExternalDataReader mmap functionality
 func TestExternalDataReader(t *testing.T) {
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 
 	t.Run("BasicMmapRead", func(t *testing.T) {
 		tmpDir := t.TempDir()
