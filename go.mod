@@ -5,10 +5,10 @@ go 1.26
 require (
 	github.com/chewxy/math32 v1.11.1
 	github.com/daulet/tokenizers v1.25.0
-	github.com/gomlx/compute v0.0.0-20260419120844-7be094c9522a
+	github.com/gomlx/compute v0.0.0-20260426084914-c478a14b5283
 	github.com/gomlx/exceptions v0.0.3
-	github.com/gomlx/go-huggingface v0.3.5
-	github.com/gomlx/gomlx v0.27.3
+	github.com/gomlx/go-huggingface v0.3.6-0.20260426104454-b03b225d6261
+	github.com/gomlx/gomlx v0.27.4-0.20260426103707-4e31b1361b06
 	github.com/janpfeifer/go-benchmarks v0.1.1
 	github.com/janpfeifer/must v0.2.0
 	github.com/parquet-go/parquet-go v0.29.0
@@ -25,7 +25,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect
-	github.com/gomlx/go-xla v0.2.2 // indirect
+	github.com/gomlx/go-xla v0.2.3-0.20260426103526-9a5bf49c0bfd // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/parquet-go/bitpack v1.0.0 // indirect
@@ -37,7 +37,7 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/image v0.36.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/term v0.40.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
