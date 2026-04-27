@@ -7,8 +7,8 @@ require (
 	github.com/daulet/tokenizers v1.25.0
 	github.com/gomlx/compute v0.0.0-20260427075025-d268f3535dae
 	github.com/gomlx/exceptions v0.0.3
-	github.com/gomlx/go-huggingface v0.3.6-0.20260427090155-c3040213f58a
-	github.com/gomlx/gomlx v0.27.4-0.20260427084755-11640bc16504
+	github.com/gomlx/go-huggingface v0.3.6-0.20260427090925-b4f1801f6557
+	github.com/gomlx/gomlx v0.27.4-0.20260427090759-ebe28e458221
 	github.com/janpfeifer/go-benchmarks v0.1.1
 	github.com/janpfeifer/must v0.2.0
 	github.com/parquet-go/parquet-go v0.29.0
@@ -24,7 +24,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect
-	github.com/gomlx/go-xla v0.2.3-0.20260427082356-0f2f80258789 // indirect
+	github.com/gomlx/go-xla v0.2.3-0.20260427090654-1de86486c3a3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
