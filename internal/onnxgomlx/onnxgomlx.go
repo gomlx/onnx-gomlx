@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 
 	"github.com/gomlx/compute"
+	"github.com/gomlx/compute/gobackend"
 	"github.com/gomlx/compute/shapes"
-	"github.com/gomlx/gomlx/backends/simplego"
 	"github.com/gomlx/gomlx/pkg/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx/filesreader"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -76,9 +76,9 @@ func Parse(contents []byte) (*Model, error) {
 	}
 
 	// Create the backend that we'll use for processing of tensors.
-	m.Backend, err = simplego.New("")
+	m.Backend, err = gobackend.New("")
 	if err != nil {
-		return nil, errors.WithMessage(err, "ONNX conversion requires GoMLX for processing of tensors, but failed to create SimpleGo backend for GoMLX model")
+		return nil, errors.WithMessage(err, "ONNX conversion requires GoMLX for processing of tensors, but failed to create the Go backend for GoMLX model")
 	}
 
 	// Parse inputs and outputs.
