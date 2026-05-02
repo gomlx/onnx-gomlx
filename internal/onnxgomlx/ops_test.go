@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/gomlx/compute/dtypes"
+	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/gomlx/backends/simplego"
-	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	. "github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
-	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
+	"github.com/gomlx/gomlx/pkg/support/testutil"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -185,7 +186,7 @@ func TestTile(t *testing.T) {
 }
 
 func TestRangeCount(t *testing.T) {
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 	testFn := func(start, limit, delta any, want int) {
 		startT := tensors.FromAnyValue(start)
 		limitT := tensors.FromAnyValue(limit)
@@ -265,7 +266,7 @@ func TestONNXCumSum(t *testing.T) {
 }
 
 func TestONNXFlatten(t *testing.T) {
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 	testIdx := 0
 	flattenFn := func(shape shapes.Shape, splitAxis int) shapes.Shape {
 		g := NewGraph(backend, fmt.Sprintf("Flatten #%d", testIdx))

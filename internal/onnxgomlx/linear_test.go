@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/gomlx/gomlx/pkg/core/dtypes"
+	"github.com/gomlx/compute/dtypes"
 	. "github.com/gomlx/gomlx/pkg/core/graph"
-	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/pkg/support/testutil"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/stretchr/testify/require"
 
@@ -53,7 +53,7 @@ func TestEndToEnd(t *testing.T) {
 	require.Equal(t, float32(7000), tensors.ToScalar[float32](vBValue))
 
 	// Check conversion.
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 	y := context.MustExecOnce(backend, ctx, func(ctx *context.Context, x *Node) *Node {
 		g := x.Graph()
 		outputs := model.CallGraph(ctx, g, map[string]*Node{"X": x})

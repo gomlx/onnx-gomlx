@@ -18,13 +18,13 @@ import (
 	"testing"
 
 	"github.com/chewxy/math32"
+	"github.com/gomlx/compute"
+	"github.com/gomlx/compute/dtypes"
+	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
-	"github.com/gomlx/gomlx/backends"
-	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	"github.com/gomlx/gomlx/pkg/core/graph"
-	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
-	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
+	"github.com/gomlx/gomlx/pkg/support/testutil"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/must"
 	ort "github.com/yalue/onnxruntime_go"
@@ -36,7 +36,7 @@ func init() {
 }
 
 var (
-	DefaultDeviceNum = backends.DeviceNum(0)
+	DefaultDeviceNum = compute.DeviceNum(0)
 
 	TestShapes = []shapes.Shape{
 		//shapes.Make(dtypes.Float32, 1, 1),
@@ -118,7 +118,7 @@ func parallelizeGoVectorFunc(fn goVectorFunc) goVectorFunc {
 // We try not to count the time for tensor transfers in and out.
 func BenchmarkSmallXLAExec(b *testing.B) {
 	// Check conversion.
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 	execs := make([]*graph.Exec, numPrograms)
 	for progIdx, program := range SmallTestPrograms {
 		model := must.M1(parser.ParseFile(program[0]))
@@ -171,7 +171,7 @@ func BenchmarkSmallXLAExec(b *testing.B) {
 // We try not to count the time for tensor transfers in and out.
 func BenchmarkSmallXLADirect(b *testing.B) {
 	// Create executables.
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 	numShapes := len(TestShapes)
 	graphPerShapePerProgram := make([][]*graph.Graph, numShapes)
 	inputTensors := make([]*tensors.Tensor, numShapes)
@@ -211,14 +211,14 @@ func BenchmarkSmallXLADirect(b *testing.B) {
 
 					// WarmUp:
 					for range 10 {
-						tmpOutput := g.RunWithBuffers([]backends.Buffer{xBuf}, []bool{false}, DefaultDeviceNum)[0]
+						tmpOutput := g.RunWithBuffers([]compute.Buffer{xBuf}, []bool{false}, DefaultDeviceNum)[0]
 						tmpOutput.FinalizeAll()
 					}
 
 					// Run test:
 					b.ResetTimer()
 					for b.Loop() {
-						tmpOutput := g.RunWithBuffers([]backends.Buffer{xBuf}, []bool{false}, DefaultDeviceNum)[0]
+						tmpOutput := g.RunWithBuffers([]compute.Buffer{xBuf}, []bool{false}, DefaultDeviceNum)[0]
 						tmpOutput.FinalizeAll()
 					}
 				})

@@ -8,13 +8,13 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/gomlx/compute/dtypes"
+	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/go-huggingface/hub"
-	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	. "github.com/gomlx/gomlx/pkg/core/graph"
-	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
-	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/pkg/support/testutil"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/go-benchmarks"
 	"github.com/janpfeifer/must"
@@ -63,7 +63,7 @@ func benchGoMLXInceptionV3(t *testing.T) {
 	if *flagVerbose {
 		fmt.Printf("Model details:\n%s\n", model)
 	}
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()

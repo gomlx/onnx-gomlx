@@ -3,8 +3,8 @@ package fusion
 import (
 	"math"
 
-	"github.com/gomlx/gomlx/backends"
-	"github.com/gomlx/gomlx/pkg/core/dtypes"
+	"github.com/gomlx/compute"
+	"github.com/gomlx/compute/dtypes"
 	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
@@ -112,7 +112,7 @@ func (c *quantizedDenseCandidate) Emit(_ *context.Context, g *Graph, convertedOu
 	}
 
 	quant := &Quantization{
-		Scheme:    backends.QuantLinear,
+		Scheme:    compute.QuantLinear,
 		Scale:     fusedScales,
 		BlockAxis: 1,
 		BlockSize: blockSize,

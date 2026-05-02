@@ -11,14 +11,14 @@ import (
 	"time"
 
 	dtok "github.com/daulet/tokenizers"
+	"github.com/gomlx/compute/dtypes"
+	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/go-huggingface/hub"
-	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	"github.com/gomlx/gomlx/pkg/core/graph"
-	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
-	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/pkg/support/testutil"
 	"github.com/gomlx/gomlx/pkg/support/xsync"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/go-benchmarks"
@@ -315,7 +315,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	// Build model
 	repoModel := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repoModel.DownloadFile("model.onnx"))
-	backend := graphtest.BuildTestBackend()
+	backend := testutil.BuildTestBackend()
 	model := must.M1(parser.ParseFile(onnxModelPath))
 	ctx := context.New()
 	must.M(model.VariablesToContext(ctx))
@@ -438,8 +438,8 @@ func TestRobSentences_BenchXLA(t *testing.T) {
 	// Change parallelism/batchSize according to backend, see best values in the bottom
 	// of the "Rob Sentences" sheet in:
 	// https://docs.google.com/spreadsheets/d/1ikpJH6rVVHq8ES-IA8U4lkKH4XsTSpRyZewXwGTgits/edit?gid=397722581#gid=397722581
-	for _, parallelism := range []int{1} { // {4, 6, 8} {
-		for _, batchSize := range []int{512} { // 1, 2, 4, 8, 16, 32} {
+	for _, parallelism := range []int{48} { // {4, 6, 8} {
+		for _, batchSize := range []int{32} { // 1, 2, 4, 8, 16, 32} {
 			implBenchRobSentencesXLA(t, parallelism, batchSize, count == 0)
 			count++
 		}

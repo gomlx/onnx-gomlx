@@ -1,7 +1,7 @@
 package fusion
 
 import (
-	"github.com/gomlx/gomlx/backends"
+	"github.com/gomlx/compute"
 	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
@@ -66,8 +66,8 @@ func (c *quantizedSDPACandidate) Emit(_ *context.Context, g *Graph, convertedOut
 	}
 
 	result := BackendFusedScaledDotProductAttention(
-		q, k, v, mask, p.NumHeads, p.NumKVHeads, backends.AxesLayoutBHSD, p.Scale, false,
-		&backends.ScaledDotProductAttentionConfig{QuantizedMatmuls: true})
+		q, k, v, mask, p.NumHeads, p.NumKVHeads, compute.AxesLayoutBHSD, p.Scale, false,
+		&compute.ScaledDotProductAttentionConfig{QuantizedMatmuls: true})
 	convertedOutputs[c.outputName] = result
 }
 

@@ -7,11 +7,11 @@ import (
 	"reflect"
 	"slices"
 
+	"github.com/gomlx/compute"
+	"github.com/gomlx/compute/dtypes"
+	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
-	"github.com/gomlx/gomlx/backends"
-	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	. "github.com/gomlx/gomlx/pkg/core/graph"
-	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	timage "github.com/gomlx/gomlx/pkg/core/tensors/images"
 	"github.com/gomlx/gomlx/pkg/ml/context"
@@ -1504,7 +1504,7 @@ func convertRange(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	return output
 }
 
-func rangeCount(backend backends.Backend, start, limit, delta *tensors.Tensor) int {
+func rangeCount(backend compute.Backend, start, limit, delta *tensors.Tensor) int {
 	count := MustExecOnce(backend, func(start, limit, delta *Node) *Node {
 		amount := Sub(limit, start)
 		var count *Node
@@ -1851,7 +1851,7 @@ func convertConv(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []
 	// why: cause onnx standard is [O, I, spatial...]
 	// but gomlx Conv accepts different orders by default in channels first/last mode
 	// e.g input as first kernel dim in channelsFirst mode. So we just specify the dimensions.
-	axes := backends.ConvolveAxesConfig{
+	axes := compute.ConvolveAxesConfig{
 		InputBatch:           0,
 		InputChannels:        1,
 		InputSpatial:         spatialAxes,
@@ -1973,9 +1973,9 @@ func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodePr
 		} else {
 			constantValueNode = Scalar(x.Graph(), x.DType(), 0)
 		}
-		paddings := make([]backends.PadAxis, rank)
+		paddings := make([]compute.PadAxis, rank)
 		for i := range rank {
-			paddings[i] = backends.PadAxis{Start: pads[i], End: pads[i+rank]}
+			paddings[i] = compute.PadAxis{Start: pads[i], End: pads[i+rank]}
 		}
 		return Pad(x, constantValueNode, paddings...)
 
