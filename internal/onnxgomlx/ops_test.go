@@ -625,6 +625,54 @@ func TestONNX_MatMulInteger(t *testing.T) {
 //
 ////////////////////////////////////////////////////////////////////
 
+func TestConvTranspose(t *testing.T) {
+	graphtest.RunTestGraphFn(t, "ConvTranspose-grouped", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][][]float32{
+			{
+				{1.0, 2.0, 3.0},
+				{4.0, 5.0, 6.0},
+			},
+		})
+		w := Const(g, [][][]float32{
+			{{2.0}},
+			{{3.0}},
+		})
+		node := &protos.NodeProto{
+			OpType: "ConvTranspose",
+			Attribute: []*protos.AttributeProto{
+				{Name: "group", Type: protos.AttributeProto_INT, I: 2},
+			},
+		}
+		inputs = []*Node{x, w}
+		outputs = []*Node{convertConvTranspose(nil, nil, node, inputs)}
+		return
+	}, []any{
+		[][][]float32{
+			{
+				{2.0, 4.0, 6.0},
+				{12.0, 15.0, 18.0},
+			},
+		},
+	}, -1)
+
+	graphtest.RunTestGraphFn(t, "ConvTranspose-output-shape", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][][]float32{{{1.0, 2.0}}})
+		w := Const(g, [][][]float32{{{1.0, 1.0, 1.0}}})
+		node := &protos.NodeProto{
+			OpType: "ConvTranspose",
+			Attribute: []*protos.AttributeProto{
+				{Name: "strides", Type: protos.AttributeProto_INTS, Ints: []int64{2}},
+				{Name: "output_shape", Type: protos.AttributeProto_INTS, Ints: []int64{4}},
+			},
+		}
+		out := convertConvTranspose(nil, nil, node, []*Node{x, w})
+		outputs = []*Node{Const(g, out.Shape().Dimensions)}
+		return
+	}, []any{
+		[]int64{1, 1, 4},
+	}, -1)
+}
+
 func TestLayerNormalization(t *testing.T) {
 	// Test basic layer normalization with default axis (-1)
 	graphtest.RunTestGraphFn(t, "LayerNormalization-basic", func(g *Graph) (inputs, outputs []*Node) {

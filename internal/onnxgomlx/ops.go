@@ -16,6 +16,7 @@ import (
 	timage "github.com/gomlx/gomlx/pkg/core/tensors/images"
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/ml/layers"
+	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
 	"github.com/gomlx/gomlx/pkg/ml/layers/attention"
 	"github.com/gomlx/gomlx/pkg/ml/layers/attention/pos"
 	"github.com/gomlx/gomlx/pkg/ml/layers/lstm"
@@ -185,6 +186,18 @@ func (m *Model) convertClip(_ *protos.NodeProto, inputs []*Node) *Node {
 		return m.convertBinaryOp(Min, inputs[0], inputs[2])
 	}
 	return m.convertBinaryOp(Min, inputs[2], m.convertBinaryOp(Max, inputs[0], inputs[1]))
+}
+
+// convertHardSigmoid converts a ONNX HardSigmoid node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__HardSigmoid.html
+//
+// HardSigmoid(x) = max(0, min(1, alpha * x + beta))
+func convertHardSigmoid(node *protos.NodeProto, x *Node) *Node {
+	alpha := float64(GetFloatAttrOr(node, "alpha", 0.2))
+	beta := float64(GetFloatAttrOr(node, "beta", 0.5))
+	return activations.HardSigmoidWithParams(x, alpha, beta)
 }
 
 // convertWhere converts a ONNX node to a GoMLX node.
@@ -1890,6 +1903,193 @@ func convertConv(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []
 		out = Add(out, b)
 	}
 	return out
+}
+
+// convertConvTranspose converts an ONNX ConvTranspose node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__ConvTranspose.html
+//
+// ConvTranspose is implemented using GoMLX's ConvGeneral with input dilation
+// (to handle strides) and adjusted padding. Grouped convolutions are run
+// independently per group because ONNX stores ConvTranspose kernels as
+// [C_in, C_out/group, spatial...], which does not match GoMLX's grouped
+// convolution kernel layout directly.
+func convertConvTranspose(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	autoPad := GetStringAttrOr(node, "auto_pad", "NOTSET")
+	if autoPad != "NOTSET" && autoPad != "SAME_UPPER" && autoPad != "SAME_LOWER" {
+		exceptions.Panicf("ConvTranspose: support for attribute 'auto_pad' (%s) is not yet implemented", autoPad)
+	}
+
+	x := inputs[0]
+	w := inputs[1]
+	var b *Node
+	if len(inputs) > 2 {
+		b = inputs[2]
+	}
+
+	numSpatialDims := x.Rank() - 2
+	strides := normalizeConvTransposeAttr(node, "strides", numSpatialDims, 1)
+	dilations := normalizeConvTransposeAttr(node, "dilations", numSpatialDims, 1)
+	outputPadding := normalizeConvTransposeAttr(node, "output_padding", numSpatialDims, 0)
+	outputShape := GetIntsAttrOr(node, "output_shape", nil)
+	groups := GetIntAttrOr(node, "group", 1)
+	if autoPad != "NOTSET" && outputShape == nil {
+		exceptions.Panicf("ConvTranspose: auto_pad=%q is only supported when output_shape is provided", autoPad)
+	}
+	if groups <= 0 {
+		exceptions.Panicf("ConvTranspose: group must be >= 1, got %d", groups)
+	}
+	if outputShape != nil && len(outputShape) != numSpatialDims {
+		exceptions.Panicf("ConvTranspose: output_shape has %d values, want %d", len(outputShape), numSpatialDims)
+	}
+
+	paddings := convTransposePaddings(node, x, w, autoPad, strides, dilations, outputPadding, outputShape)
+	if groups == 1 {
+		return convertConvTransposeSingle(x, w, b, paddings, strides, dilations)
+	}
+
+	if x.Shape().Dim(1)%groups != 0 {
+		exceptions.Panicf("ConvTranspose: input channels %d must be divisible by group %d", x.Shape().Dim(1), groups)
+	}
+	if w.Shape().Dim(0)%groups != 0 {
+		exceptions.Panicf("ConvTranspose: kernel input channels %d must be divisible by group %d", w.Shape().Dim(0), groups)
+	}
+	xSlices := Split(x, 1, groups)
+	wSlices := Split(w, 0, groups)
+	var bSlices []*Node
+	if b != nil {
+		if b.Rank() != 1 {
+			exceptions.Panicf("ConvTranspose: bias must be rank 1, got rank %d", b.Rank())
+		}
+		if b.Shape().Dim(0)%groups != 0 {
+			exceptions.Panicf("ConvTranspose: bias channels %d must be divisible by group %d", b.Shape().Dim(0), groups)
+		}
+		bSlices = Split(b, 0, groups)
+	}
+	outputs := make([]*Node, groups)
+	for i := range groups {
+		var bSlice *Node
+		if b != nil {
+			bSlice = bSlices[i]
+		}
+		outputs[i] = convertConvTransposeSingle(xSlices[i], wSlices[i], bSlice, paddings, strides, dilations)
+	}
+	return Concatenate(outputs, 1)
+}
+
+func normalizeConvTransposeAttr(node *protos.NodeProto, attrName string, numSpatialDims int, defaultValue int) []int {
+	values := GetIntsAttrOr(node, attrName, nil)
+	if values == nil {
+		values = make([]int, numSpatialDims)
+		for i := range values {
+			values[i] = defaultValue
+		}
+		return values
+	}
+	if len(values) != numSpatialDims {
+		exceptions.Panicf("ConvTranspose: attribute %q has %d values, want %d", attrName, len(values), numSpatialDims)
+	}
+	return values
+}
+
+func convTransposePaddings(node *protos.NodeProto, x, w *Node, autoPad string, strides, dilations, outputPadding, outputShape []int) [][2]int {
+	numSpatialDims := x.Rank() - 2
+	pads := GetIntsAttrOr(node, "pads", nil)
+	if pads != nil && len(pads) != 2*numSpatialDims {
+		exceptions.Panicf("ConvTranspose: pads has %d values, want %d", len(pads), 2*numSpatialDims)
+	}
+
+	paddings := make([][2]int, numSpatialDims)
+	wDims := w.Shape().Dimensions
+	for i := range numSpatialDims {
+		kernelSize := wDims[i+2]
+		effectiveKernelSize := (kernelSize-1)*dilations[i] + 1
+		var padBegin, padEnd int
+		if outputShape != nil {
+			inputSize := x.Shape().Dim(i + 2)
+			totalPadding := strides[i]*(inputSize-1) + outputPadding[i] + effectiveKernelSize - outputShape[i]
+			if totalPadding < 0 {
+				exceptions.Panicf(
+					"ConvTranspose: output_shape[%d]=%d implies negative total padding (%d)",
+					i, outputShape[i], totalPadding,
+				)
+			}
+			switch {
+			case autoPad == "SAME_UPPER":
+				padBegin = totalPadding / 2
+				padEnd = totalPadding - padBegin
+			case pads != nil && pads[i]+pads[i+numSpatialDims] == totalPadding:
+				padBegin = pads[i]
+				padEnd = pads[i+numSpatialDims]
+			default:
+				padEnd = totalPadding / 2
+				padBegin = totalPadding - padEnd
+			}
+		} else if pads != nil {
+			padBegin = pads[i]
+			padEnd = pads[i+numSpatialDims]
+		}
+		paddings[i][0] = effectiveKernelSize - 1 - padBegin
+		paddings[i][1] = effectiveKernelSize - 1 - padEnd + outputPadding[i]
+	}
+	return paddings
+}
+
+func convertConvTransposeSingle(x, w, b *Node, paddings [][2]int, strides, dilations []int) *Node {
+	numSpatialDims := x.Rank() - 2
+	spatialAxes := make([]int, numSpatialDims)
+	for i := range spatialAxes {
+		spatialAxes[i] = i + 2
+	}
+
+	wReversed := Reverse(w, spatialAxes...)
+	axes := backends.ConvolveAxesConfig{
+		InputBatch:           0,
+		InputChannels:        1,
+		InputSpatial:         spatialAxes,
+		KernelInputChannels:  0,
+		KernelOutputChannels: 1,
+		KernelSpatial:        spatialAxes,
+		OutputBatch:          0,
+		OutputChannels:       1,
+		OutputSpatial:        spatialAxes,
+	}
+
+	conv := Convolve(x, wReversed).AxesConfig(axes).PaddingPerDim(paddings)
+	if !allConvTransposeValuesAreOne(dilations) {
+		conv = conv.DilationPerAxis(dilations...)
+	}
+	if !allConvTransposeValuesAreOne(strides) {
+		conv = conv.InputDilationPerAxis(strides...)
+	}
+	out := conv.Done()
+	return addConvBias(out, b)
+}
+
+func allConvTransposeValuesAreOne(values []int) bool {
+	for _, v := range values {
+		if v != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+func addConvBias(out, b *Node) *Node {
+	if b == nil {
+		return out
+	}
+	if b.Rank() == 1 && out.Rank() >= 3 {
+		shape := make([]int, out.Rank())
+		shape[0] = 1
+		shape[1] = b.Shape().Dim(0)
+		for i := 2; i < out.Rank(); i++ {
+			shape[i] = 1
+		}
+		b = Reshape(b, shape...)
+	}
+	return Add(out, b)
 }
 
 // convertAveragePool converts an ONNX AveragePool node to a GoMLX node.
