@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/gomlx/compute/dtypes"
+	"github.com/gomlx/compute/gobackend"
 	"github.com/gomlx/compute/shapes"
-	"github.com/gomlx/gomlx/backends/simplego"
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/graph/graphtest"
 	"github.com/gomlx/gomlx/core/tensors"
@@ -1911,7 +1911,7 @@ func createTestModelWithDTypePromoConfig(allowPromotion, prioritizeFloat16 bool)
 
 func TestPromoteToCommonDTypeStrictMode(t *testing.T) {
 	// Test that strict mode (default) panics on dtype mismatch
-	backend, err := simplego.New("")
+	backend, err := gobackend.New("")
 	require.NoError(t, err)
 	g := NewGraph(backend, "StrictModePanic")
 

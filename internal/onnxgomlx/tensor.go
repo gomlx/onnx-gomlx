@@ -8,9 +8,9 @@ import (
 	"github.com/gomlx/compute"
 	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/compute/dtypes/float16"
+	"github.com/gomlx/compute/gobackend"
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
-	"github.com/gomlx/gomlx/backends/simplego"
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -305,7 +305,7 @@ func checkAndCopyTensorToProto[T interface {
 	if shape.DType != dtypes.FromGenericsType[T]() {
 		// Convert from GoMLX tensor to the ONNX proto data type.
 		// It uses GoMLX SimpleGo backend.
-		backend, err := simplego.New("")
+		backend, err := gobackend.New("")
 		if err != nil {
 			return err
 		}
