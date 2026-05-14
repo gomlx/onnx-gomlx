@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/gomlx/compute/shapes"
-	"github.com/gomlx/gomlx/pkg/support/sets"
+	"github.com/gomlx/gomlx/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
 )

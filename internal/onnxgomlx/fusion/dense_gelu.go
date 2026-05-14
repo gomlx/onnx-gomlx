@@ -1,7 +1,7 @@
 package fusion
 
 import (
-	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
+	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
 	"github.com/gomlx/gomlx/pkg/ml/nn"

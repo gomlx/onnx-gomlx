@@ -9,7 +9,7 @@ import (
 	"github.com/gomlx/compute"
 	"github.com/gomlx/compute/gobackend"
 	"github.com/gomlx/compute/shapes"
-	"github.com/gomlx/gomlx/pkg/support/sets"
+	"github.com/gomlx/gomlx/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx/filesreader"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"

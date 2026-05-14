@@ -7,11 +7,11 @@ import (
 
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
-	. "github.com/gomlx/gomlx/pkg/core/graph"
-	"github.com/gomlx/gomlx/pkg/core/tensors"
+	. "github.com/gomlx/gomlx/core/graph"
+	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
-	"github.com/gomlx/gomlx/pkg/support/sets"
+	"github.com/gomlx/gomlx/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
 )

@@ -5,13 +5,13 @@ import (
 
 	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/gomlx/backends/simplego"
-	"github.com/gomlx/gomlx/pkg/core/tensors"
+	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
+	. "github.com/gomlx/gomlx/core/graph" //nolint
 )
 
 // makeInt8TensorProto creates a TensorProto with the given shape and int8 data.

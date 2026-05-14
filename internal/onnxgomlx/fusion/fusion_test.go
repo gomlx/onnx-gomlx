@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/gomlx/gomlx/backends/simplego"
-	"github.com/gomlx/gomlx/pkg/core/tensors"
+	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
-	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
+	. "github.com/gomlx/gomlx/core/graph" //nolint
 )
 
 // makeFloatTensorProto creates a TensorProto with the given shape and float32 data.
