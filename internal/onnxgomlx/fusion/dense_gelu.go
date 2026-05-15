@@ -2,9 +2,9 @@ package fusion
 
 import (
 	. "github.com/gomlx/gomlx/core/graph" //nolint
+	"github.com/gomlx/gomlx/ml/nn"
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
-	"github.com/gomlx/gomlx/pkg/ml/nn"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
