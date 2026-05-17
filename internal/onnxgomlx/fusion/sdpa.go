@@ -21,7 +21,7 @@ package fusion
 
 import (
 	. "github.com/gomlx/gomlx/core/graph" //nolint
-	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/pkg/ml/layers/attention"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 
@@ -55,7 +55,7 @@ func (c *sdpaCandidate) OutputNames() []string            { return []string{c.ou
 func (c *sdpaCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
 func (c *sdpaCandidate) ExternalInputs() []string         { return c.externalInputs }
 
-func (c *sdpaCandidate) Emit(ctx *context.Context, g *Graph, convertedOutputs map[string]*Node) {
+func (c *sdpaCandidate) Emit(ctx *model.Context, g *Graph, convertedOutputs map[string]*Node) {
 	p := c.params
 
 	q := convertedOutputs[p.QInputName]

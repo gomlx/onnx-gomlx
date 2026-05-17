@@ -6,7 +6,7 @@ import (
 
 	"github.com/gomlx/compute/gobackend"
 	"github.com/gomlx/gomlx/core/tensors"
-	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/stretchr/testify/assert"
@@ -141,9 +141,9 @@ func runFusedVsUnfused(t *testing.T, graphProto *protos.GraphProto, inputs map[s
 	backend, err := gobackend.New("")
 	require.NoError(t, err)
 
-	ctxFused := context.New()
+	ctxFused := model.New()
 	require.NoError(t, mFused.VariablesToContext(ctxFused))
-	ctxUnfused := context.New()
+	ctxUnfused := model.New()
 	require.NoError(t, mUnfused.VariablesToContext(ctxUnfused))
 
 	buildInputNodes := func(g *Graph) map[string]*Node {
@@ -154,11 +154,11 @@ func runFusedVsUnfused(t *testing.T, graphProto *protos.GraphProto, inputs map[s
 		return nodeMap
 	}
 
-	unfusedResults := context.MustExecOnceN(backend, ctxUnfused, func(ctx *context.Context, g *Graph) []*Node {
+	unfusedResults := model.MustExecOnceN(backend, ctxUnfused, func(ctx *model.Context, g *Graph) []*Node {
 		return mUnfused.CallGraph(ctx, g, buildInputNodes(g))
 	})
 
-	fusedResults := context.MustExecOnceN(backend, ctxFused, func(ctx *context.Context, g *Graph) []*Node {
+	fusedResults := model.MustExecOnceN(backend, ctxFused, func(ctx *model.Context, g *Graph) []*Node {
 		return mFused.CallGraph(ctx, g, buildInputNodes(g))
 	})
 

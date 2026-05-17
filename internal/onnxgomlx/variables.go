@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/gomlx/exceptions"
-	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/pkg/errors"
 )
@@ -20,7 +20,7 @@ import (
 // Alternatively, if you have already checkpoint-ed your model, load the variables from a checkpoint and don't call this.
 //
 // See also ContextToONNX, if after converting and fine-tuning an ONNX model, you want to update its weights.
-func (m *Model) VariablesToContext(ctx *context.Context) error {
+func (m *Model) VariablesToContext(ctx *model.Context) error {
 	if len(m.Proto.Graph.SparseInitializer) > 0 {
 		exceptions.Panicf("onnxgomlx.VariablesToContext does not support ONNX SparseTensors")
 	}
@@ -39,7 +39,7 @@ func (m *Model) VariablesToContext(ctx *context.Context) error {
 
 // SafeVarName converts an ONNX variable name to a GoMLX safe variable name by replacing the scope separator with a "|".
 func SafeVarName(onnxName string) (gomlxName string) {
-	return strings.ReplaceAll(onnxName, context.ScopeSeparator, "|")
+	return strings.ReplaceAll(onnxName, model.ScopeSeparator, "|")
 }
 
 // FreeUnusedVariables removes initializers that are not referenced by any node input
@@ -83,7 +83,7 @@ func (m *Model) FreeUnusedVariables() {
 //
 // Only those variables present in the original ONNX model are converted -- so new variables (e.g.: optimizers (ADAM)
 // moving averages) are converted.
-func (m *Model) ContextToONNX(ctx *context.Context) error {
+func (m *Model) ContextToONNX(ctx *model.Context) error {
 	if len(m.Proto.Graph.SparseInitializer) > 0 {
 		exceptions.Panicf("onnxgomlx.VariablesToContext does not support ONNX SparseTensors")
 	}

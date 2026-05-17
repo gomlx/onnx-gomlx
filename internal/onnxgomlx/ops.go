@@ -14,7 +14,7 @@ import (
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
 	timage "github.com/gomlx/gomlx/core/tensors/images"
-	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/pkg/ml/layers"
 	"github.com/gomlx/gomlx/pkg/ml/layers/attention"
 	"github.com/gomlx/gomlx/pkg/ml/layers/attention/pos"
@@ -2275,7 +2275,7 @@ func convertSimplifiedLayerNormalization(_ *Model, _ map[string]*Node, node *pro
 	}
 
 	// Use GoMLX's RMSNorm without its learnable scale (we apply the ONNX-provided scale ourselves).
-	normalized := layers.RMSNorm(context.New(), x).
+	normalized := layers.RMSNorm(model.New(), x).
 		WithScale(false).
 		WithEpsilon(float64(epsilon)).
 		WithNormalizationAxes(axes...).
@@ -3171,7 +3171,7 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__If.html
-func convertIf(ctx *context.Context, m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func convertIf(ctx *model.Context, m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	if len(inputs) != 1 {
 		exceptions.Panicf("If: expected exactly 1 input (condition), got %d", len(inputs))
 	}

@@ -10,7 +10,7 @@ import (
 
 	"github.com/gomlx/compute/shapes"
 	. "github.com/gomlx/gomlx/core/graph"
-	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/ml/model"
 )
 
 // DynamicDim is used for dynamic axes in a shape.
@@ -68,16 +68,16 @@ type Model interface {
 	SaveToFile(path string) error
 
 	// CallGraph calls the ONNX graph, and hence are building it with GoMLX ops.
-	CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Node, outputNames ...string) (outputs []*Node)
+	CallGraph(ctx *model.Context, g *Graph, inputs map[string]*Node, outputNames ...string) (outputs []*Node)
 
 	// VariablesToContext uploads all variable values from the ONNX model to the context.
-	VariablesToContext(ctx *context.Context) error
+	VariablesToContext(ctx *model.Context) error
 
 	// FreeUnusedVariables frees variables that are not used in the graph.
 	FreeUnusedVariables()
 
 	// ContextToONNX copies over the variables in GoMLX's Context to the ONNX's model proto.
-	ContextToONNX(ctx *context.Context) error
+	ContextToONNX(ctx *model.Context) error
 
 	// String implements fmt.Stringer.
 	String() string

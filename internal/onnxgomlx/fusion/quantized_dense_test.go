@@ -6,7 +6,7 @@ import (
 	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/compute/gobackend"
 	"github.com/gomlx/gomlx/core/tensors"
-	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -148,7 +148,7 @@ func TestQuantizedDensePerChannelScale(t *testing.T) {
 	// VariablesToContext should succeed.
 	backend, err := gobackend.New("")
 	require.NoError(t, err)
-	ctx := context.New()
+	ctx := model.New()
 	require.NoError(t, m.VariablesToContext(ctx))
 
 	// Build and execute graph — should not panic during ExpandAndBroadcast.
@@ -157,7 +157,7 @@ func TestQuantizedDensePerChannelScale(t *testing.T) {
 		xData[i] = float32(i%7)*0.1 - 0.3
 	}
 
-	results := context.MustExecOnceN(backend, ctx, func(ctx *context.Context, g *Graph) []*Node {
+	results := model.MustExecOnceN(backend, ctx, func(ctx *model.Context, g *Graph) []*Node {
 		xNode := Const(g, tensors.FromFlatDataAndDimensions(xData, 2, K))
 		return m.CallGraph(ctx, g, map[string]*Node{"float_input": xNode})
 	})
@@ -178,7 +178,7 @@ func TestQuantizedDenseScalarScale(t *testing.T) {
 
 	backend, err := gobackend.New("")
 	require.NoError(t, err)
-	ctx := context.New()
+	ctx := model.New()
 	require.NoError(t, m.VariablesToContext(ctx))
 
 	xData := make([]float32, 2*K)
@@ -186,7 +186,7 @@ func TestQuantizedDenseScalarScale(t *testing.T) {
 		xData[i] = float32(i%7)*0.1 - 0.3
 	}
 
-	results := context.MustExecOnceN(backend, ctx, func(ctx *context.Context, g *Graph) []*Node {
+	results := model.MustExecOnceN(backend, ctx, func(ctx *model.Context, g *Graph) []*Node {
 		xNode := Const(g, tensors.FromFlatDataAndDimensions(xData, 2, K))
 		return m.CallGraph(ctx, g, map[string]*Node{"float_input": xNode})
 	})

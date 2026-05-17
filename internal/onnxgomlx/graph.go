@@ -9,7 +9,7 @@ import (
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
-	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
 	"github.com/gomlx/gomlx/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -46,7 +46,7 @@ func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
 // You can pass a nil context (ctx) if the model has no variables.
 //
 // As in GoMLX graph building (symbolic) functions, it panics (throws exceptions) in case of errors.
-func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Node, outputNames ...string) (outputs []*Node) {
+func (m *Model) CallGraph(ctx *model.Context, g *Graph, inputs map[string]*Node, outputNames ...string) (outputs []*Node) {
 	if ctx != nil {
 		ctx = ctx.In(onnx.ModelScope).Checked(false)
 	}
@@ -176,7 +176,7 @@ func (m *Model) CallGraph(ctx *context.Context, g *Graph, inputs map[string]*Nod
 // The convertedOutputs are used both as input and as output to store the converted nodes.
 //
 // The ctx may be nil if no variables are used.
-func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputName string, convertedOutputs map[string]*Node) {
+func (m *Model) recursiveCallGraph(ctx *model.Context, g *Graph, nodeOutputName string, convertedOutputs map[string]*Node) {
 	if _, found := convertedOutputs[nodeOutputName]; found {
 		// Already converted.
 		return
@@ -242,7 +242,7 @@ func (m *Model) recursiveCallGraph(ctx *context.Context, g *Graph, nodeOutputNam
 // convertSubGraph converts an ONNX sub-graph (used in control flow ops like If) to GoMLX nodes.
 // It takes the parent graph g and the sub-graph proto, along with the current convertedOutputs mapping.
 // Returns a slice of output nodes from the sub-graph in the order they appear in the sub-graph's output list.
-func (m *Model) convertSubGraph(ctx *context.Context, g *Graph, subGraphProto *protos.GraphProto, parentConvertedOutputs map[string]*Node) []*Node {
+func (m *Model) convertSubGraph(ctx *model.Context, g *Graph, subGraphProto *protos.GraphProto, parentConvertedOutputs map[string]*Node) []*Node {
 	// Create a new local context for the sub-graph
 	// Note: Sub-graphs in ONNX can reference outputs from the parent graph
 	localConvertedOutputs := make(map[string]*Node)
@@ -441,7 +441,7 @@ func opRequiresContext(opType string) bool {
 // See the definitions in:
 // . https://openxla.org/xla/broadcasting
 // . https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
-func (m *Model) convertNode(ctx *context.Context, g *Graph, node *protos.NodeProto, convertedOutputs map[string]*Node) {
+func (m *Model) convertNode(ctx *model.Context, g *Graph, node *protos.NodeProto, convertedOutputs map[string]*Node) {
 	if node.Overload != "" {
 		exceptions.Panicf("overload %q to in-model function in ONNX model not implemented in node %q", node.Overload, node.Name)
 	}

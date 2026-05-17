@@ -4,7 +4,7 @@ import (
 	"sort"
 
 	. "github.com/gomlx/gomlx/core/graph" //nolint
-	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
 )
 
@@ -25,7 +25,7 @@ type FusionCandidate interface {
 	// before the fusion can be emitted.
 	ExternalInputs() []string
 	// Emit converts the fusion into GoMLX ops, storing results in convertedOutputs.
-	Emit(ctx *context.Context, g *Graph, convertedOutputs map[string]*Node)
+	Emit(ctx *model.Context, g *Graph, convertedOutputs map[string]*Node)
 }
 
 // FusionDetector scans an ONNX graph and returns detected fusion candidates.
@@ -92,7 +92,7 @@ func (m *Model) detectFusionPatterns() {
 
 // ensureFusionGroupConverted ensures all external inputs of a fusion candidate are converted,
 // then emits the fused op. This is called when any output of the group is requested.
-func (m *Model) ensureFusionGroupConverted(ctx *context.Context, g *Graph, cand FusionCandidate, convertedOutputs map[string]*Node) {
+func (m *Model) ensureFusionGroupConverted(ctx *model.Context, g *Graph, cand FusionCandidate, convertedOutputs map[string]*Node) {
 	// Check if already emitted (any output already in convertedOutputs).
 	for _, name := range cand.OutputNames() {
 		if _, done := convertedOutputs[name]; done {

@@ -17,7 +17,7 @@ import (
 	"github.com/gomlx/go-huggingface/hub"
 	"github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
-	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/support/testutil"
 	"github.com/gomlx/gomlx/support/xsync"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
@@ -317,10 +317,10 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	onnxModelPath := must.M1(repoModel.DownloadFile("model.onnx"))
 	backend := testutil.BuildTestBackend()
 	model := must.M1(parser.ParseFile(onnxModelPath))
-	ctx := context.New()
+	ctx := model.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()
-	exec := context.MustNewExec(backend, ctx, func(ctx *context.Context, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
+	exec := model.MustNewExec(backend, ctx, func(ctx *model.Context, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
 		outputs := model.CallGraph(ctx, g,

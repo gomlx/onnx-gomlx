@@ -7,7 +7,7 @@ import (
 	"github.com/gomlx/compute/dtypes"
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
-	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/support/testutil"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/stretchr/testify/require"
@@ -31,7 +31,7 @@ func TestEndToEnd(t *testing.T) {
 	require.Equal(t, "batch_size", model.OutputsShapes[0].Names[0])
 
 	// Verify the correct setting of variables.
-	ctx := context.New()
+	ctx := model.New()
 	require.NoError(t, model.VariablesToContext(ctx))
 	for v := range ctx.IterVariables() {
 		value, err := v.Value()
@@ -54,7 +54,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// Check conversion.
 	backend := testutil.BuildTestBackend()
-	y := context.MustExecOnce(backend, ctx, func(ctx *context.Context, x *Node) *Node {
+	y := model.MustExecOnce(backend, ctx, func(ctx *model.Context, x *Node) *Node {
 		g := x.Graph()
 		outputs := model.CallGraph(ctx, g, map[string]*Node{"X": x})
 		vB = ctx.In(onnx.ModelScope).GetVariable("B")

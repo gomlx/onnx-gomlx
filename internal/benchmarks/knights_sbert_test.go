@@ -18,7 +18,7 @@ import (
 	"github.com/gomlx/go-huggingface/hub"
 	"github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
-	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/support/testutil"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -190,10 +190,10 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 	// Build model
 	backend := testutil.BuildTestBackend()
 	model := must.M1(parser.ParseFile(onnxModelPath))
-	ctx := context.New()
+	ctx := model.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()
-	exec := context.MustNewExec(backend, ctx, func(ctx *context.Context, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
+	exec := model.MustNewExec(backend, ctx, func(ctx *model.Context, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
 		outputs := model.CallGraph(ctx, g,
@@ -402,7 +402,7 @@ func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBa
 	// Find the output shape for each batchSize.
 	shapePerBatchSize = make(map[int]shapes.Shape, len(BatchSizes))
 	backend := testutil.BuildTestBackend()
-	ctx := context.New()
+	ctx := model.New()
 	must.M(model.VariablesToContext(ctx))
 	ctx = ctx.Reuse()
 	for _, batchSize := range BatchSizes {
