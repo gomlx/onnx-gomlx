@@ -73,7 +73,7 @@ func (c *quantizedDenseCandidate) OutputNames() []string            { return []s
 func (c *quantizedDenseCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
 func (c *quantizedDenseCandidate) ExternalInputs() []string         { return c.externalInputs }
 
-func (c *quantizedDenseCandidate) Emit(_ *model.Context, g *Graph, convertedOutputs map[string]*Node) {
+func (c *quantizedDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs map[string]*Node) {
 	p := c.params
 
 	var floatInput *Node

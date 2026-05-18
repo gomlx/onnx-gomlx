@@ -31,21 +31,21 @@ func TestEndToEnd(t *testing.T) {
 	require.Equal(t, "batch_size", model.OutputsShapes[0].Names[0])
 
 	// Verify the correct setting of variables.
-	ctx := model.New()
-	require.NoError(t, model.VariablesToContext(ctx))
-	for v := range ctx.IterVariables() {
+	scope := model.New()
+	require.NoError(t, model.VariablesToContext(scope))
+	for v := range scope.IterVariables() {
 		value, err := v.Value()
 		require.NoError(t, err)
 		fmt.Printf("\tVariable %q: %s\n", v.ScopeAndName(), value)
 	}
-	vA := ctx.In(onnx.ModelScope).GetVariable("A")
+	vA := scope.In(onnx.ModelScope).GetVariable("A")
 	require.NotNil(t, vA)
 	require.Equal(t, 1, vA.Shape().Rank())
 	require.Equal(t, 5, vA.Shape().Dim(0))
 	vAValue, err := vA.Value()
 	require.NoError(t, err)
 	require.Equal(t, []float32{100, 10, 1, 0.1, 0.01}, tensors.MustCopyFlatData[float32](vAValue))
-	vB := ctx.In(onnx.ModelScope).GetVariable("B")
+	vB := scope.In(onnx.ModelScope).GetVariable("B")
 	require.NotNil(t, vB)
 	require.Equal(t, 0, vB.Shape().Rank())
 	vBValue, err := vB.Value()
@@ -54,10 +54,10 @@ func TestEndToEnd(t *testing.T) {
 
 	// Check conversion.
 	backend := testutil.BuildTestBackend()
-	y := model.MustExecOnce(backend, ctx, func(ctx *model.Context, x *Node) *Node {
+	y := model.MustExecOnce(backend, scope, func(scope *model.Scope, x *Node) *Node {
 		g := x.Graph()
-		outputs := model.CallGraph(ctx, g, map[string]*Node{"X": x})
-		vB = ctx.In(onnx.ModelScope).GetVariable("B")
+		outputs := model.CallGraph(scope, g, map[string]*Node{"X": x})
+		vB = scope.In(onnx.ModelScope).GetVariable("B")
 		vB.SetValueGraph(OnePlus(vB.ValueGraph(g)))
 		return outputs[0]
 	}, [][]float32{{1, 2, 3, 4, 5}}) // BatchSize = 1
@@ -65,7 +65,7 @@ func TestEndToEnd(t *testing.T) {
 	require.InDeltaSlice(t, []float32{7123.45}, tensors.MustCopyFlatData[float32](y), 0.1)
 
 	// Save change of variable "B" to the ONNX model.
-	require.NoError(t, model.ContextToONNX(ctx))
+	require.NoError(t, model.ContextToONNX(scope))
 	tensorProto, found := model.VariableNameToValue["B"]
 	require.True(t, found, "Didn't find B variable")
 	require.Equal(t, []float32{7001}, tensorProto.FloatData, "ONNX variable B initial value was not updated.")

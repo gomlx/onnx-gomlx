@@ -40,7 +40,7 @@ func (c *quantizedQKVDenseCandidate) OutputNames() []string {
 func (c *quantizedQKVDenseCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
 func (c *quantizedQKVDenseCandidate) ExternalInputs() []string         { return c.externalInputs }
 
-func (c *quantizedQKVDenseCandidate) Emit(_ *model.Context, g *Graph, convertedOutputs map[string]*Node) {
+func (c *quantizedQKVDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs map[string]*Node) {
 	p := c.params
 
 	floatInput := convertedOutputs[p.FloatInputName]

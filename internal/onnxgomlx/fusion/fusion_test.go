@@ -141,9 +141,9 @@ func runFusedVsUnfused(t *testing.T, graphProto *protos.GraphProto, inputs map[s
 	backend, err := gobackend.New("")
 	require.NoError(t, err)
 
-	ctxFused := model.New()
+	ctxFused := model.NewStore()
 	require.NoError(t, mFused.VariablesToContext(ctxFused))
-	ctxUnfused := model.New()
+	ctxUnfused := model.NewStore()
 	require.NoError(t, mUnfused.VariablesToContext(ctxUnfused))
 
 	buildInputNodes := func(g *Graph) map[string]*Node {
@@ -154,12 +154,12 @@ func runFusedVsUnfused(t *testing.T, graphProto *protos.GraphProto, inputs map[s
 		return nodeMap
 	}
 
-	unfusedResults := model.MustExecOnceN(backend, ctxUnfused, func(ctx *model.Context, g *Graph) []*Node {
-		return mUnfused.CallGraph(ctx, g, buildInputNodes(g))
+	unfusedResults := model.MustExecOnceN(backend, ctxUnfused, func(scope *model.Scope, g *Graph) []*Node {
+		return mUnfused.CallGraph(scope, g, buildInputNodes(g))
 	})
 
-	fusedResults := model.MustExecOnceN(backend, ctxFused, func(ctx *model.Context, g *Graph) []*Node {
-		return mFused.CallGraph(ctx, g, buildInputNodes(g))
+	fusedResults := model.MustExecOnceN(backend, ctxFused, func(scope *model.Scope, g *Graph) []*Node {
+		return mFused.CallGraph(scope, g, buildInputNodes(g))
 	})
 
 	require.Equal(t, len(unfusedResults), len(fusedResults), "output count mismatch")

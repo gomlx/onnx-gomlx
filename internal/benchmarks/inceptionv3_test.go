@@ -13,7 +13,6 @@ import (
 	"github.com/gomlx/go-huggingface/hub"
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
-	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/support/testutil"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/go-benchmarks"
@@ -64,18 +63,18 @@ func benchGoMLXInceptionV3(t *testing.T) {
 		fmt.Printf("Model details:\n%s\n", model)
 	}
 	backend := testutil.BuildTestBackend()
-	ctx := model.New()
-	must.M(model.VariablesToContext(ctx))
-	ctx = ctx.Reuse()
+	scope := model.New()
+	must.M(model.VariablesToContext(scope))
+	scope = scope.Reuse()
 	inputsNames, _ := model.Inputs()
 	inputName := inputsNames[0]
 	outputsNames, _ := model.Outputs()
 	outputName := outputsNames[0]
 	for batchIdx, batchSize := range inceptionV3BatchSizes {
 		//t.Run(fmt.Sprintf("batchSize=%02d", batchSize), func(t *testing.T) {
-		exec := model.MustNewExec(backend, ctx, func(ctx *model.Context, images *Node) *Node {
+		exec := model.MustNewExec(backend, scope, func(scope *model.Scope, images *Node) *Node {
 			g := images.Graph()
-			outputs := model.CallGraph(ctx, g,
+			outputs := model.CallGraph(scope, g,
 				map[string]*Node{
 					inputName: images,
 				}, outputName)

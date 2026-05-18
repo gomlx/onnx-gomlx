@@ -55,7 +55,7 @@ func (c *sdpaCandidate) OutputNames() []string            { return []string{c.ou
 func (c *sdpaCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
 func (c *sdpaCandidate) ExternalInputs() []string         { return c.externalInputs }
 
-func (c *sdpaCandidate) Emit(ctx *model.Context, g *Graph, convertedOutputs map[string]*Node) {
+func (c *sdpaCandidate) Emit(scope *model.Scope, g *Graph, convertedOutputs map[string]*Node) {
 	p := c.params
 
 	q := convertedOutputs[p.QInputName]
@@ -73,7 +73,7 @@ func (c *sdpaCandidate) Emit(ctx *model.Context, g *Graph, convertedOutputs map[
 		mask = convertedOutputs[p.MaskInputName]
 	}
 
-	output, _ := attention.Core(ctx, q, k, v, p.Scale, mask, nil, attention.LayoutBHSD, false, false)
+	output, _ := attention.Core(scope, q, k, v, p.Scale, mask, nil, attention.LayoutBHSD, false, false)
 	convertedOutputs[c.outputName] = output
 }
 

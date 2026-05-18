@@ -20,11 +20,11 @@ import (
 // Alternatively, if you have already checkpoint-ed your model, load the variables from a checkpoint and don't call this.
 //
 // See also ContextToONNX, if after converting and fine-tuning an ONNX model, you want to update its weights.
-func (m *Model) VariablesToContext(ctx *model.Context) error {
+func (m *Model) VariablesToContext(scope *model.Scope) error {
 	if len(m.Proto.Graph.SparseInitializer) > 0 {
 		exceptions.Panicf("onnxgomlx.VariablesToContext does not support ONNX SparseTensors")
 	}
-	ctx = ctx.In(onnx.ModelScope).Checked(false)
+	scope = scope.In(onnx.ModelScope)
 	reader := m.getExternalDataReader()
 	for _, tensorProto := range m.Proto.Graph.Initializer {
 		tensor, err := ONNXTensorToGoMLX(m.Backend, tensorProto, reader)
@@ -32,7 +32,7 @@ func (m *Model) VariablesToContext(ctx *model.Context) error {
 			return errors.WithMessagef(err, "Model.VariablesToContext()")
 		}
 		tensorName := SafeVarName(tensorProto.Name)
-		ctx.VariableWithValue(tensorName, tensor)
+		scope.VariableWithValue(tensorName, tensor)
 	}
 	return nil
 }
@@ -83,18 +83,18 @@ func (m *Model) FreeUnusedVariables() {
 //
 // Only those variables present in the original ONNX model are converted -- so new variables (e.g.: optimizers (ADAM)
 // moving averages) are converted.
-func (m *Model) ContextToONNX(ctx *model.Context) error {
+func (m *Model) ContextToONNX(scope *model.Scope) error {
 	if len(m.Proto.Graph.SparseInitializer) > 0 {
 		exceptions.Panicf("onnxgomlx.VariablesToContext does not support ONNX SparseTensors")
 	}
-	ctx = ctx.In(onnx.ModelScope)
+	scope = scope.In(onnx.ModelScope)
 	for _, tensorProto := range m.Proto.Graph.Initializer {
 		tensorName := SafeVarName(tensorProto.Name)
-		gomlxVar := ctx.GetVariable(tensorName)
+		gomlxVar := scope.GetVariable(tensorName)
 		if gomlxVar == nil {
 			return errors.Errorf("ONNX variable '%s' not found in context scope %q --"+
 				" maybe you used a different scope when Model.VariablesToContext() was used ?",
-				tensorName, ctx.Scope())
+				tensorName, scope.Scope())
 		}
 		gomlxValue, err := gomlxVar.Value()
 		if err != nil {

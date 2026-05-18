@@ -148,8 +148,8 @@ func TestQuantizedDensePerChannelScale(t *testing.T) {
 	// VariablesToContext should succeed.
 	backend, err := gobackend.New("")
 	require.NoError(t, err)
-	ctx := model.New()
-	require.NoError(t, m.VariablesToContext(ctx))
+	scope := model.NewStore()
+	require.NoError(t, m.VariablesToContext(scope))
 
 	// Build and execute graph — should not panic during ExpandAndBroadcast.
 	xData := make([]float32, 2*K)
@@ -157,9 +157,9 @@ func TestQuantizedDensePerChannelScale(t *testing.T) {
 		xData[i] = float32(i%7)*0.1 - 0.3
 	}
 
-	results := model.MustExecOnceN(backend, ctx, func(ctx *model.Context, g *Graph) []*Node {
+	results := model.MustExecOnceN(backend, scope, func(scope *model.Scope, g *Graph) []*Node {
 		xNode := Const(g, tensors.FromFlatDataAndDimensions(xData, 2, K))
-		return m.CallGraph(ctx, g, map[string]*Node{"float_input": xNode})
+		return m.CallGraph(scope, g, map[string]*Node{"float_input": xNode})
 	})
 
 	require.Len(t, results, 1)
@@ -178,17 +178,17 @@ func TestQuantizedDenseScalarScale(t *testing.T) {
 
 	backend, err := gobackend.New("")
 	require.NoError(t, err)
-	ctx := model.New()
-	require.NoError(t, m.VariablesToContext(ctx))
+	scope := model.NewStore()
+	require.NoError(t, m.VariablesToContext(scope))
 
 	xData := make([]float32, 2*K)
 	for i := range xData {
 		xData[i] = float32(i%7)*0.1 - 0.3
 	}
 
-	results := model.MustExecOnceN(backend, ctx, func(ctx *model.Context, g *Graph) []*Node {
+	results := model.MustExecOnceN(backend, scope, func(scope *model.Scope, g *Graph) []*Node {
 		xNode := Const(g, tensors.FromFlatDataAndDimensions(xData, 2, K))
-		return m.CallGraph(ctx, g, map[string]*Node{"float_input": xNode})
+		return m.CallGraph(scope, g, map[string]*Node{"float_input": xNode})
 	})
 
 	require.Len(t, results, 1)

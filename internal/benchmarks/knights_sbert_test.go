@@ -190,13 +190,13 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 	// Build model
 	backend := testutil.BuildTestBackend()
 	model := must.M1(parser.ParseFile(onnxModelPath))
-	ctx := model.New()
-	must.M(model.VariablesToContext(ctx))
-	ctx = ctx.Reuse()
-	exec := model.MustNewExec(backend, ctx, func(ctx *model.Context, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
+	scope := model.New()
+	must.M(model.VariablesToContext(scope))
+	scope = scope.Reuse()
+	exec := model.MustNewExec(backend, scope, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
-		outputs := model.CallGraph(ctx, g,
+		outputs := model.CallGraph(scope, g,
 			map[string]*graph.Node{
 				"input_ids":      tokenIDs,
 				"attention_mask": attentionMask,
@@ -402,9 +402,9 @@ func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBa
 	// Find the output shape for each batchSize.
 	shapePerBatchSize = make(map[int]shapes.Shape, len(BatchSizes))
 	backend := testutil.BuildTestBackend()
-	ctx := model.New()
-	must.M(model.VariablesToContext(ctx))
-	ctx = ctx.Reuse()
+	scope := model.New()
+	must.M(model.VariablesToContext(scope))
+	scope = scope.Reuse()
 	for _, batchSize := range BatchSizes {
 		g := graph.NewGraph(backend, fmt.Sprintf("batchSize=%d", batchSize))
 		var inputs [3]*graph.Node
@@ -412,7 +412,7 @@ func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBa
 		for ii := range inputs {
 			inputs[ii] = graph.Parameter(g, inputsNames[ii], shapes.Make(dtypes.Int64, batchSize, SequenceLength))
 		}
-		output := model.CallGraph(ctx, g,
+		output := model.CallGraph(scope, g,
 			map[string]*graph.Node{
 				"input_ids":      inputs[0],
 				"attention_mask": inputs[1],

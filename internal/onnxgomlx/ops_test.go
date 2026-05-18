@@ -188,9 +188,9 @@ func TestTile(t *testing.T) {
 func TestRangeCount(t *testing.T) {
 	backend := testutil.BuildTestBackend()
 	testFn := func(start, limit, delta any, want int) {
-		startT := tensors.FromAnyValue(start)
-		limitT := tensors.FromAnyValue(limit)
-		deltaT := tensors.FromAnyValue(delta)
+		startT := tensors.MustFromAnyValue(start)
+		limitT := tensors.MustFromAnyValue(limit)
+		deltaT := tensors.MustFromAnyValue(delta)
 		got := rangeCount(backend, startT, limitT, deltaT)
 		fmt.Printf("\trangeCount(start=%s, limit=%s, delta=%s) = %d (want %d)\n", startT, limitT, deltaT, got, want)
 		assert.Equal(t, want, got)

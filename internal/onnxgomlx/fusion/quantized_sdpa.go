@@ -40,7 +40,7 @@ func (c *quantizedSDPACandidate) OutputNames() []string            { return []st
 func (c *quantizedSDPACandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
 func (c *quantizedSDPACandidate) ExternalInputs() []string         { return c.externalInputs }
 
-func (c *quantizedSDPACandidate) Emit(_ *model.Context, g *Graph, convertedOutputs map[string]*Node) {
+func (c *quantizedSDPACandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs map[string]*Node) {
 	p := c.params
 
 	q := convertedOutputs[p.QInputName]

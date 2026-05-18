@@ -68,16 +68,16 @@ type Model interface {
 	SaveToFile(path string) error
 
 	// CallGraph calls the ONNX graph, and hence are building it with GoMLX ops.
-	CallGraph(ctx *model.Context, g *Graph, inputs map[string]*Node, outputNames ...string) (outputs []*Node)
+	CallGraph(scope *model.Scope, g *Graph, inputs map[string]*Node, outputNames ...string) (outputs []*Node)
 
 	// VariablesToContext uploads all variable values from the ONNX model to the context.
-	VariablesToContext(ctx *model.Context) error
+	VariablesToContext(scope *model.Scope) error
 
 	// FreeUnusedVariables frees variables that are not used in the graph.
 	FreeUnusedVariables()
 
 	// ContextToONNX copies over the variables in GoMLX's Context to the ONNX's model proto.
-	ContextToONNX(ctx *model.Context) error
+	ContextToONNX(scope *model.Scope) error
 
 	// String implements fmt.Stringer.
 	String() string

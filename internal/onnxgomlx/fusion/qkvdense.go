@@ -35,7 +35,7 @@ func (c *qkvDenseCandidate) OutputNames() []string {
 func (c *qkvDenseCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
 func (c *qkvDenseCandidate) ExternalInputs() []string         { return c.externalInputs }
 
-func (c *qkvDenseCandidate) Emit(_ *model.Context, g *Graph, convertedOutputs map[string]*Node) {
+func (c *qkvDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs map[string]*Node) {
 	p := c.params
 
 	x := convertedOutputs[p.SharedInputName]

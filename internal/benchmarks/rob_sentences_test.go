@@ -317,13 +317,13 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	onnxModelPath := must.M1(repoModel.DownloadFile("model.onnx"))
 	backend := testutil.BuildTestBackend()
 	model := must.M1(parser.ParseFile(onnxModelPath))
-	ctx := model.New()
-	must.M(model.VariablesToContext(ctx))
-	ctx = ctx.Reuse()
-	exec := model.MustNewExec(backend, ctx, func(ctx *model.Context, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
+	scope := model.New()
+	must.M(model.VariablesToContext(scope))
+	scope = scope.Reuse()
+	exec := model.MustNewExec(backend, scope, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
-		outputs := model.CallGraph(ctx, g,
+		outputs := model.CallGraph(scope, g,
 			map[string]*graph.Node{
 				"input_ids":      tokenIDs,
 				"attention_mask": attentionMask,
