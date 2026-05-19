@@ -58,7 +58,7 @@ func TestEndToEnd(t *testing.T) {
 		g := x.Graph()
 		outputs := model.CallGraph(scope, g, map[string]*Node{"X": x})
 		vB = scope.In(onnx.ModelScope).GetVariable("B")
-		vB.SetValueGraph(OnePlus(vB.ValueGraph(g)))
+		vB.SetNodeValue(OnePlus(vB.NodeValue(g)))
 		return outputs[0]
 	}, [][]float32{{1, 2, 3, 4, 5}}) // BatchSize = 1
 	require.NoError(t, y.Shape().Check(dtypes.Float32, 1))

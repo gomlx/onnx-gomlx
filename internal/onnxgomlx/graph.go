@@ -9,8 +9,8 @@ import (
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
+	"github.com/gomlx/gomlx/ml/layers/activations"
 	"github.com/gomlx/gomlx/ml/model"
-	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
 	"github.com/gomlx/gomlx/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
@@ -216,7 +216,7 @@ func (m *Model) recursiveCallGraph(scope *model.Scope, g *Graph, nodeOutputName 
 			convertedOutputs[nodeOutputName] = Const(g, value)
 		} else {
 			// Default behavior: create a parameter that will be filled at execution time
-			convertedOutputs[nodeOutputName] = v.ValueGraph(g)
+			convertedOutputs[nodeOutputName] = v.NodeValue(g)
 		}
 		return
 	}

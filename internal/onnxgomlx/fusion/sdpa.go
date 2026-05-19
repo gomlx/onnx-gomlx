@@ -21,8 +21,8 @@ package fusion
 
 import (
 	. "github.com/gomlx/gomlx/core/graph" //nolint
+	"github.com/gomlx/gomlx/ml/layers/attention"
 	"github.com/gomlx/gomlx/ml/model"
-	"github.com/gomlx/gomlx/pkg/ml/layers/attention"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
