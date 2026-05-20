@@ -9,7 +9,7 @@ import (
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
-	"github.com/gomlx/gomlx/ml/layers/activations"
+	"github.com/gomlx/gomlx/ml/layers/activation"
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -498,11 +498,11 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 	case "Erf":
 		result = Erf(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Relu":
-		result = activations.Relu(inputs[0])
+		result = activation.Relu(inputs[0])
 	case "Gelu":
-		result = activations.Gelu(inputs[0])
+		result = activation.Gelu(inputs[0])
 	case "FastGelu":
-		result = activations.GeluApproximate(inputs[0])
+		result = activation.GeluApproximate(inputs[0])
 	case "Abs":
 		result = Abs(inputs[0])
 	case "Neg":
@@ -536,7 +536,7 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 	case "Sigmoid":
 		result = Sigmoid(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "HardSwish":
-		result = activations.HardSwish(inputs[0])
+		result = activation.HardSwish(inputs[0])
 	case "IsNaN":
 		result = IsNaN(inputs[0])
 	case "Reciprocal":
