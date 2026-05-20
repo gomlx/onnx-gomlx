@@ -24,7 +24,7 @@ func (m *Model) VariablesToContext(scope *model.Scope) error {
 	if len(m.Proto.Graph.SparseInitializer) > 0 {
 		exceptions.Panicf("onnxgomlx.VariablesToContext does not support ONNX SparseTensors")
 	}
-	scope = scope.In(onnx.ModelScope)
+	scope = scope.At(onnx.ModelScope)
 	reader := m.getExternalDataReader()
 	for _, tensorProto := range m.Proto.Graph.Initializer {
 		tensor, err := ONNXTensorToGoMLX(m.Backend, tensorProto, reader)
@@ -87,7 +87,7 @@ func (m *Model) ContextToONNX(scope *model.Scope) error {
 	if len(m.Proto.Graph.SparseInitializer) > 0 {
 		exceptions.Panicf("onnxgomlx.VariablesToContext does not support ONNX SparseTensors")
 	}
-	scope = scope.In(onnx.ModelScope)
+	scope = scope.At(onnx.ModelScope)
 	for _, tensorProto := range m.Proto.Graph.Initializer {
 		tensorName := SafeVarName(tensorProto.Name)
 		gomlxVar := scope.GetVariable(tensorName)

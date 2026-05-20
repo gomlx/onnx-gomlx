@@ -142,9 +142,9 @@ func runFusedVsUnfused(t *testing.T, graphProto *protos.GraphProto, inputs map[s
 	require.NoError(t, err)
 
 	ctxFused := model.NewStore()
-	require.NoError(t, mFused.VariablesToContext(ctxFused))
+	require.NoError(t, mFused.VariablesToContext(ctxFused.RootScope()))
 	ctxUnfused := model.NewStore()
-	require.NoError(t, mUnfused.VariablesToContext(ctxUnfused))
+	require.NoError(t, mUnfused.VariablesToContext(ctxUnfused.RootScope()))
 
 	buildInputNodes := func(g *Graph) map[string]*Node {
 		nodeMap := make(map[string]*Node, len(inputs))

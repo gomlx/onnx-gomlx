@@ -48,7 +48,7 @@ func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
 // As in GoMLX graph building (symbolic) functions, it panics (throws exceptions) in case of errors.
 func (m *Model) CallGraph(scope *model.Scope, g *Graph, inputs map[string]*Node, outputNames ...string) (outputs []*Node) {
 	if scope != nil {
-		scope = scope.In(onnx.ModelScope)
+		scope = scope.At(onnx.ModelScope)
 	}
 
 	// Sanity check of things we don't support yet.

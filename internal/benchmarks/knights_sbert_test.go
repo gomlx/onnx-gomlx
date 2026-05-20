@@ -189,14 +189,13 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 
 	// Build model
 	backend := testutil.BuildTestBackend()
-	model := must.M1(parser.ParseFile(onnxModelPath))
-	scope := model.New()
-	must.M(model.VariablesToContext(scope))
-	scope = scope.Reuse()
-	exec := model.MustNewExec(backend, scope, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
+	onnxModel := must.M1(parser.ParseFile(onnxModelPath))
+	store := model.NewStore()
+	must.M(onnxModel.VariablesToContext(store.RootScope()))
+	exec := model.MustNewExec(backend, store, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
-		outputs := model.CallGraph(scope, g,
+		outputs := onnxModel.CallGraph(scope, g,
 			map[string]*graph.Node{
 				"input_ids":      tokenIDs,
 				"attention_mask": attentionMask,
@@ -397,14 +396,13 @@ func recursivelyTagNode(allNodes, usedNodes map[string]*protos.NodeProto, output
 // saveONNXModelWithOutput reads an ONNX model from fromPath, changes its output to
 // the node named newOutputNode, and then saves the modified model to toPath.
 func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBatchSize map[int]shapes.Shape) {
-	model := must.M1(onnxgomlx.ReadFile(fromPath))
+	onnxModel := must.M1(onnxgomlx.ReadFile(fromPath))
 
 	// Find the output shape for each batchSize.
 	shapePerBatchSize = make(map[int]shapes.Shape, len(BatchSizes))
 	backend := testutil.BuildTestBackend()
-	scope := model.New()
-	must.M(model.VariablesToContext(scope))
-	scope = scope.Reuse()
+	store := model.NewStore()
+	must.M(onnxModel.VariablesToContext(store.RootScope()))
 	for _, batchSize := range BatchSizes {
 		g := graph.NewGraph(backend, fmt.Sprintf("batchSize=%d", batchSize))
 		var inputs [3]*graph.Node
@@ -412,7 +410,7 @@ func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBa
 		for ii := range inputs {
 			inputs[ii] = graph.Parameter(g, inputsNames[ii], shapes.Make(dtypes.Int64, batchSize, SequenceLength))
 		}
-		output := model.CallGraph(scope, g,
+		output := onnxModel.CallGraph(store.RootScope(), g,
 			map[string]*graph.Node{
 				"input_ids":      inputs[0],
 				"attention_mask": inputs[1],
@@ -424,7 +422,7 @@ func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBa
 	}
 
 	// Change output in model proto.
-	graphProto := model.Proto.Graph
+	graphProto := onnxModel.Proto.Graph
 	newOutput := &protos.ValueInfoProto{
 		Name: newOutputNode,
 	}
@@ -446,7 +444,7 @@ func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBa
 	}
 
 	// Save model
-	contents := must.M1(proto.Marshal(&model.Proto))
+	contents := must.M1(proto.Marshal(&onnxModel.Proto))
 	must.M(os.WriteFile(toPath, contents, 0644))
 
 	return

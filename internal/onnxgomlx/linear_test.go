@@ -19,33 +19,35 @@ import (
 // Only a couple of ops tested, but from end-to-end, including if changes can be saved
 // again (ContextToONNX).
 func TestEndToEnd(t *testing.T) {
-	model, err := ReadFile("linear_test.onnx")
-	fmt.Printf("%s\n", model)
+	onnxModel, err := ReadFile("linear_test.onnx")
+	fmt.Printf("%s\n", onnxModel)
 	require.NoError(t, err)
-	require.Len(t, model.InputsNames, 1)
-	require.Equal(t, "X", model.InputsNames[0])
-	require.Len(t, model.OutputsNames, 1)
-	require.Equal(t, "Y", model.OutputsNames[0])
+	require.Len(t, onnxModel.InputsNames, 1)
+	require.Equal(t, "X", onnxModel.InputsNames[0])
+	require.Len(t, onnxModel.OutputsNames, 1)
+	require.Equal(t, "Y", onnxModel.OutputsNames[0])
 
-	require.Equal(t, model.OutputsShapes[0].Rank(), 1)
-	require.Equal(t, "batch_size", model.OutputsShapes[0].Names[0])
+	require.Equal(t, onnxModel.OutputsShapes[0].Rank(), 1)
+	require.Equal(t, "batch_size", onnxModel.OutputsShapes[0].Names[0])
 
 	// Verify the correct setting of variables.
-	scope := model.New()
-	require.NoError(t, model.VariablesToContext(scope))
+	store := model.NewStore()
+	scope := store.RootScope()
+	require.NoError(t, onnxModel.VariablesToContext(scope))
 	for v := range scope.IterVariables() {
 		value, err := v.Value()
 		require.NoError(t, err)
-		fmt.Printf("\tVariable %q: %s\n", v.ScopeAndName(), value)
+		fmt.Printf("\tVariable %q: %s\n", v.Path(), value)
 	}
-	vA := scope.In(onnx.ModelScope).GetVariable("A")
+	onnxScope := scope.At(onnx.ModelScope)
+	vA := onnxScope.GetVariable("A")
 	require.NotNil(t, vA)
 	require.Equal(t, 1, vA.Shape().Rank())
 	require.Equal(t, 5, vA.Shape().Dim(0))
 	vAValue, err := vA.Value()
 	require.NoError(t, err)
 	require.Equal(t, []float32{100, 10, 1, 0.1, 0.01}, tensors.MustCopyFlatData[float32](vAValue))
-	vB := scope.In(onnx.ModelScope).GetVariable("B")
+	vB := onnxScope.GetVariable("B")
 	require.NotNil(t, vB)
 	require.Equal(t, 0, vB.Shape().Rank())
 	vBValue, err := vB.Value()
@@ -54,10 +56,10 @@ func TestEndToEnd(t *testing.T) {
 
 	// Check conversion.
 	backend := testutil.BuildTestBackend()
-	y := model.MustExecOnce(backend, scope, func(scope *model.Scope, x *Node) *Node {
+	y := model.MustExecOnce(backend, store, func(scope *model.Scope, x *Node) *Node {
 		g := x.Graph()
-		outputs := model.CallGraph(scope, g, map[string]*Node{"X": x})
-		vB = scope.In(onnx.ModelScope).GetVariable("B")
+		outputs := onnxModel.CallGraph(scope, g, map[string]*Node{"X": x})
+		vB = scope.At(onnx.ModelScope).GetVariable("B")
 		vB.SetNodeValue(OnePlus(vB.NodeValue(g)))
 		return outputs[0]
 	}, [][]float32{{1, 2, 3, 4, 5}}) // BatchSize = 1
@@ -65,8 +67,8 @@ func TestEndToEnd(t *testing.T) {
 	require.InDeltaSlice(t, []float32{7123.45}, tensors.MustCopyFlatData[float32](y), 0.1)
 
 	// Save change of variable "B" to the ONNX model.
-	require.NoError(t, model.ContextToONNX(scope))
-	tensorProto, found := model.VariableNameToValue["B"]
+	require.NoError(t, onnxModel.ContextToONNX(scope))
+	tensorProto, found := onnxModel.VariableNameToValue["B"]
 	require.True(t, found, "Didn't find B variable")
 	require.Equal(t, []float32{7001}, tensorProto.FloatData, "ONNX variable B initial value was not updated.")
 }

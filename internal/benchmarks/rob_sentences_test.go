@@ -316,14 +316,13 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	repoModel := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repoModel.DownloadFile("model.onnx"))
 	backend := testutil.BuildTestBackend()
-	model := must.M1(parser.ParseFile(onnxModelPath))
-	scope := model.New()
-	must.M(model.VariablesToContext(scope))
-	scope = scope.Reuse()
-	exec := model.MustNewExec(backend, scope, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
+	onnxModel := must.M1(parser.ParseFile(onnxModelPath))
+	store := model.NewStore()
+	must.M(onnxModel.VariablesToContext(store.RootScope()))
+	exec := model.MustNewExec(backend, store, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
-		outputs := model.CallGraph(scope, g,
+		outputs := onnxModel.CallGraph(scope, g,
 			map[string]*graph.Node{
 				"input_ids":      tokenIDs,
 				"attention_mask": attentionMask,

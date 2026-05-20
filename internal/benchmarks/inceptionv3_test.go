@@ -13,6 +13,7 @@ import (
 	"github.com/gomlx/go-huggingface/hub"
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/support/testutil"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/go-benchmarks"
@@ -58,23 +59,22 @@ func downloadInceptionV3Model() string {
 
 func benchGoMLXInceptionV3(t *testing.T) {
 	onnxModelPath := downloadInceptionV3Model()
-	model := must.M1(parser.ParseFile(onnxModelPath))
+	onnxModel := must.M1(parser.ParseFile(onnxModelPath))
 	if *flagVerbose {
-		fmt.Printf("Model details:\n%s\n", model)
+		fmt.Printf("Model details:\n%s\n", onnxModel)
 	}
 	backend := testutil.BuildTestBackend()
-	scope := model.New()
-	must.M(model.VariablesToContext(scope))
-	scope = scope.Reuse()
-	inputsNames, _ := model.Inputs()
+	store := model.NewStore()
+	must.M(onnxModel.VariablesToContext(store.RootScope()))
+	inputsNames, _ := onnxModel.Inputs()
 	inputName := inputsNames[0]
-	outputsNames, _ := model.Outputs()
+	outputsNames, _ := onnxModel.Outputs()
 	outputName := outputsNames[0]
 	for batchIdx, batchSize := range inceptionV3BatchSizes {
 		//t.Run(fmt.Sprintf("batchSize=%02d", batchSize), func(t *testing.T) {
-		exec := model.MustNewExec(backend, scope, func(scope *model.Scope, images *Node) *Node {
+		exec := model.MustNewExec(backend, store, func(scope *model.Scope, images *Node) *Node {
 			g := images.Graph()
-			outputs := model.CallGraph(scope, g,
+			outputs := onnxModel.CallGraph(scope, g,
 				map[string]*Node{
 					inputName: images,
 				}, outputName)
