@@ -65,7 +65,7 @@ func benchGoMLXInceptionV3(t *testing.T) {
 	}
 	backend := testutil.BuildTestBackend()
 	store := model.NewStore()
-	must.M(onnxModel.VariablesToContext(store.RootScope()))
+	must.M(onnxModel.VariablesToScope(store.RootScope()))
 	inputsNames, _ := onnxModel.Inputs()
 	inputName := inputsNames[0]
 	outputsNames, _ := onnxModel.Outputs()

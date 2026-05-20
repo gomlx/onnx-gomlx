@@ -17,7 +17,7 @@ import (
 
 // TestEndToEnd based on the `linear_test.onnx` minimalistic model.
 // Only a couple of ops tested, but from end-to-end, including if changes can be saved
-// again (ContextToONNX).
+// again (ScopeToONNX).
 func TestEndToEnd(t *testing.T) {
 	onnxModel, err := ReadFile("linear_test.onnx")
 	fmt.Printf("%s\n", onnxModel)
@@ -33,7 +33,7 @@ func TestEndToEnd(t *testing.T) {
 	// Verify the correct setting of variables.
 	store := model.NewStore()
 	scope := store.RootScope()
-	require.NoError(t, onnxModel.VariablesToContext(scope))
+	require.NoError(t, onnxModel.VariablesToScope(scope))
 	for v := range scope.IterVariables() {
 		value, err := v.Value()
 		require.NoError(t, err)
@@ -67,7 +67,7 @@ func TestEndToEnd(t *testing.T) {
 	require.InDeltaSlice(t, []float32{7123.45}, tensors.MustCopyFlatData[float32](y), 0.1)
 
 	// Save change of variable "B" to the ONNX model.
-	require.NoError(t, onnxModel.ContextToONNX(scope))
+	require.NoError(t, onnxModel.ScopeToONNX(scope))
 	tensorProto, found := onnxModel.VariableNameToValue["B"]
 	require.True(t, found, "Didn't find B variable")
 	require.Equal(t, []float32{7001}, tensorProto.FloatData, "ONNX variable B initial value was not updated.")

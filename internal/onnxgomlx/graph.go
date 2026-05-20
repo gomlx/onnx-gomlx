@@ -28,10 +28,10 @@ func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
 // CallGraph calls the ONNX graph, and hence are building it with GoMLX ops.
 // This can be used for inference or training.
 //
-// If the model has any variables, call Model.VariablesToContext first (only once) to upload all
-// variable values from the ONNX model to the context -- or load them from a checkpoint if you saved one.
+// If the model has any variables, call Model.VariablesToScope first (only once) to upload all
+// variable values from the ONNX model to the given scope -- or load them from a checkpoint if you saved one.
 //
-// If the model has no variables, the context in ctx can be set to nil.
+// If the model has no variables, the scope can be set to nil.
 //
 // The inputs (a map of the input name to its graph.Node) can be given as normal input parameters to the graph or as
 // static constants -- see WithInputsAsConstants.
@@ -43,7 +43,7 @@ func sliceMap[In, Out any](in []In, fn func(e In) Out) (out []Out) {
 //
 // The graph being built is given in g.
 //
-// You can pass a nil context (ctx) if the model has no variables.
+// You can pass a nil scope if the model has no variables.
 //
 // As in GoMLX graph building (symbolic) functions, it panics (throws exceptions) in case of errors.
 func (m *Model) CallGraph(scope *model.Scope, g *Graph, inputs map[string]*Node, outputNames ...string) (outputs []*Node) {
@@ -146,7 +146,7 @@ func (m *Model) CallGraph(scope *model.Scope, g *Graph, inputs map[string]*Node,
 
 	// Convert variables: create the GoMLX nodes corresponding to the ONNX model variables.
 	if len(m.Proto.Graph.Initializer) > 0 && scope == nil {
-		exceptions.Panicf("onnxgomlx.CallGraph(): model has variables, but a nil context was give")
+		exceptions.Panicf("onnxgomlx.CallGraph(): model has variables, but a nil scope was given")
 		return
 	}
 
@@ -175,7 +175,7 @@ func (m *Model) CallGraph(scope *model.Scope, g *Graph, inputs map[string]*Node,
 // recursiveCallGraph recursively creates a GoMLX graph for the target output name.
 // The convertedOutputs are used both as input and as output to store the converted nodes.
 //
-// The ctx may be nil if no variables are used.
+// The scope may be nil if no variables are used.
 func (m *Model) recursiveCallGraph(scope *model.Scope, g *Graph, nodeOutputName string, convertedOutputs map[string]*Node) {
 	if _, found := convertedOutputs[nodeOutputName]; found {
 		// Already converted.
@@ -191,13 +191,13 @@ func (m *Model) recursiveCallGraph(scope *model.Scope, g *Graph, nodeOutputName 
 	// Is it the output of a variable?
 	if _, found := m.VariableNameToValue[nodeOutputName]; found {
 		if scope == nil {
-			exceptions.Panicf("onnxgomlx.CallGraph(): model has variables, but a nil context was given")
+			exceptions.Panicf("onnxgomlx.CallGraph(): model has variables, but a nil scope was given")
 			return
 		}
 		varName := SafeVarName(nodeOutputName)
 		v := scope.GetVariable(varName)
 		if v == nil {
-			exceptions.Panicf("variable %q (named %q in ONNX) has not been uploaded yet to context -- did you forget to call onnxgomlx.Model.VariablesToContext?",
+			exceptions.Panicf("variable %q (named %q in ONNX) has not been uploaded yet to scope -- did you forget to call onnxgomlx.Model.VariablesToScope?",
 				varName, nodeOutputName)
 			return
 		}
@@ -243,11 +243,11 @@ func (m *Model) recursiveCallGraph(scope *model.Scope, g *Graph, nodeOutputName 
 // It takes the parent graph g and the sub-graph proto, along with the current convertedOutputs mapping.
 // Returns a slice of output nodes from the sub-graph in the order they appear in the sub-graph's output list.
 func (m *Model) convertSubGraph(scope *model.Scope, g *Graph, subGraphProto *protos.GraphProto, parentConvertedOutputs map[string]*Node) []*Node {
-	// Create a new local context for the sub-graph
+	// Create a new local scope for the sub-graph
 	// Note: Sub-graphs in ONNX can reference outputs from the parent graph
 	localConvertedOutputs := make(map[string]*Node)
 
-	// Copy parent outputs into local context so sub-graph can reference them
+	// Copy parent outputs into local scope so sub-graph can reference them
 	maps.Copy(localConvertedOutputs, parentConvertedOutputs)
 
 	// Convert sub-graph initializers (constants) to GoMLX nodes

@@ -191,7 +191,7 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 	backend := testutil.BuildTestBackend()
 	onnxModel := must.M1(parser.ParseFile(onnxModelPath))
 	store := model.NewStore()
-	must.M(onnxModel.VariablesToContext(store.RootScope()))
+	must.M(onnxModel.VariablesToScope(store.RootScope()))
 	exec := model.MustNewExec(backend, store, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
@@ -402,7 +402,7 @@ func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBa
 	shapePerBatchSize = make(map[int]shapes.Shape, len(BatchSizes))
 	backend := testutil.BuildTestBackend()
 	store := model.NewStore()
-	must.M(onnxModel.VariablesToContext(store.RootScope()))
+	must.M(onnxModel.VariablesToScope(store.RootScope()))
 	for _, batchSize := range BatchSizes {
 		g := graph.NewGraph(backend, fmt.Sprintf("batchSize=%d", batchSize))
 		var inputs [3]*graph.Node

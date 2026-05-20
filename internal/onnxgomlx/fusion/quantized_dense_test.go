@@ -145,11 +145,11 @@ func TestQuantizedDensePerChannelScale(t *testing.T) {
 	// Build model — should not panic during fusion detection.
 	m := buildTestModel(t, graphProto)
 
-	// VariablesToContext should succeed.
+	// VariablesToScope should succeed.
 	backend, err := gobackend.New("")
 	require.NoError(t, err)
 	store := model.NewStore()
-	require.NoError(t, m.VariablesToContext(store.RootScope()))
+	require.NoError(t, m.VariablesToScope(store.RootScope()))
 
 	// Build and execute graph — should not panic during ExpandAndBroadcast.
 	xData := make([]float32, 2*K)
@@ -179,7 +179,7 @@ func TestQuantizedDenseScalarScale(t *testing.T) {
 	backend, err := gobackend.New("")
 	require.NoError(t, err)
 	store := model.NewStore()
-	require.NoError(t, m.VariablesToContext(store.RootScope()))
+	require.NoError(t, m.VariablesToScope(store.RootScope()))
 
 	xData := make([]float32, 2*K)
 	for i := range xData {

@@ -51,7 +51,7 @@ type Model interface {
 	PrioritizeFloat16() Model
 
 	// WithBaseDir sets the base directory for the model. This is used for resolving external data file paths.
-	// This must be set before any reading of the model data (e.g.: VariablesToContext or CallGraph).
+	// This must be set before any reading of the model data (e.g.: VariablesToScope or CallGraph).
 	//
 	// It defaults to the current directory (".") or, if the model was read from a file, to the directory of that file.
 	WithBaseDir(baseDir string) Model
@@ -70,14 +70,14 @@ type Model interface {
 	// CallGraph calls the ONNX graph, and hence are building it with GoMLX ops.
 	CallGraph(scope *model.Scope, g *Graph, inputs map[string]*Node, outputNames ...string) (outputs []*Node)
 
-	// VariablesToContext uploads all variable values from the ONNX model to the context.
-	VariablesToContext(scope *model.Scope) error
+	// VariablesToScope uploads all variable values from the ONNX model to the given model's Store, at the given Scope.
+	VariablesToScope(scope *model.Scope) error
 
 	// FreeUnusedVariables frees variables that are not used in the graph.
 	FreeUnusedVariables()
 
-	// ContextToONNX copies over the variables in GoMLX's Context to the ONNX's model proto.
-	ContextToONNX(scope *model.Scope) error
+	// ScopeToONNX copies over the variables in GoMLX's Store, in the given Scope, to the ONNX's model proto.
+	ScopeToONNX(scope *model.Scope) error
 
 	// String implements fmt.Stringer.
 	String() string
@@ -112,7 +112,7 @@ const ModelScope = "ONNX"
 //
 // Notice an implementation should keep the file handles open, as tensors can
 // potentially be read in an undefined order.
-// Close will be called at the end of series of calls (like when executing Model.VariablesToContext).
+// Close will be called at the end of series of calls (like when executing Model.VariablesToScope).
 type ExternalDataReader interface {
 	// ReadInto reads the data (for a tensor) from a file (Location) and offset, into the given output slice of bytes.
 	//
@@ -123,7 +123,7 @@ type ExternalDataReader interface {
 	// resources (close files).
 	//
 	// This shouldn't be seen as permanent: the Model may call ReadInto again after a call to Close,
-	// if the user call Model.VariablesToContext again, for instance.
+	// if the user calls Model.VariablesToScope again, for instance.
 	// So one should keep the ability to re-open any resources one may need.
 	Close() error
 }

@@ -266,7 +266,7 @@ func (m *Model) PrioritizeFloat16() onnx.Model {
 //
 // This is useful if the model variables were updated (e.g.: fine-tuning in GoMLX) and one wants to save the
 // model.
-// See ContextToONNX to copy over the variables in GoMLX's Context (presumably after some training/update) to the
+// See ScopeToONNX to copy over the variables in GoMLX's model.Scope (presumably after some training/update) to the
 // ONNX's model proto.
 //
 // See also Model.SaveToFile.
@@ -286,7 +286,7 @@ func (m *Model) Write(w io.Writer) error {
 //
 // This is useful if the model variables were updated (e.g.: fine-tuning in GoMLX) and one wants to save the
 // model.
-// See ContextToONNX to copy over the variables in GoMLX's Context (presumably after some training/update) to the
+// See ScopeToONNX to copy over the variables in GoMLX's model.Scope (presumably after some training/update) to the
 // ONNX's model proto.
 func (m *Model) SaveToFile(path string) error {
 	f, err := os.Create(path)

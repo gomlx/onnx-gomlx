@@ -318,7 +318,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	backend := testutil.BuildTestBackend()
 	onnxModel := must.M1(parser.ParseFile(onnxModelPath))
 	store := model.NewStore()
-	must.M(onnxModel.VariablesToContext(store.RootScope()))
+	must.M(onnxModel.VariablesToScope(store.RootScope()))
 	exec := model.MustNewExec(backend, store, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
