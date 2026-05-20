@@ -14,10 +14,10 @@ import (
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
 	timage "github.com/gomlx/gomlx/core/tensors/images"
-	"github.com/gomlx/gomlx/ml/layers"
 	"github.com/gomlx/gomlx/ml/layers/attention"
 	"github.com/gomlx/gomlx/ml/layers/attention/pos"
 	"github.com/gomlx/gomlx/ml/layers/lstm"
+	"github.com/gomlx/gomlx/ml/layers/norm"
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
@@ -2275,7 +2275,7 @@ func convertSimplifiedLayerNormalization(_ *Model, _ map[string]*Node, node *pro
 	}
 
 	// Use GoMLX's RMSNorm without its learnable scale (we apply the ONNX-provided scale ourselves).
-	normalized := layers.RMSNorm(model.NewStore().RootScope(), x).
+	normalized := norm.RMSNorm(model.NewStore().RootScope(), x).
 		WithScale(false).
 		WithEpsilon(float64(epsilon)).
 		WithNormalizationAxes(axes...).
