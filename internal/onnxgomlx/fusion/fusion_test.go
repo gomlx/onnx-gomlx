@@ -154,11 +154,11 @@ func runFusedVsUnfused(t *testing.T, graphProto *protos.GraphProto, inputs map[s
 		return nodeMap
 	}
 
-	unfusedResults := model.MustExecOnceN(backend, ctxUnfused, func(scope *model.Scope, g *Graph) []*Node {
+	unfusedResults := model.MustCallOnceN(backend, ctxUnfused, func(scope *model.Scope, g *Graph) []*Node {
 		return mUnfused.CallGraph(scope, g, buildInputNodes(g))
 	})
 
-	fusedResults := model.MustExecOnceN(backend, ctxFused, func(scope *model.Scope, g *Graph) []*Node {
+	fusedResults := model.MustCallOnceN(backend, ctxFused, func(scope *model.Scope, g *Graph) []*Node {
 		return mFused.CallGraph(scope, g, buildInputNodes(g))
 	})
 

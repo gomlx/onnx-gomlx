@@ -231,7 +231,7 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 
 			// Execute program.
 			//start := time.Now()
-			output := exec.MustExec(inputTensors[0], inputTensors[1], inputTensors[2])[0]
+			output := exec.MustCall(inputTensors[0], inputTensors[1], inputTensors[2])[0]
 			tensors.ConstFlatData(output, func(flat []float32) {
 				if runIdx == 0 {
 					fmt.Printf("\t> Last value of result: %v\n", flat[len(flat)-1])

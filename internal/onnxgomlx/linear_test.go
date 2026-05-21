@@ -56,7 +56,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// Check conversion.
 	backend := testutil.BuildTestBackend()
-	y := model.MustExecOnce(backend, store, func(scope *model.Scope, x *Node) *Node {
+	y := model.MustCallOnce(backend, store, func(scope *model.Scope, x *Node) *Node {
 		g := x.Graph()
 		outputs := onnxModel.CallGraph(scope, g, map[string]*Node{"X": x})
 		vB = scope.At(onnx.ModelScope).GetVariable("B")

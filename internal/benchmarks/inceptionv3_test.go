@@ -96,7 +96,7 @@ func benchGoMLXInceptionV3(t *testing.T) {
 		benchFn := benchmarks.NamedFunction{
 			Name: fmt.Sprintf("%s/batchSize=%02d", t.Name(), batchSize),
 			Func: func() {
-				output, err := exec.Exec1(inputImages)
+				output, err := exec.Call1(inputImages)
 				if err != nil {
 					t.Fatalf("InceptionV3 execution failed: %+v", err)
 				}

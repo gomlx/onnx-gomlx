@@ -314,7 +314,7 @@ func checkAndCopyTensorToProto[T interface {
 		if err != nil {
 			return err
 		}
-		converted, err = ExecOnce(backend, func(x *Node) *Node {
+		converted, err = CallOnce(backend, func(x *Node) *Node {
 			return ConvertDType(x, dtypes.FromGenericsType[T]())
 		}, cloned)
 		if err != nil {

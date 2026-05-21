@@ -378,7 +378,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 		// Run inline and save the resulting embeddings:
 		fmt.Println("Generating embeddings to save:")
 		inputTensors := inputFn()
-		output := exec.MustExec1(inputTensors[0], inputTensors[1], inputTensors[2])
+		output := exec.MustCall1(inputTensors[0], inputTensors[1], inputTensors[2])
 		fmt.Printf("\tSaving reference embeddings to %q - shape=%s, embedding[0, 0, 0]=%.3f, token[0, 0]=%d\n",
 			robSentencesEmbeddingsFileName,
 			output.Shape(),
@@ -395,7 +395,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	var workerCount int
 	workerFn := func(workerIdx int, inputTensors ExampleInput) {
 		defer inputsPool.Put(inputTensors)
-		output := exec.MustExec1(inputTensors[0], inputTensors[1], inputTensors[2])
+		output := exec.MustCall1(inputTensors[0], inputTensors[1], inputTensors[2])
 		tensors.ConstFlatData(output, func(flat []float32) {
 			// Force local copy: this should be part of the cost.
 			_ = flat

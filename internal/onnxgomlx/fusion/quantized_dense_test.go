@@ -157,7 +157,7 @@ func TestQuantizedDensePerChannelScale(t *testing.T) {
 		xData[i] = float32(i%7)*0.1 - 0.3
 	}
 
-	results := model.MustExecOnceN(backend, store, func(scope *model.Scope, g *Graph) []*Node {
+	results := model.MustCallOnceN(backend, store, func(scope *model.Scope, g *Graph) []*Node {
 		xNode := Const(g, tensors.FromFlatDataAndDimensions(xData, 2, K))
 		return m.CallGraph(scope, g, map[string]*Node{"float_input": xNode})
 	})
@@ -186,7 +186,7 @@ func TestQuantizedDenseScalarScale(t *testing.T) {
 		xData[i] = float32(i%7)*0.1 - 0.3
 	}
 
-	results := model.MustExecOnceN(backend, store, func(scope *model.Scope, g *Graph) []*Node {
+	results := model.MustCallOnceN(backend, store, func(scope *model.Scope, g *Graph) []*Node {
 		xNode := Const(g, tensors.FromFlatDataAndDimensions(xData, 2, K))
 		return m.CallGraph(scope, g, map[string]*Node{"float_input": xNode})
 	})
