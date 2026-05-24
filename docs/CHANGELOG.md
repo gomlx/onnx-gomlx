@@ -141,7 +141,7 @@
 
 # v0.1.3 - 2024/11/21
 
-* Added ContextToONNX to save variables back to the ONNX model (in memory).
+* Added ScopeToONNX (originally ContextToONNX) to save variables back to the ONNX model (in memory).
 * Refactored internal/togomlx to inside onnx/ subdirectory.
 * Added Model.Write and Model.SaveToFile.
 

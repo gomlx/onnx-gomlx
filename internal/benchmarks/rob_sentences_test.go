@@ -15,11 +15,11 @@ import (
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/go-huggingface/hub"
-	"github.com/gomlx/gomlx/pkg/core/graph"
-	"github.com/gomlx/gomlx/pkg/core/tensors"
-	"github.com/gomlx/gomlx/pkg/ml/context"
-	"github.com/gomlx/gomlx/pkg/support/testutil"
-	"github.com/gomlx/gomlx/pkg/support/xsync"
+	"github.com/gomlx/gomlx/core/graph"
+	"github.com/gomlx/gomlx/core/tensors"
+	"github.com/gomlx/gomlx/ml/model"
+	"github.com/gomlx/gomlx/support/testutil"
+	"github.com/gomlx/gomlx/support/xsync"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/go-benchmarks"
 	"github.com/janpfeifer/must"
@@ -316,14 +316,13 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	repoModel := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repoModel.DownloadFile("model.onnx"))
 	backend := testutil.BuildTestBackend()
-	model := must.M1(parser.ParseFile(onnxModelPath))
-	ctx := context.New()
-	must.M(model.VariablesToContext(ctx))
-	ctx = ctx.Reuse()
-	exec := context.MustNewExec(backend, ctx, func(ctx *context.Context, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
+	onnxModel := must.M1(parser.ParseFile(onnxModelPath))
+	store := model.NewStore()
+	must.M(onnxModel.VariablesToScope(store.RootScope()))
+	exec := model.MustNewExec(backend, store, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
-		outputs := model.CallGraph(ctx, g,
+		outputs := onnxModel.CallGraph(scope, g,
 			map[string]*graph.Node{
 				"input_ids":      tokenIDs,
 				"attention_mask": attentionMask,
@@ -379,7 +378,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 		// Run inline and save the resulting embeddings:
 		fmt.Println("Generating embeddings to save:")
 		inputTensors := inputFn()
-		output := exec.MustExec1(inputTensors[0], inputTensors[1], inputTensors[2])
+		output := exec.MustCall1(inputTensors[0], inputTensors[1], inputTensors[2])
 		fmt.Printf("\tSaving reference embeddings to %q - shape=%s, embedding[0, 0, 0]=%.3f, token[0, 0]=%d\n",
 			robSentencesEmbeddingsFileName,
 			output.Shape(),
@@ -396,7 +395,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	var workerCount int
 	workerFn := func(workerIdx int, inputTensors ExampleInput) {
 		defer inputsPool.Put(inputTensors)
-		output := exec.MustExec1(inputTensors[0], inputTensors[1], inputTensors[2])
+		output := exec.MustCall1(inputTensors[0], inputTensors[1], inputTensors[2])
 		tensors.ConstFlatData(output, func(flat []float32) {
 			// Force local copy: this should be part of the cost.
 			_ = flat

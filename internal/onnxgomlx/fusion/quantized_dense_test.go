@@ -4,14 +4,14 @@ import (
 	"testing"
 
 	"github.com/gomlx/compute/dtypes"
-	"github.com/gomlx/gomlx/backends/simplego"
-	"github.com/gomlx/gomlx/pkg/core/tensors"
-	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/compute/gobackend"
+	"github.com/gomlx/gomlx/core/tensors"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
+	. "github.com/gomlx/gomlx/core/graph" //nolint
 )
 
 // makeInt8TensorProto creates a TensorProto with the given shape and int8 data.
@@ -145,11 +145,11 @@ func TestQuantizedDensePerChannelScale(t *testing.T) {
 	// Build model — should not panic during fusion detection.
 	m := buildTestModel(t, graphProto)
 
-	// VariablesToContext should succeed.
-	backend, err := simplego.New("")
+	// VariablesToScope should succeed.
+	backend, err := gobackend.New("")
 	require.NoError(t, err)
-	ctx := context.New()
-	require.NoError(t, m.VariablesToContext(ctx))
+	store := model.NewStore()
+	require.NoError(t, m.VariablesToScope(store.RootScope()))
 
 	// Build and execute graph — should not panic during ExpandAndBroadcast.
 	xData := make([]float32, 2*K)
@@ -157,9 +157,9 @@ func TestQuantizedDensePerChannelScale(t *testing.T) {
 		xData[i] = float32(i%7)*0.1 - 0.3
 	}
 
-	results := context.MustExecOnceN(backend, ctx, func(ctx *context.Context, g *Graph) []*Node {
+	results := model.MustCallOnceN(backend, store, func(scope *model.Scope, g *Graph) []*Node {
 		xNode := Const(g, tensors.FromFlatDataAndDimensions(xData, 2, K))
-		return m.CallGraph(ctx, g, map[string]*Node{"float_input": xNode})
+		return m.CallGraph(scope, g, map[string]*Node{"float_input": xNode})
 	})
 
 	require.Len(t, results, 1)
@@ -176,19 +176,19 @@ func TestQuantizedDenseScalarScale(t *testing.T) {
 
 	m := buildTestModel(t, graphProto)
 
-	backend, err := simplego.New("")
+	backend, err := gobackend.New("")
 	require.NoError(t, err)
-	ctx := context.New()
-	require.NoError(t, m.VariablesToContext(ctx))
+	store := model.NewStore()
+	require.NoError(t, m.VariablesToScope(store.RootScope()))
 
 	xData := make([]float32, 2*K)
 	for i := range xData {
 		xData[i] = float32(i%7)*0.1 - 0.3
 	}
 
-	results := context.MustExecOnceN(backend, ctx, func(ctx *context.Context, g *Graph) []*Node {
+	results := model.MustCallOnceN(backend, store, func(scope *model.Scope, g *Graph) []*Node {
 		xNode := Const(g, tensors.FromFlatDataAndDimensions(xData, 2, K))
-		return m.CallGraph(ctx, g, map[string]*Node{"float_input": xNode})
+		return m.CallGraph(scope, g, map[string]*Node{"float_input": xNode})
 	})
 
 	require.Len(t, results, 1)

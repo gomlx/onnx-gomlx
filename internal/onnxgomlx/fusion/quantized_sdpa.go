@@ -2,8 +2,8 @@ package fusion
 
 import (
 	"github.com/gomlx/compute"
-	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
-	"github.com/gomlx/gomlx/pkg/ml/context"
+	. "github.com/gomlx/gomlx/core/graph" //nolint
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -40,7 +40,7 @@ func (c *quantizedSDPACandidate) OutputNames() []string            { return []st
 func (c *quantizedSDPACandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
 func (c *quantizedSDPACandidate) ExternalInputs() []string         { return c.externalInputs }
 
-func (c *quantizedSDPACandidate) Emit(_ *context.Context, g *Graph, convertedOutputs map[string]*Node) {
+func (c *quantizedSDPACandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs map[string]*Node) {
 	p := c.params
 
 	q := convertedOutputs[p.QInputName]

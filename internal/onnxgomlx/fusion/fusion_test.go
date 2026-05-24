@@ -4,16 +4,16 @@ import (
 	"math"
 	"testing"
 
-	"github.com/gomlx/gomlx/backends/simplego"
-	"github.com/gomlx/gomlx/pkg/core/tensors"
-	"github.com/gomlx/gomlx/pkg/ml/context"
+	"github.com/gomlx/compute/gobackend"
+	"github.com/gomlx/gomlx/core/tensors"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
-	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
+	. "github.com/gomlx/gomlx/core/graph" //nolint
 )
 
 // makeFloatTensorProto creates a TensorProto with the given shape and float32 data.
@@ -138,13 +138,13 @@ func runFusedVsUnfused(t *testing.T, graphProto *protos.GraphProto, inputs map[s
 	require.NoError(t, err)
 	mUnfused.DisableFusion()
 
-	backend, err := simplego.New("")
+	backend, err := gobackend.New("")
 	require.NoError(t, err)
 
-	ctxFused := context.New()
-	require.NoError(t, mFused.VariablesToContext(ctxFused))
-	ctxUnfused := context.New()
-	require.NoError(t, mUnfused.VariablesToContext(ctxUnfused))
+	ctxFused := model.NewStore()
+	require.NoError(t, mFused.VariablesToScope(ctxFused.RootScope()))
+	ctxUnfused := model.NewStore()
+	require.NoError(t, mUnfused.VariablesToScope(ctxUnfused.RootScope()))
 
 	buildInputNodes := func(g *Graph) map[string]*Node {
 		nodeMap := make(map[string]*Node, len(inputs))
@@ -154,12 +154,12 @@ func runFusedVsUnfused(t *testing.T, graphProto *protos.GraphProto, inputs map[s
 		return nodeMap
 	}
 
-	unfusedResults := context.MustExecOnceN(backend, ctxUnfused, func(ctx *context.Context, g *Graph) []*Node {
-		return mUnfused.CallGraph(ctx, g, buildInputNodes(g))
+	unfusedResults := model.MustCallOnceN(backend, ctxUnfused, func(scope *model.Scope, g *Graph) []*Node {
+		return mUnfused.CallGraph(scope, g, buildInputNodes(g))
 	})
 
-	fusedResults := context.MustExecOnceN(backend, ctxFused, func(ctx *context.Context, g *Graph) []*Node {
-		return mFused.CallGraph(ctx, g, buildInputNodes(g))
+	fusedResults := model.MustCallOnceN(backend, ctxFused, func(scope *model.Scope, g *Graph) []*Node {
+		return mFused.CallGraph(scope, g, buildInputNodes(g))
 	})
 
 	require.Equal(t, len(unfusedResults), len(fusedResults), "output count mismatch")

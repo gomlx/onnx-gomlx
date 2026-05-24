@@ -5,12 +5,12 @@ import (
 	"testing"
 
 	"github.com/gomlx/compute/dtypes"
+	"github.com/gomlx/compute/gobackend"
 	"github.com/gomlx/compute/shapes"
-	"github.com/gomlx/gomlx/backends/simplego"
-	. "github.com/gomlx/gomlx/pkg/core/graph"
-	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
-	"github.com/gomlx/gomlx/pkg/core/tensors"
-	"github.com/gomlx/gomlx/pkg/support/testutil"
+	. "github.com/gomlx/gomlx/core/graph"
+	"github.com/gomlx/gomlx/core/graph/graphtest"
+	"github.com/gomlx/gomlx/core/tensors"
+	"github.com/gomlx/gomlx/support/testutil"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -188,9 +188,9 @@ func TestTile(t *testing.T) {
 func TestRangeCount(t *testing.T) {
 	backend := testutil.BuildTestBackend()
 	testFn := func(start, limit, delta any, want int) {
-		startT := tensors.FromAnyValue(start)
-		limitT := tensors.FromAnyValue(limit)
-		deltaT := tensors.FromAnyValue(delta)
+		startT := tensors.MustFromAnyValue(start)
+		limitT := tensors.MustFromAnyValue(limit)
+		deltaT := tensors.MustFromAnyValue(delta)
 		got := rangeCount(backend, startT, limitT, deltaT)
 		fmt.Printf("\trangeCount(start=%s, limit=%s, delta=%s) = %d (want %d)\n", startT, limitT, deltaT, got, want)
 		assert.Equal(t, want, got)
@@ -1911,7 +1911,7 @@ func createTestModelWithDTypePromoConfig(allowPromotion, prioritizeFloat16 bool)
 
 func TestPromoteToCommonDTypeStrictMode(t *testing.T) {
 	// Test that strict mode (default) panics on dtype mismatch
-	backend, err := simplego.New("")
+	backend, err := gobackend.New("")
 	require.NoError(t, err)
 	g := NewGraph(backend, "StrictModePanic")
 

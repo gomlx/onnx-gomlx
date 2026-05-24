@@ -3,9 +3,9 @@ package fusion
 import (
 	"fmt"
 
-	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
-	"github.com/gomlx/gomlx/pkg/ml/context"
-	"github.com/gomlx/gomlx/pkg/ml/layers/attention"
+	. "github.com/gomlx/gomlx/core/graph" //nolint
+	"github.com/gomlx/gomlx/ml/layers/attention"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -35,7 +35,7 @@ func (c *qkvDenseCandidate) OutputNames() []string {
 func (c *qkvDenseCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
 func (c *qkvDenseCandidate) ExternalInputs() []string         { return c.externalInputs }
 
-func (c *qkvDenseCandidate) Emit(_ *context.Context, g *Graph, convertedOutputs map[string]*Node) {
+func (c *qkvDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs map[string]*Node) {
 	p := c.params
 
 	x := convertedOutputs[p.SharedInputName]

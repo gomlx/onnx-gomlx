@@ -11,10 +11,10 @@ import (
 	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/go-huggingface/hub"
-	. "github.com/gomlx/gomlx/pkg/core/graph"
-	"github.com/gomlx/gomlx/pkg/core/tensors"
-	"github.com/gomlx/gomlx/pkg/ml/context"
-	"github.com/gomlx/gomlx/pkg/support/testutil"
+	. "github.com/gomlx/gomlx/core/graph"
+	"github.com/gomlx/gomlx/core/tensors"
+	"github.com/gomlx/gomlx/ml/model"
+	"github.com/gomlx/gomlx/support/testutil"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/go-benchmarks"
 	"github.com/janpfeifer/must"
@@ -59,23 +59,22 @@ func downloadInceptionV3Model() string {
 
 func benchGoMLXInceptionV3(t *testing.T) {
 	onnxModelPath := downloadInceptionV3Model()
-	model := must.M1(parser.ParseFile(onnxModelPath))
+	onnxModel := must.M1(parser.ParseFile(onnxModelPath))
 	if *flagVerbose {
-		fmt.Printf("Model details:\n%s\n", model)
+		fmt.Printf("Model details:\n%s\n", onnxModel)
 	}
 	backend := testutil.BuildTestBackend()
-	ctx := context.New()
-	must.M(model.VariablesToContext(ctx))
-	ctx = ctx.Reuse()
-	inputsNames, _ := model.Inputs()
+	store := model.NewStore()
+	must.M(onnxModel.VariablesToScope(store.RootScope()))
+	inputsNames, _ := onnxModel.Inputs()
 	inputName := inputsNames[0]
-	outputsNames, _ := model.Outputs()
+	outputsNames, _ := onnxModel.Outputs()
 	outputName := outputsNames[0]
 	for batchIdx, batchSize := range inceptionV3BatchSizes {
 		//t.Run(fmt.Sprintf("batchSize=%02d", batchSize), func(t *testing.T) {
-		exec := context.MustNewExec(backend, ctx, func(ctx *context.Context, images *Node) *Node {
+		exec := model.MustNewExec(backend, store, func(scope *model.Scope, images *Node) *Node {
 			g := images.Graph()
-			outputs := model.CallGraph(ctx, g,
+			outputs := onnxModel.CallGraph(scope, g,
 				map[string]*Node{
 					inputName: images,
 				}, outputName)
@@ -97,7 +96,7 @@ func benchGoMLXInceptionV3(t *testing.T) {
 		benchFn := benchmarks.NamedFunction{
 			Name: fmt.Sprintf("%s/batchSize=%02d", t.Name(), batchSize),
 			Func: func() {
-				output, err := exec.Exec1(inputImages)
+				output, err := exec.Call1(inputImages)
 				if err != nil {
 					t.Fatalf("InceptionV3 execution failed: %+v", err)
 				}

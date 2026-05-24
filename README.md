@@ -49,7 +49,8 @@ The tokens in the example are hardcoded for simplicity. See [github.com/gomlx/go
 ```go
 import (
 	"github.com/gomlx/onnx-gomlx/onnx"
-    "github.com/gomlx/go-huggingface/hub"
+	"github.com/gomlx/go-huggingface/hub"
+	"github.com/gomlx/gomlx/ml/model"
 )
 
 ...
@@ -61,11 +62,11 @@ repo := hub.New(modelID).WithAuth(hfAuthToken)
 modelPath := must.M1(repo.DownloadFile("onnx/model.onnx"))
 
 // Parse ONNX model.
-model := must.M1(onnx.ReadFile(modelPath))
+onnxModel := must.M1(onnx.ReadFile(modelPath))
 
-// Convert ONNX variables (model weights) to GoMLX Context -- which stores variables and can be checkpoint (saved):
-ctx := context.New()
-must.M(model.VariablesToContext(ctx))
+// Convert ONNX variables (model weights) to GoMLX model.Store -- which stores variables and can be checkpointed (saved):
+store := model.NewStore()
+must.M(onnxModel.VariablesToScope(store.RootScope()))
 
 // Execute it with GoMLX/XLA:
 sentences := []string{
@@ -82,12 +83,12 @@ attentionMask := [][]int64{
     {1, 1, 1, 1, 1, 1, 1},
     {1, 1, 1, 1, 1, 1, 0}}
 var embeddings []*tensors.Tensor
-embeddings = context.MustExecOnceN( // Execute a GoMLX computation graph with a context
+embeddings = model.MustExecOnceN( // Execute a GoMLX computation graph with a store
 	backends.New(),  // GoMLX backend to use (defaults to XLA) 
-	ctx, // Context store the model variables/weights and optional hyperparameters.
-	func (ctx *context.Context, inputs []*Node) []*Node {
-		// Convert ONNX model (in `model`) to a GoMLX computation graph. It returns a slice of values (with only one for this model)
-		return model.CallGraph(ctx, inputs[0].Graph(), map[string]*Node{
+	store, // Store stores the model variables/weights and optional hyperparameters.
+	func (scope *model.Scope, inputs []*Node) []*Node {
+		// Convert ONNX model (in `onnxModel`) to a GoMLX computation graph. It returns a slice of values (with only one for this model)
+		return onnxModel.CallGraph(scope, inputs[0].Graph(), map[string]*Node{
 			"input_ids": inputs[0],
 			"attention_mask": inputs[1],
 			"token_type_ids": inputs[2]}, targetOutputs...)
@@ -118,13 +119,13 @@ Embeddings: [2][7][384]float32{
 
 ## Fine-Tuning
 
-1. Extract the ONNX model's weight to GoMLX `Context`: see `Model.VariablesToContext()`.
+1. Extract the ONNX model's weight to GoMLX `model.Store`: see `Model.VariablesToScope()`.
 2. Use `Model.CallGraph()` in your GoMLX model function (see example just above).
 3. Train model as usual in GoMLX.
 4. Depending on how you are going to use the model:
    1. Save the model as a GoMLX checkpoint, as usual.
-   2. Save the model by updating the ONNX model: after training use `Model.ContextToONNX()` to copy the update variable  
-      values from GoMLX `Context` back to the ONNX model (in-memory), and then use `Model.Write()` or 
+   2. Save the model by updating the ONNX model: after training use `Model.ScopeToONNX()` to copy the updated variable  
+      values from GoMLX `model.Scope` back to the ONNX model (in-memory), and then use `Model.Write()` or 
       `Model.SaveToFile()` to save the updated ONNX model to disk.
 
 ## Benchmarks

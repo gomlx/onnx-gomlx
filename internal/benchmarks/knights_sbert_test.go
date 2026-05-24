@@ -16,10 +16,10 @@ import (
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
 	"github.com/gomlx/go-huggingface/hub"
-	"github.com/gomlx/gomlx/pkg/core/graph"
-	"github.com/gomlx/gomlx/pkg/core/tensors"
-	"github.com/gomlx/gomlx/pkg/ml/context"
-	"github.com/gomlx/gomlx/pkg/support/testutil"
+	"github.com/gomlx/gomlx/core/graph"
+	"github.com/gomlx/gomlx/core/tensors"
+	"github.com/gomlx/gomlx/ml/model"
+	"github.com/gomlx/gomlx/support/testutil"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
@@ -189,14 +189,13 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 
 	// Build model
 	backend := testutil.BuildTestBackend()
-	model := must.M1(parser.ParseFile(onnxModelPath))
-	ctx := context.New()
-	must.M(model.VariablesToContext(ctx))
-	ctx = ctx.Reuse()
-	exec := context.MustNewExec(backend, ctx, func(ctx *context.Context, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
+	onnxModel := must.M1(parser.ParseFile(onnxModelPath))
+	store := model.NewStore()
+	must.M(onnxModel.VariablesToScope(store.RootScope()))
+	exec := model.MustNewExec(backend, store, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
-		outputs := model.CallGraph(ctx, g,
+		outputs := onnxModel.CallGraph(scope, g,
 			map[string]*graph.Node{
 				"input_ids":      tokenIDs,
 				"attention_mask": attentionMask,
@@ -232,7 +231,7 @@ func benchmarkONNXModelWithXLA(withHeader bool, name, onnxModelPath string, batc
 
 			// Execute program.
 			//start := time.Now()
-			output := exec.MustExec(inputTensors[0], inputTensors[1], inputTensors[2])[0]
+			output := exec.MustCall(inputTensors[0], inputTensors[1], inputTensors[2])[0]
 			tensors.ConstFlatData(output, func(flat []float32) {
 				if runIdx == 0 {
 					fmt.Printf("\t> Last value of result: %v\n", flat[len(flat)-1])
@@ -397,14 +396,13 @@ func recursivelyTagNode(allNodes, usedNodes map[string]*protos.NodeProto, output
 // saveONNXModelWithOutput reads an ONNX model from fromPath, changes its output to
 // the node named newOutputNode, and then saves the modified model to toPath.
 func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBatchSize map[int]shapes.Shape) {
-	model := must.M1(onnxgomlx.ReadFile(fromPath))
+	onnxModel := must.M1(onnxgomlx.ReadFile(fromPath))
 
 	// Find the output shape for each batchSize.
 	shapePerBatchSize = make(map[int]shapes.Shape, len(BatchSizes))
 	backend := testutil.BuildTestBackend()
-	ctx := context.New()
-	must.M(model.VariablesToContext(ctx))
-	ctx = ctx.Reuse()
+	store := model.NewStore()
+	must.M(onnxModel.VariablesToScope(store.RootScope()))
 	for _, batchSize := range BatchSizes {
 		g := graph.NewGraph(backend, fmt.Sprintf("batchSize=%d", batchSize))
 		var inputs [3]*graph.Node
@@ -412,7 +410,7 @@ func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBa
 		for ii := range inputs {
 			inputs[ii] = graph.Parameter(g, inputsNames[ii], shapes.Make(dtypes.Int64, batchSize, SequenceLength))
 		}
-		output := model.CallGraph(ctx, g,
+		output := onnxModel.CallGraph(store.RootScope(), g,
 			map[string]*graph.Node{
 				"input_ids":      inputs[0],
 				"attention_mask": inputs[1],
@@ -424,7 +422,7 @@ func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBa
 	}
 
 	// Change output in model proto.
-	graphProto := model.Proto.Graph
+	graphProto := onnxModel.Proto.Graph
 	newOutput := &protos.ValueInfoProto{
 		Name: newOutputNode,
 	}
@@ -446,7 +444,7 @@ func saveONNXModelWithOutput(fromPath, toPath, newOutputNode string) (shapePerBa
 	}
 
 	// Save model
-	contents := must.M1(proto.Marshal(&model.Proto))
+	contents := must.M1(proto.Marshal(&onnxModel.Proto))
 	must.M(os.WriteFile(toPath, contents, 0644))
 
 	return

@@ -5,10 +5,10 @@ import (
 
 	"github.com/gomlx/compute"
 	"github.com/gomlx/compute/dtypes"
-	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
-	"github.com/gomlx/gomlx/pkg/ml/context"
-	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
-	"github.com/gomlx/gomlx/pkg/ml/nn"
+	. "github.com/gomlx/gomlx/core/graph" //nolint
+	"github.com/gomlx/gomlx/ml/layers/activation"
+	"github.com/gomlx/gomlx/ml/model"
+	"github.com/gomlx/gomlx/ml/nn"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -73,7 +73,7 @@ func (c *quantizedDenseCandidate) OutputNames() []string            { return []s
 func (c *quantizedDenseCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
 func (c *quantizedDenseCandidate) ExternalInputs() []string         { return c.externalInputs }
 
-func (c *quantizedDenseCandidate) Emit(_ *context.Context, g *Graph, convertedOutputs map[string]*Node) {
+func (c *quantizedDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs map[string]*Node) {
 	p := c.params
 
 	var floatInput *Node
@@ -120,7 +120,7 @@ func (c *quantizedDenseCandidate) Emit(_ *context.Context, g *Graph, convertedOu
 
 	var result *Node
 	if p.HasGelu {
-		result = nn.QuantizedDense(floatInput, b, quant, bias, activations.TypeGelu)
+		result = nn.QuantizedDense(floatInput, b, quant, bias, activation.TypeGelu)
 	} else {
 		result = nn.QuantizedDense(floatInput, b, quant, bias)
 	}

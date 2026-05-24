@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	_ "github.com/gomlx/gomlx/backends/default"
-	"github.com/gomlx/gomlx/pkg/core/tensors"
+	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/require"
 )

@@ -20,9 +20,9 @@ package fusion
 // Grouped Query Attention (GQA) is supported when NumHeads != NumKVHeads.
 
 import (
-	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
-	"github.com/gomlx/gomlx/pkg/ml/context"
-	"github.com/gomlx/gomlx/pkg/ml/layers/attention"
+	. "github.com/gomlx/gomlx/core/graph" //nolint
+	"github.com/gomlx/gomlx/ml/layers/attention"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
@@ -55,7 +55,7 @@ func (c *sdpaCandidate) OutputNames() []string            { return []string{c.ou
 func (c *sdpaCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
 func (c *sdpaCandidate) ExternalInputs() []string         { return c.externalInputs }
 
-func (c *sdpaCandidate) Emit(ctx *context.Context, g *Graph, convertedOutputs map[string]*Node) {
+func (c *sdpaCandidate) Emit(scope *model.Scope, g *Graph, convertedOutputs map[string]*Node) {
 	p := c.params
 
 	q := convertedOutputs[p.QInputName]
@@ -73,7 +73,7 @@ func (c *sdpaCandidate) Emit(ctx *context.Context, g *Graph, convertedOutputs ma
 		mask = convertedOutputs[p.MaskInputName]
 	}
 
-	output, _ := attention.Core(ctx, q, k, v, p.Scale, mask, nil, attention.LayoutBHSD, false, false)
+	output, _ := attention.Core(scope, q, k, v, p.Scale, mask, nil, attention.LayoutBHSD, false, false)
 	convertedOutputs[c.outputName] = output
 }
 

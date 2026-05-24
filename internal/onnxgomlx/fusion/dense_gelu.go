@@ -1,10 +1,10 @@
 package fusion
 
 import (
-	. "github.com/gomlx/gomlx/pkg/core/graph" //nolint
-	"github.com/gomlx/gomlx/pkg/ml/context"
-	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
-	"github.com/gomlx/gomlx/pkg/ml/nn"
+	. "github.com/gomlx/gomlx/core/graph" //nolint
+	"github.com/gomlx/gomlx/ml/layers/activation"
+	"github.com/gomlx/gomlx/ml/model"
+	"github.com/gomlx/gomlx/ml/nn"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
@@ -16,7 +16,7 @@ type DenseActivationParams struct {
 	WeightName     string
 	BiasName       string // empty if no bias
 	OutputName     string // final output after activation
-	ActivationType activations.Type
+	ActivationType activation.Type
 }
 
 // denseActivationCandidate implements onnxgomlx.FusionCandidate for fused Dense+Activation.
@@ -32,7 +32,7 @@ func (c *denseActivationCandidate) OutputNames() []string            { return []
 func (c *denseActivationCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
 func (c *denseActivationCandidate) ExternalInputs() []string         { return c.externalInputs }
 
-func (c *denseActivationCandidate) Emit(_ *context.Context, g *Graph, convertedOutputs map[string]*Node) {
+func (c *denseActivationCandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs map[string]*Node) {
 	p := c.params
 
 	x := convertedOutputs[p.XInputName]
@@ -107,7 +107,7 @@ func tryMatchDenseActivation(m *onnxgomlx.Model, consumers map[string][]*protos.
 		// Now look for Gelu or FastGelu after Add.
 		geluNode := onnxgraph.SoleConsumer(consumers, afterBiasOut)
 		actType := geluActivationType(geluNode)
-		if actType == activations.TypeNone {
+		if actType == activation.TypeNone {
 			return nil
 		}
 		if len(geluNode.Output) == 0 {
@@ -164,16 +164,16 @@ func tryMatchDenseActivation(m *onnxgomlx.Model, consumers map[string][]*protos.
 
 // geluActivationType returns the activation type for a Gelu or FastGelu node,
 // or TypeNone if the node is nil or not a recognized activation.
-func geluActivationType(node *protos.NodeProto) activations.Type {
+func geluActivationType(node *protos.NodeProto) activation.Type {
 	if node == nil {
-		return activations.TypeNone
+		return activation.TypeNone
 	}
 	switch node.OpType {
 	case "Gelu":
-		return activations.TypeGelu
+		return activation.TypeGelu
 	case "FastGelu":
-		return activations.TypeGeluApprox
+		return activation.TypeGeluApprox
 	default:
-		return activations.TypeNone
+		return activation.TypeNone
 	}
 }

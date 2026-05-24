@@ -11,14 +11,14 @@ import (
 	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
-	. "github.com/gomlx/gomlx/pkg/core/graph"
-	"github.com/gomlx/gomlx/pkg/core/tensors"
-	timage "github.com/gomlx/gomlx/pkg/core/tensors/images"
-	"github.com/gomlx/gomlx/pkg/ml/context"
-	"github.com/gomlx/gomlx/pkg/ml/layers"
-	"github.com/gomlx/gomlx/pkg/ml/layers/attention"
-	"github.com/gomlx/gomlx/pkg/ml/layers/attention/pos"
-	"github.com/gomlx/gomlx/pkg/ml/layers/lstm"
+	. "github.com/gomlx/gomlx/core/graph"
+	"github.com/gomlx/gomlx/core/tensors"
+	timage "github.com/gomlx/gomlx/core/tensors/images"
+	"github.com/gomlx/gomlx/ml/layers/attention"
+	"github.com/gomlx/gomlx/ml/layers/attention/pos"
+	"github.com/gomlx/gomlx/ml/layers/lstm"
+	"github.com/gomlx/gomlx/ml/layers/norm"
+	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
 )
@@ -2275,7 +2275,7 @@ func convertSimplifiedLayerNormalization(_ *Model, _ map[string]*Node, node *pro
 	}
 
 	// Use GoMLX's RMSNorm without its learnable scale (we apply the ONNX-provided scale ourselves).
-	normalized := layers.RMSNorm(context.New(), x).
+	normalized := norm.RMSNorm(model.NewStore().RootScope(), x).
 		WithScale(false).
 		WithEpsilon(float64(epsilon)).
 		WithNormalizationAxes(axes...).
@@ -3171,7 +3171,7 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__If.html
-func convertIf(ctx *context.Context, m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+func convertIf(scope *model.Scope, m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	if len(inputs) != 1 {
 		exceptions.Panicf("If: expected exactly 1 input (condition), got %d", len(inputs))
 	}
@@ -3218,7 +3218,7 @@ func convertIf(ctx *context.Context, m *Model, convertedOutputs map[string]*Node
 		} else {
 			branchGraph = elseGraph
 		}
-		results := m.convertSubGraph(ctx, g, branchGraph, convertedOutputs)
+		results := m.convertSubGraph(scope, g, branchGraph, convertedOutputs)
 		for i, result := range results {
 			if i < len(node.Output) && node.Output[i] != "" {
 				convertedOutputs[node.Output[i]] = result
@@ -3238,10 +3238,10 @@ func convertIf(ctx *context.Context, m *Model, convertedOutputs map[string]*Node
 	// branches are built. Each gets a snapshot of convertedOutputs to prevent the true
 	// branch's convertSubGraph from polluting the false branch's name resolution.
 	trueBranch := NewClosure(g, func(branchG *Graph) []*Node {
-		return m.convertSubGraph(ctx, branchG, thenGraph, maps.Clone(convertedOutputs))
+		return m.convertSubGraph(scope, branchG, thenGraph, maps.Clone(convertedOutputs))
 	})
 	falseBranch := NewClosure(g, func(branchG *Graph) []*Node {
-		return m.convertSubGraph(ctx, branchG, elseGraph, maps.Clone(convertedOutputs))
+		return m.convertSubGraph(scope, branchG, elseGraph, maps.Clone(convertedOutputs))
 	})
 
 	results := If(cond, trueBranch, falseBranch)
