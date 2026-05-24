@@ -83,7 +83,7 @@ attentionMask := [][]int64{
     {1, 1, 1, 1, 1, 1, 1},
     {1, 1, 1, 1, 1, 1, 0}}
 var embeddings []*tensors.Tensor
-embeddings = model.MustExecOnceN( // Execute a GoMLX computation graph with a store
+embeddings = model.MustCallOnceN( // Execute a GoMLX computation graph with a store
 	backends.New(),  // GoMLX backend to use (defaults to XLA) 
 	store, // Store stores the model variables/weights and optional hyperparameters.
 	func (scope *model.Scope, inputs []*Node) []*Node {
