@@ -118,7 +118,7 @@ func ppSeqType(seq *protos.TypeProto_Sequence) string {
 }
 
 func ppTensorType(t *protos.TypeProto_Tensor) string {
-	dshape, err := makeDynamicShapeFromProto(t)
+	dshape, err := makeShapeFromProto(t)
 	if err != nil {
 		return "(invalid dtype)"
 	}

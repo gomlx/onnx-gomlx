@@ -1,79 +1,46 @@
 package onnxgomlx
 
 import (
-	"fmt"
-	"slices"
 	"strconv"
-	"strings"
 
-	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/onnx-gomlx/internal/protos"
 	"github.com/pkg/errors"
 )
 
-// DynamicShape represents a shape for which some of the axes have unknown dimensions.
-//
-// Similar to GoMLX Shape but some of the dimensions may be -1, denoting an undefined dimension.
-//
-// Dimensions may also be named, in which case shapes of inputs and outputs with the same name should match.
-type DynamicShape struct {
-	dtypes.DType
-	Dimensions []int
-	Names      []string
-}
-
-// GoMLX returns a shapes.Shape representation of the DynamicShape.
-// Dimensions that are dynamic (-1) are set to onnx.DynamicDim.
-func (dshape DynamicShape) GoMLX() shapes.Shape {
-	s := shapes.Make(dshape.DType)
-	if dshape.Rank() == 0 {
-		return s
-	}
-	s.Dimensions = slices.Clone(dshape.Dimensions)
-	return s
-}
-
 // UnnamedDynamicDimension is a placeholder name for an unnamed dynamic dimension, that doesn't necessarily match any other (in inputs/outputs).
 const UnnamedDynamicDimension = "?"
 
-// makeDynamicShapeFromProto converts from a tensor proto type to a DynamicShape.
-func makeDynamicShapeFromProto(proto *protos.TypeProto_Tensor) (dshape DynamicShape, err error) {
-	dshape.DType, err = dtypeForONNX(protos.TensorProto_DataType(proto.GetElemType()))
+// makeShapeFromProto converts from a tensor proto type to a shapes.Shape.
+func makeShapeFromProto(proto *protos.TypeProto_Tensor) (shape shapes.Shape, err error) {
+	dtype, err := dtypeForONNX(protos.TensorProto_DataType(proto.GetElemType()))
 	if err != nil {
-		return
+		return shapes.Invalid(), err
 	}
-	dshape.Names = make([]string, len(proto.Shape.Dim))
-	dshape.Dimensions = make([]int, len(proto.Shape.Dim))
+	if proto.Shape == nil {
+		return shapes.Make(dtype), nil
+	}
+	names := make([]string, len(proto.Shape.Dim))
+	dimensions := make([]int, len(proto.Shape.Dim))
 	for ii, dProto := range proto.Shape.Dim {
 		if dim, ok := dProto.GetValue().(*protos.TensorShapeProto_Dimension_DimValue); ok {
-			dshape.Names[ii] = strconv.Itoa(int(dim.DimValue))
-			dshape.Dimensions[ii] = int(dim.DimValue)
+			names[ii] = strconv.Itoa(int(dim.DimValue))
+			dimensions[ii] = int(dim.DimValue)
 		} else if dimParam, ok := dProto.GetValue().(*protos.TensorShapeProto_Dimension_DimParam); ok {
-			dshape.Names[ii] = dimParam.DimParam
-			dshape.Dimensions[ii] = -1
+			names[ii] = dimParam.DimParam
+			dimensions[ii] = -1
 		} else {
-			dshape.Names[ii] = "?" // Un-named dynamic dimension.
-			dshape.Dimensions[ii] = -1
+			names[ii] = UnnamedDynamicDimension // Un-named dynamic dimension.
+			dimensions[ii] = -1
 		}
 	}
-	return
-}
-
-// Rank returns the DynamicShape's rank.
-func (dshape DynamicShape) Rank() int {
-	return len(dshape.Dimensions)
-}
-
-// String implements fmt.Stringer.
-func (dshape DynamicShape) String() string {
-	if len(dshape.Dimensions) == 0 {
-		return fmt.Sprintf("(%s)", dshape.DType)
+	if len(dimensions) == 0 {
+		return shapes.Make(dtype), nil
 	}
-	return fmt.Sprintf("(%s) [%s]", dshape.DType, strings.Join(dshape.Names, ", "))
+	return shapes.MakeDynamic(dtype, dimensions, names), nil
 }
 
-// ValidateInputs checks the inputs has a shape that is compatible with the DynamicShapes of the inputs for the model.
+// ValidateInputs checks the inputs has a shape that is compatible with the Shapes of the inputs for the model.
 func (m *Model) ValidateInputs(inputsShapes ...shapes.Shape) error {
 	if len(inputsShapes) != len(m.InputsNames) {
 		return errors.Errorf("model takes %d inputs, but %d inputs provided",
@@ -100,15 +67,17 @@ func (m *Model) ValidateInputs(inputsShapes ...shapes.Shape) error {
 						idx, name, wantShape, givenShape)
 				}
 			} else {
-				dimName := wantShape.Names[axis]
-				var found bool
-				wantDim, found = dimValues[dimName]
-				if !found {
-					// Define dynamic shape based on input.
-					dimValues[dimName] = gotDim
-				} else if wantDim != gotDim {
-					return errors.Errorf("model input #%d (%q) shaped %s got unmatching invalid shape %s for axis %q (wanted dim %d)",
-						idx, name, wantShape, givenShape, dimName, wantDim)
+				dimName := wantShape.AxisName(axis)
+				if dimName != "" && dimName != UnnamedDynamicDimension {
+					var found bool
+					wantDim, found = dimValues[dimName]
+					if !found {
+						// Define dynamic shape based on input.
+						dimValues[dimName] = gotDim
+					} else if wantDim != gotDim {
+						return errors.Errorf("model input #%d (%q) shaped %s got unmatching invalid shape %s for axis %q (wanted dim %d)",
+							idx, name, wantShape, givenShape, dimName, wantDim)
+					}
 				}
 			}
 		}
