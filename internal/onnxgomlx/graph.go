@@ -127,7 +127,7 @@ func (m *Model) CallGraph(scope *model.Scope, g *Graph, inputs map[string]*Node,
 	if len(validShapes) < len(m.InputsNames) {
 		tmpModel := &Model{
 			InputsNames:  make([]string, len(validIndices)),
-			InputsShapes: make([]DynamicShape, len(validIndices)),
+			InputsShapes: make([]shapes.Shape, len(validIndices)),
 		}
 		for i, idx := range validIndices {
 			tmpModel.InputsNames[i] = m.InputsNames[idx]

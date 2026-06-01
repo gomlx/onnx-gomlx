@@ -28,7 +28,7 @@ func TestEndToEnd(t *testing.T) {
 	require.Equal(t, "Y", onnxModel.OutputsNames[0])
 
 	require.Equal(t, onnxModel.OutputsShapes[0].Rank(), 1)
-	require.Equal(t, "batch_size", onnxModel.OutputsShapes[0].Names[0])
+	require.Equal(t, "batch_size", onnxModel.OutputsShapes[0].AxisName(0))
 
 	// Verify the correct setting of variables.
 	store := model.NewStore()

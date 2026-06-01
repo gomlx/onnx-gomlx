@@ -11,17 +11,9 @@ import (
 func TestValidateInputs(t *testing.T) {
 	m := &Model{
 		InputsNames: []string{"i0", "i1"},
-		InputsShapes: []DynamicShape{
-			{
-				DType:      dtypes.Float32,
-				Dimensions: []int{-1, -1},
-				Names:      []string{"batch_size", "feature_dim"},
-			},
-			{
-				DType:      dtypes.Int32,
-				Dimensions: []int{-1, 3},
-				Names:      []string{"batch_size", "other"},
-			},
+		InputsShapes: []shapes.Shape{
+			shapes.MakeDynamic(dtypes.Float32, []int{-1, -1}, []string{"batch_size", "feature_dim"}),
+			shapes.MakeDynamic(dtypes.Int32, []int{-1, 3}, []string{"batch_size", "other"}),
 		},
 	}
 
