@@ -36,8 +36,6 @@ github.com/clipperhouse/displaywidth v0.11.0 h1:lBc6kY44VFw+TDx4I8opi/EtL9m20WSE
 github.com/clipperhouse/displaywidth v0.11.0/go.mod h1:bkrFNkf81G8HyVqmKGxsPufD3JhNl3dSqnGhOoSD/o0=
 github.com/clipperhouse/uax29/v2 v2.7.0 h1:+gs4oBZ2gPfVrKPthwbMzWZDaAFPGYK72F0NJv2v7Vk=
 github.com/clipperhouse/uax29/v2 v2.7.0/go.mod h1:EFJ2TJMRUaplDxHKj1qAEhCtQPW2tJSwu5BF98AuoVM=
-github.com/daulet/tokenizers v1.25.0 h1:ntd0QHOBNtHA67pxp0RMDYe8q6/ecPe5pEp46nhBvhw=
-github.com/daulet/tokenizers v1.25.0/go.mod h1:tGnMdZthXdcWY6DGD07IygpwJqiPvG85FQUnhs/wSCs=
 github.com/daulet/tokenizers v1.27.0 h1:MmFYAEDFz69s/nNQfHg59DWqHz3v94m99kEZ/JbL+s4=
 github.com/daulet/tokenizers v1.27.0/go.mod h1:YjFY1o1HGMyWkQgbXJDghhvke/yFDp2vGdIO2hYs4MQ=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
@@ -52,12 +50,12 @@ github.com/gomlx/compute v0.0.0-20260615181056-6e3a924a46cb h1:ZclLuMEjLP+N5oV7B
 github.com/gomlx/compute v0.0.0-20260615181056-6e3a924a46cb/go.mod h1:MDTT683Wvq7IMSKXDGLvV3Co7HDpx/Xsgp2RbF5lhNM=
 github.com/gomlx/exceptions v0.0.3 h1:HKnTgEjj4jlmhr8zVFkTP9qmV1ey7ypYYosQ8GzXWuM=
 github.com/gomlx/exceptions v0.0.3/go.mod h1:uHL0TQwJ0xaV2/snJOJV6hSE4yRmhhfymuYgNredGxU=
-github.com/gomlx/go-huggingface v0.3.6-0.20260618142930-de679cdb269f h1:W+1Y30JoMDiZgpfUjFpRq+cblud9Ke2bNk0vF1kYU0E=
-github.com/gomlx/go-huggingface v0.3.6-0.20260618142930-de679cdb269f/go.mod h1:zP4P8f+U4JlisrY6Aghtc/fv2ODKXmyUZ5Qs7UFULZ4=
-github.com/gomlx/go-xla v0.2.3-0.20260618142610-28960efdc139 h1:kc12S6z0dWnxVfSTNVtzGYJ51tqEUQUibjbanDOhF+E=
-github.com/gomlx/go-xla v0.2.3-0.20260618142610-28960efdc139/go.mod h1:zMOV0+tZBqrAulL9XG6KWIzEwtavwIVdNkCFV9zi+5U=
-github.com/gomlx/gomlx v0.27.4-0.20260618142757-2e8a31dcfc7c h1:yXM4m6Pa7w+OuaBdjJiQMwoJjD+rU/iopvLbSo/gxVo=
-github.com/gomlx/gomlx v0.27.4-0.20260618142757-2e8a31dcfc7c/go.mod h1:zHaMs9QEaJatpDWXFfS91xByHLb64hhbn3ZIDcqWyuE=
+github.com/gomlx/go-huggingface v0.3.6-0.20260618145247-60bc60cd439a h1:yYGYpUyiR7CgbB37alTe1NMteyfSwW4hojtvlL19Qy8=
+github.com/gomlx/go-huggingface v0.3.6-0.20260618145247-60bc60cd439a/go.mod h1:dRzDMm0SmzVITjShl1R5kclZgQRghTaiLdFMHviwjAQ=
+github.com/gomlx/go-xla v0.2.3-0.20260618145002-7a261bcebd0f h1:fbDdbEBfAwfvXd1B4g7tQKTeocYhAK4fT7Hsq4VhMac=
+github.com/gomlx/go-xla v0.2.3-0.20260618145002-7a261bcebd0f/go.mod h1:zMOV0+tZBqrAulL9XG6KWIzEwtavwIVdNkCFV9zi+5U=
+github.com/gomlx/gomlx v0.27.4-0.20260618145130-4c4b55779da9 h1:fdxGf3muXPzNJo7rP5Tkt7vuBDYyPp3SQSoDWSRZy0g=
+github.com/gomlx/gomlx v0.27.4-0.20260618145130-4c4b55779da9/go.mod h1:tALyzMctkjkhlPjjfMqh0aUnMrKwQaybBInoC4tXYfU=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
