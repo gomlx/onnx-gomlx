@@ -73,7 +73,7 @@ func (c *sdpaCandidate) Emit(scope *model.Scope, g *Graph, convertedOutputs map[
 		mask = convertedOutputs[p.MaskInputName]
 	}
 
-	output, _ := attention.Core(scope, q, k, v, p.Scale, mask, nil, attention.LayoutBHSD, false, false)
+	output, _ := attention.Core(scope, q, k, v, p.Scale, mask, nil, attention.LayoutBHSD, false, false, 0)
 	convertedOutputs[c.outputName] = output
 }
 
