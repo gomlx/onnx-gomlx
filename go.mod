@@ -5,10 +5,10 @@ go 1.26
 require (
 	github.com/chewxy/math32 v1.11.1
 	github.com/daulet/tokenizers v1.27.0
-	github.com/gomlx/compute v0.0.0-20260621195442-7cf34e76eacb
+	github.com/gomlx/compute v0.0.0-20260703132750-8164cab5c3c7
 	github.com/gomlx/exceptions v0.0.3
-	github.com/gomlx/go-huggingface v0.3.6-0.20260622114748-8bb56853eb44
-	github.com/gomlx/gomlx v0.27.4-0.20260622114551-65d00f0eac0f
+	github.com/gomlx/go-huggingface v0.3.6-0.20260704052031-0ff4fef280d4
+	github.com/gomlx/gomlx v0.27.4-0.20260704051922-9d1361ab359b
 	github.com/janpfeifer/go-benchmarks v0.1.1
 	github.com/janpfeifer/must v0.2.0
 	github.com/parquet-go/parquet-go v0.29.0
@@ -24,7 +24,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect
-	github.com/gomlx/go-xla v0.2.3-0.20260622114419-ab1f50d463f9 // indirect
+	github.com/gomlx/go-xla v0.2.3-0.20260704051754-1a2878185822 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
