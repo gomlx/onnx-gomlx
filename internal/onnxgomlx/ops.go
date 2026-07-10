@@ -9,6 +9,7 @@ import (
 
 	"github.com/gomlx/compute"
 	"github.com/gomlx/compute/dtypes"
+	"github.com/gomlx/compute/dtypes/gotype"
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph"
@@ -1287,7 +1288,7 @@ func computeNonZero(t *tensors.Tensor) *tensors.Tensor {
 }
 
 // nonZeroMask returns a boolean slice indicating which elements are non-zero.
-func nonZeroMask[T dtypes.Supported](values []T) []bool {
+func nonZeroMask[T gotype.Supported](values []T) []bool {
 	res := make([]bool, len(values))
 	var zero T
 	for i, v := range values {
