@@ -65,9 +65,19 @@ func (c *quantizedSDPACandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs
 		mask = convertedOutputs[p.MaskInputName]
 	}
 
+	var maskVal compute.Value
+	if mask != nil {
+		maskVal = InternalBackendOutputs(mask)[0]
+	}
+
 	result, _ := BackendFusedScaledDotProductAttention(
-		q, k, v, mask, p.NumHeads, p.NumKVHeads, compute.AxesLayoutBHSD, p.Scale, false,
-		&compute.ScaledDotProductAttentionConfig{QuantizedMatmuls: true})
+		q, k, v, compute.AxesLayoutBHSD,
+		&compute.ScaledDotProductAttentionConfig{
+			QuantizedMatmuls: true,
+			Scale:            p.Scale,
+			Causal:           false,
+			Mask:             maskVal,
+		})
 	convertedOutputs[c.outputName] = result
 }
 
