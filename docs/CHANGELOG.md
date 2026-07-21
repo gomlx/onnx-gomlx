@@ -1,3 +1,5 @@
+# v0.5.0: Updates for GoMLX v0.28.0
+
 # v0.4.2: Updated dependencies.
 
 - Updated dependency to GoMLX v0.27.3 and go-huggingface v0.3.5.
