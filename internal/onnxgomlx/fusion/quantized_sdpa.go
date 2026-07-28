@@ -71,7 +71,7 @@ func (c *quantizedSDPACandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs
 	}
 
 	result, _ := BackendFusedScaledDotProductAttention(
-		q, k, v, compute.AxesLayoutBHSD,
+		q, k, v, compute.AttentionAxesLayoutBHSD,
 		&compute.ScaledDotProductAttentionConfig{
 			QuantizedMatmuls: true,
 			Scale:            p.Scale,
