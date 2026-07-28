@@ -1,6 +1,7 @@
 package fusion
 
 import (
+	"github.com/gomlx/compute"
 	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/ml/layers/activation"
 	"github.com/gomlx/gomlx/ml/model"
@@ -43,7 +44,7 @@ func (c *denseActivationCandidate) Emit(_ *model.Scope, g *Graph, convertedOutpu
 		bias = convertedOutputs[p.BiasName]
 	}
 
-	result := nn.Dense(x, weight, bias, p.ActivationType)
+	result := nn.Dense(x, weight, bias, compute.DenseLayoutInputOutputs, p.ActivationType)
 	convertedOutputs[p.OutputName] = result
 }
 
