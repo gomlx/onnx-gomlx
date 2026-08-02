@@ -13,9 +13,6 @@ import (
 	"github.com/gomlx/gomlx/ml/model"
 )
 
-// DynamicDim is used for dynamic axes in a shape.
-const DynamicDim = -1
-
 // Model interface represents a parsed ONNX file.
 //
 // It can be used to generate the corresponding GoMLX model graph and executed for inference or used on a training loop for fine-tuning.
