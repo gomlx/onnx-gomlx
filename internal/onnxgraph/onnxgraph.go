@@ -1,7 +1,7 @@
 // Package onnxgraph provides graph-manipulation utilities for ONNX proto graphs.
 package onnxgraph
 
-import "github.com/gomlx/onnx-gomlx/internal/protos"
+import "github.com/gomlx/compute-onnx/support/protos"
 
 // BuildConsumerMap builds a map from output name to all NodeProto nodes that consume it as input.
 func BuildConsumerMap(graph *protos.GraphProto) map[string][]*protos.NodeProto {

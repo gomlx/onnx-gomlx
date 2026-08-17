@@ -6,7 +6,7 @@ import (
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
-	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/compute-onnx/support/protos"
 )
 
 // QuantizedSDPAParams holds parameters for fused quantized scaled dot-product attention.

@@ -11,7 +11,7 @@ import (
 	"github.com/gomlx/gomlx/core/graph/graphtest"
 	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/gomlx/gomlx/support/testutil"
-	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

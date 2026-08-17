@@ -11,7 +11,7 @@ import (
 	"github.com/gomlx/gomlx/ml/nn"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
-	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/compute-onnx/support/protos"
 )
 
 // broadcastQuantScale converts a weight scale node (scalar or 1D [outputDim]) to the
