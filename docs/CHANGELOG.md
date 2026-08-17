@@ -1,3 +1,8 @@
+# 2026/08/17
+
+- Removed `internal/protos`, and instead use `github.com/gomlx/compute-onnx/support/protos`, which is identical
+  (This is because protos register globally their definitions, and we cannot have 2 definitions of the same proto)
+
 # v0.5.0: Updates for GoMLX v0.28.0
 
 # v0.4.2: Updated dependencies.
