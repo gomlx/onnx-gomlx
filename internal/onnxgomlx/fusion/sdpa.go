@@ -26,7 +26,7 @@ import (
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
-	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/compute-onnx/support/protos"
 )
 
 // SDPAParams holds parameters for fused scaled dot-product attention.

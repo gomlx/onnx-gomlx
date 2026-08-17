@@ -13,7 +13,7 @@ import (
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
-	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/pkg/errors"
 )

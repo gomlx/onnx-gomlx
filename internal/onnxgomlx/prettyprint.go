@@ -10,7 +10,7 @@ import (
 
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/gomlx/support/sets"
-	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/pkg/errors"
 )
 

@@ -12,7 +12,7 @@ import (
 	"github.com/gomlx/gomlx/ml/layers/activation"
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/support/sets"
-	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
 )
 

@@ -3,7 +3,7 @@ package onnxgomlx
 import (
 	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/compute/shapes"
-	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/compute-onnx/support/protos"
 )
 
 // ShapeForName returns the shapes.Shape for a named output, input, or initializer in the ONNX graph.

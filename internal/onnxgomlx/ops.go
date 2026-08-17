@@ -20,7 +20,7 @@ import (
 	"github.com/gomlx/gomlx/ml/layers/lstm"
 	"github.com/gomlx/gomlx/ml/layers/norm"
 	"github.com/gomlx/gomlx/ml/model"
-	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/pkg/errors"
 )
 

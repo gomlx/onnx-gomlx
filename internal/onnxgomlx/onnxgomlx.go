@@ -11,7 +11,7 @@ import (
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/gomlx/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx/filesreader"
-	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/pkg/errors"
 	"google.golang.org/protobuf/proto"

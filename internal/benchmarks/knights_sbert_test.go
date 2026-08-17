@@ -21,7 +21,7 @@ import (
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/support/testutil"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
-	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"github.com/janpfeifer/go-benchmarks"
 	"github.com/janpfeifer/must"

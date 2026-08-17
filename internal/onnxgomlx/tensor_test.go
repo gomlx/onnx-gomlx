@@ -13,7 +13,7 @@ import (
 	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/gomlx/gomlx/support/testutil"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx/filesreader"
-	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

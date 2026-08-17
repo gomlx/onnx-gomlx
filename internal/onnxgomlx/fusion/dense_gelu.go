@@ -8,7 +8,7 @@ import (
 	"github.com/gomlx/gomlx/ml/nn"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
-	"github.com/gomlx/onnx-gomlx/internal/protos"
+	"github.com/gomlx/compute-onnx/support/protos"
 )
 
 // DenseActivationParams holds parameters for fused MatMul + optional bias + activation.
