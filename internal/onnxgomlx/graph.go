@@ -202,22 +202,7 @@ func (m *Model) recursiveCallGraph(scope *model.Scope, g *Graph, nodeOutputName 
 			return
 		}
 
-		// Check if the backend prefers constants for variables (e.g., CoreML).
-		// This enables optimizations like blob storage for weights and avoids
-		// passing hundreds of weight tensors as inputs per inference.
-		backend := g.Backend()
-		if backend != nil && backend.Capabilities().PreferConstantsForVariables {
-			// Get the variable value and create a constant node
-			value, err := v.Value()
-			if err != nil {
-				exceptions.Panicf("failed to get value for variable %q: %v", varName, err)
-				return
-			}
-			convertedOutputs[nodeOutputName] = Const(g, value)
-		} else {
-			// Default behavior: create a parameter that will be filled at execution time
-			convertedOutputs[nodeOutputName] = v.NodeValue(g)
-		}
+		convertedOutputs[nodeOutputName] = v.NodeValue(g)
 		return
 	}
 
