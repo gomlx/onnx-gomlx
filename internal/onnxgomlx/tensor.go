@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/gomlx/compute"
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/compute/dtypes/float16"
 	"github.com/gomlx/compute/gobackend"
@@ -13,7 +14,6 @@ import (
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
-	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/pkg/errors"
 )
@@ -34,6 +34,15 @@ func Shape(proto *protos.TensorProto) (shape shapes.Shape, err error) {
 	}
 	shape.Dimensions = make([]int, len(proto.Dims))
 	for axis, dim := range proto.Dims {
+		// A TensorProto describes a concrete stored tensor, so every dimension
+		// must be non-negative (ONNX spec). A negative dim (e.g. -1, which
+		// shapes treats as a dynamic axis) is invalid here and would later panic
+		// in Shape.Size() ("called on shape with dynamic dimensions"), so reject
+		// it up front instead of propagating a poisoned shape.
+		if dim < 0 {
+			err = errors.Errorf("tensor %q has invalid negative dimension %d at axis %d", proto.Name, dim, axis)
+			return
+		}
 		shape.Dimensions[axis] = int(dim)
 	}
 	if proto.Segment != nil {
@@ -55,6 +64,12 @@ func SparseShape(proto *protos.SparseTensorProto) (shape shapes.Shape, err error
 	}
 	shape.Dimensions = make([]int, len(proto.Dims))
 	for axis, dim := range proto.Dims {
+		// Concrete sparse tensor dimensions must be non-negative; a negative dim
+		// would later panic in Shape.Size(). See Shape() for details.
+		if dim < 0 {
+			err = errors.Errorf("sparse tensor has invalid negative dimension %d at axis %d", dim, axis)
+			return
+		}
 		shape.Dimensions[axis] = int(dim)
 	}
 	return
