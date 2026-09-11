@@ -1036,3 +1036,112 @@ func buildTestModel(t *testing.T, graph *protos.GraphProto) *onnxgomlx.Model {
 	require.NoError(t, err)
 	return m
 }
+
+func TestDecomposedGELUFusion(t *testing.T) {
+	wData := make([]float32, 4*8)
+	for i := range wData {
+		wData[i] = float32(i%5)*0.1 + 0.05
+	}
+	bData := make([]float32, 8)
+	for i := range bData {
+		bData[i] = float32(i)*0.02 - 0.05
+	}
+
+	graph := &protos.GraphProto{
+		Name: "decomposed_gelu_test",
+		Input: []*protos.ValueInfoProto{
+			makeValueInfo("X", []int64{2, 4}),
+		},
+		Output: []*protos.ValueInfoProto{
+			makeValueInfo("output", []int64{2, 8}),
+		},
+		Initializer: []*protos.TensorProto{
+			makeFloatTensorProto("W", []int64{4, 8}, wData),
+			makeFloatTensorProto("B", []int64{8}, bData),
+			makeScalarFloatTensorProto("sqrt2", float32(math.Sqrt(2))),
+			makeScalarFloatTensorProto("one", 1.0),
+			makeScalarFloatTensorProto("half", 0.5),
+		},
+		Node: []*protos.NodeProto{
+			{OpType: "MatMul", Input: []string{"X", "W"}, Output: []string{"mm"}},
+			{OpType: "Add", Input: []string{"mm", "B"}, Output: []string{"addB"}},
+			{OpType: "Div", Input: []string{"addB", "sqrt2"}, Output: []string{"divOut"}},
+			{OpType: "Erf", Input: []string{"divOut"}, Output: []string{"erfOut"}},
+			{OpType: "Add", Input: []string{"erfOut", "one"}, Output: []string{"addOneOut"}},
+			{OpType: "Mul", Input: []string{"addB", "addOneOut"}, Output: []string{"mulXOut"}},
+			{OpType: "Mul", Input: []string{"mulXOut", "half"}, Output: []string{"output"}},
+		},
+	}
+
+	m := buildTestModel(t, graph)
+	require.Len(t, m.DetectedFusions, 1, "expected 1 fusion")
+	cand := m.DetectedFusions["output"]
+	require.NotNil(t, cand)
+	assert.Equal(t, "DenseGelu", cand.Name())
+
+	xData := make([]float32, 2*4)
+	for i := range xData {
+		xData[i] = float32(i)*0.2 - 0.3
+	}
+
+	runFusedVsUnfused(t, graph, map[string]*tensors.Tensor{
+		"X": tensors.FromFlatDataAndDimensions(xData, 2, 4),
+	})
+}
+
+func TestDecomposedLayerNormFusion(t *testing.T) {
+	gammaData := []float32{1.1, 0.9, 1.0, 1.2}
+	betaData := []float32{0.1, -0.05, 0.0, 0.2}
+
+	graph := &protos.GraphProto{
+		Name: "decomposed_layernorm_test",
+		Input: []*protos.ValueInfoProto{
+			makeValueInfo("X", []int64{2, 3, 4}),
+		},
+		Output: []*protos.ValueInfoProto{
+			makeValueInfo("output", []int64{2, 3, 4}),
+		},
+		Initializer: []*protos.TensorProto{
+			makeFloatTensorProto("gamma", []int64{4}, gammaData),
+			makeFloatTensorProto("beta", []int64{4}, betaData),
+			makeScalarFloatTensorProto("two", 2.0),
+			makeScalarFloatTensorProto("eps", 1e-5),
+		},
+		Node: []*protos.NodeProto{
+			{
+				OpType: "ReduceMean", Input: []string{"X"}, Output: []string{"mean"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "axes", Type: protos.AttributeProto_INTS, Ints: []int64{-1}},
+				},
+			},
+			{OpType: "Sub", Input: []string{"X", "mean"}, Output: []string{"diff"}},
+			{OpType: "Pow", Input: []string{"diff", "two"}, Output: []string{"sq"}},
+			{
+				OpType: "ReduceMean", Input: []string{"sq"}, Output: []string{"var"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "axes", Type: protos.AttributeProto_INTS, Ints: []int64{-1}},
+				},
+			},
+			{OpType: "Add", Input: []string{"var", "eps"}, Output: []string{"varEps"}},
+			{OpType: "Sqrt", Input: []string{"varEps"}, Output: []string{"std"}},
+			{OpType: "Div", Input: []string{"diff", "std"}, Output: []string{"norm"}},
+			{OpType: "Mul", Input: []string{"norm", "gamma"}, Output: []string{"scaled"}},
+			{OpType: "Add", Input: []string{"scaled", "beta"}, Output: []string{"output"}},
+		},
+	}
+
+	m := buildTestModel(t, graph)
+	require.Len(t, m.DetectedFusions, 1, "expected 1 fusion")
+	cand := m.DetectedFusions["output"]
+	require.NotNil(t, cand)
+	assert.Equal(t, "LayerNorm", cand.Name())
+
+	xData := make([]float32, 2*3*4)
+	for i := range xData {
+		xData[i] = float32(i)*0.15 - 0.5
+	}
+
+	runFusedVsUnfused(t, graph, map[string]*tensors.Tensor{
+		"X": tensors.FromFlatDataAndDimensions(xData, 2, 3, 4),
+	})
+}

@@ -106,17 +106,27 @@ func tryMatchDenseActivation(m *onnxgomlx.Model, consumers map[string][]*protos.
 		internalOutputs[matmulOut] = true
 		afterBiasOut := next.Output[0]
 
-		// Now look for supported Activation after Add.
+		// Now look for supported Activation after Add (single node or decomposed GELU).
 		actNode := onnxgraph.SoleConsumer(consumers, afterBiasOut)
 		actType := denseActivationType(actNode)
-		if actType == activation.TypeNone {
+		var outputName string
+		if actType != activation.TypeNone && len(actNode.Output) > 0 {
+			internalNodes[actNode] = true
+			internalOutputs[afterBiasOut] = true
+			outputName = actNode.Output[0]
+		} else if geluOut, geluNodes, geluOutputs, ok := tryMatchDecomposedGelu(m, consumers, afterBiasOut); ok {
+			actType = activation.TypeGelu
+			outputName = geluOut
+			internalOutputs[afterBiasOut] = true
+			for _, gn := range geluNodes {
+				internalNodes[gn] = true
+			}
+			for _, goName := range geluOutputs {
+				internalOutputs[goName] = true
+			}
+		} else {
 			return nil
 		}
-		if len(actNode.Output) == 0 {
-			return nil
-		}
-		internalNodes[actNode] = true
-		internalOutputs[afterBiasOut] = true
 
 		if onnxgraph.HasExternalConsumers(internalOutputs, consumers, internalNodes) {
 			return nil
@@ -128,7 +138,7 @@ func tryMatchDenseActivation(m *onnxgomlx.Model, consumers map[string][]*protos.
 				XInputName:     xName,
 				WeightName:     weightName,
 				BiasName:       biasName,
-				OutputName:     actNode.Output[0],
+				OutputName:     outputName,
 				ActivationType: actType,
 			},
 			internalOutputs: internalOutputs,
@@ -138,31 +148,149 @@ func tryMatchDenseActivation(m *onnxgomlx.Model, consumers map[string][]*protos.
 
 	// MatMul → Activation (no bias).
 	actType := denseActivationType(next)
-	if actType != activation.TypeNone {
-		if len(next.Output) == 0 {
-			return nil
-		}
+	var outputName string
+	if actType != activation.TypeNone && len(next.Output) > 0 {
 		internalNodes[next] = true
 		internalOutputs[matmulOut] = true
-
-		if onnxgraph.HasExternalConsumers(internalOutputs, consumers, internalNodes) {
-			return nil
+		outputName = next.Output[0]
+	} else if geluOut, geluNodes, geluOutputs, ok := tryMatchDecomposedGelu(m, consumers, matmulOut); ok {
+		actType = activation.TypeGelu
+		outputName = geluOut
+		internalOutputs[matmulOut] = true
+		for _, gn := range geluNodes {
+			internalNodes[gn] = true
 		}
+		for _, goName := range geluOutputs {
+			internalOutputs[goName] = true
+		}
+	} else {
+		return nil
+	}
 
-		externalInputs := []string{xName, weightName}
-		return &denseActivationCandidate{
-			params: &DenseActivationParams{
-				XInputName:     xName,
-				WeightName:     weightName,
-				OutputName:     next.Output[0],
-				ActivationType: actType,
-			},
-			internalOutputs: internalOutputs,
-			externalInputs:  externalInputs,
+	if onnxgraph.HasExternalConsumers(internalOutputs, consumers, internalNodes) {
+		return nil
+	}
+
+	externalInputs := []string{xName, weightName}
+	return &denseActivationCandidate{
+		params: &DenseActivationParams{
+			XInputName:     xName,
+			WeightName:     weightName,
+			OutputName:     outputName,
+			ActivationType: actType,
+		},
+		internalOutputs: internalOutputs,
+		externalInputs:  externalInputs,
+	}
+}
+
+// tryMatchDecomposedGelu checks if inName feeds a decomposed GELU activation:
+//
+//	x -> Div(x, sqrt(2)) -> Erf -> Add(1) -> Mul(x) -> Mul(0.5)
+//
+// or:
+//
+//	x -> [Div(x, sqrt(2)) -> Erf -> Add(1)] and [Mul(x, 0.5)] -> Mul(...)
+func tryMatchDecomposedGelu(m *onnxgomlx.Model, consumers map[string][]*protos.NodeProto, inName string) (
+	outputName string,
+	geluNodes []*protos.NodeProto,
+	geluOutputs []string,
+	ok bool,
+) {
+	consumersOfIn := consumers[inName]
+	if len(consumersOfIn) != 2 {
+		return "", nil, nil, false
+	}
+
+	var divOrMulSqrt *protos.NodeProto // Div(x, sqrt(2)) or Mul(x, 1/sqrt(2))
+	var mulWithX *protos.NodeProto     // Mul(x, ...)
+
+	for _, n := range consumersOfIn {
+		if (n.OpType == "Div" || n.OpType == "Mul") && divOrMulSqrt == nil {
+			other := onnxgraph.OtherBinaryOpInput(n, inName)
+			if other != "" && m.IsConstant(other) {
+				val := m.TryGetConstantScalar(other)
+				if (n.OpType == "Div" && math.Abs(val-math.Sqrt(2)) < 1e-2) ||
+					(n.OpType == "Mul" && math.Abs(val-1.0/math.Sqrt(2)) < 1e-2) {
+					divOrMulSqrt = n
+					continue
+				}
+			}
+		}
+		if n.OpType == "Mul" {
+			mulWithX = n
 		}
 	}
 
-	return nil
+	if divOrMulSqrt == nil || mulWithX == nil {
+		return "", nil, nil, false
+	}
+
+	// 1. divOrMulSqrt -> Erf
+	if len(divOrMulSqrt.Output) == 0 {
+		return "", nil, nil, false
+	}
+	erfNode := onnxgraph.SoleConsumer(consumers, divOrMulSqrt.Output[0])
+	if erfNode == nil || erfNode.OpType != "Erf" || len(erfNode.Output) == 0 {
+		return "", nil, nil, false
+	}
+
+	// 2. Erf -> Add(1.0)
+	addOneNode := onnxgraph.SoleConsumer(consumers, erfNode.Output[0])
+	if addOneNode == nil || addOneNode.OpType != "Add" || len(addOneNode.Output) == 0 {
+		return "", nil, nil, false
+	}
+	otherAdd := onnxgraph.OtherBinaryOpInput(addOneNode, erfNode.Output[0])
+	if otherAdd == "" || !m.IsConstant(otherAdd) || math.Abs(m.TryGetConstantScalar(otherAdd)-1.0) > 1e-4 {
+		return "", nil, nil, false
+	}
+
+	// 3. Now check how (1 + Erf) connects to mulWithX and the 0.5 factor.
+	var finalMul *protos.NodeProto
+
+	if mulWithX.Input[0] == addOneNode.Output[0] || mulWithX.Input[1] == addOneNode.Output[0] {
+		// Variant 1: mulWithX is Mul(x, 1+Erf). Next must be Mul(..., 0.5)
+		if len(mulWithX.Output) == 0 {
+			return "", nil, nil, false
+		}
+		mulHalfNode := onnxgraph.SoleConsumer(consumers, mulWithX.Output[0])
+		if mulHalfNode == nil || mulHalfNode.OpType != "Mul" || len(mulHalfNode.Output) == 0 {
+			return "", nil, nil, false
+		}
+		otherHalf := onnxgraph.OtherBinaryOpInput(mulHalfNode, mulWithX.Output[0])
+		if otherHalf == "" || !m.IsConstant(otherHalf) || math.Abs(m.TryGetConstantScalar(otherHalf)-0.5) > 1e-4 {
+			return "", nil, nil, false
+		}
+		finalMul = mulHalfNode
+	} else {
+		// Variant 2: mulWithX is Mul(x, 0.5).
+		otherHalf := onnxgraph.OtherBinaryOpInput(mulWithX, inName)
+		if otherHalf == "" || !m.IsConstant(otherHalf) || math.Abs(m.TryGetConstantScalar(otherHalf)-0.5) > 1e-4 {
+			return "", nil, nil, false
+		}
+		// Then mulWithX and addOneNode must feed a final Mul
+		if len(mulWithX.Output) == 0 {
+			return "", nil, nil, false
+		}
+		consumerOfHalf := onnxgraph.SoleConsumer(consumers, mulWithX.Output[0])
+		if consumerOfHalf == nil || consumerOfHalf.OpType != "Mul" || len(consumerOfHalf.Output) == 0 {
+			return "", nil, nil, false
+		}
+		if consumerOfHalf.Input[0] != addOneNode.Output[0] && consumerOfHalf.Input[1] != addOneNode.Output[0] {
+			return "", nil, nil, false
+		}
+		finalMul = consumerOfHalf
+	}
+
+	nodes := []*protos.NodeProto{divOrMulSqrt, erfNode, addOneNode, mulWithX, finalMul}
+	outputs := []string{
+		divOrMulSqrt.Output[0],
+		erfNode.Output[0],
+		addOneNode.Output[0],
+		mulWithX.Output[0],
+	}
+
+	return finalMul.Output[0], nodes, outputs, true
 }
 
 // denseActivationType returns the activation type for an ONNX node that can be fused into Dense,
