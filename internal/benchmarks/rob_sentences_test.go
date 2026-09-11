@@ -3,10 +3,12 @@ package benchmarks
 // This file is an extension of knights_sbert_test but defining the test sentences on robSentences.
 
 import (
+	"cmp"
 	"flag"
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -132,9 +134,51 @@ func initializeRobSentences(minNumExamples int) []tokenizedSentence {
 			0)
 	}
 
-	// Replicate extra examples at the end.
-	for ii := numSentences; ii < len(results); ii++ {
-		results[ii] = results[ii-numSentences] // Keep repeating.
+	if *flagSaveEmbeddings || *flagCheckEmbeddings {
+		// Replicate extra examples at the end without changing original order.
+		for ii := numSentences; ii < len(results); ii++ {
+			results[ii] = results[ii-numSentences] // Keep repeating.
+		}
+		return results
+	}
+
+	// Sort base sentences by length to minimize padding when batching.
+	baseSentences := make([]tokenizedSentence, numSentences)
+	copy(baseSentences, results[:numSentences])
+	slices.SortFunc(baseSentences, func(a, b tokenizedSentence) int {
+		return cmp.Compare(len(a.Encoding[0]), len(b.Encoding[0]))
+	})
+
+	// Group sorted sentences into buckets of adjacent lengths (within 1 token):
+	var buckets [][]tokenizedSentence
+	var currentBucket []tokenizedSentence
+	for _, s := range baseSentences {
+		if len(currentBucket) == 0 {
+			currentBucket = append(currentBucket, s)
+			continue
+		}
+		prevLen := len(currentBucket[0].Encoding[0])
+		currLen := len(s.Encoding[0])
+		if currLen-prevLen <= 1 {
+			currentBucket = append(currentBucket, s)
+		} else {
+			buckets = append(buckets, currentBucket)
+			currentBucket = []tokenizedSentence{s}
+		}
+	}
+	if len(currentBucket) > 0 {
+		buckets = append(buckets, currentBucket)
+	}
+
+	// Replicate each bucket to a multiple of minNumExamples (batchSize) so that
+	// every batch contains sentences of similar lengths, minimizing padding.
+	results = results[:0]
+	for _, bucket := range buckets {
+		numBatches := (len(bucket) + minNumExamples - 1) / minNumExamples
+		targetLen := numBatches * minNumExamples
+		for ii := 0; ii < targetLen; ii++ {
+			results = append(results, bucket[ii%len(bucket)])
+		}
 	}
 	return results
 }
@@ -432,7 +476,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 
 	store := model.NewStore()
 	must.M(onnxModel.VariablesToScope(store.RootScope()))
-	exec := model.MustNewExec(backend, store, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
+	buildModelFn := func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
 		scope.SetTraining(g, false) // Inference only.
@@ -446,7 +490,8 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 			fmt.Printf("Graph:\n%s\n", g)
 		}
 		return outputs[0]
-	})
+	}
+	exec := model.MustNewExec(backend, store, buildModelFn)
 	if useDynamic {
 		exec.WithDynamicAxes(
 			[]string{"batch", "seq"},
@@ -474,14 +519,24 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	}
 
 	if *flagSaveONNX != "" && modelonnx.IsONNX(backend) {
-		inputShapes := []shapes.Shape{
-			shapes.Make(dtypes.Int64, batchSize, maxSeqLen),
-			shapes.Make(dtypes.Int64, batchSize, maxSeqLen),
-			shapes.Make(dtypes.Int64, batchSize, maxSeqLen),
+		dynamicInputShapes := []shapes.Shape{
+			shapes.MakeDynamic(dtypes.Int64, []int{shapes.DynamicDim, shapes.DynamicDim}, []string{"batch", "seq"}),
+			shapes.MakeDynamic(dtypes.Int64, []int{shapes.DynamicDim, shapes.DynamicDim}, []string{"batch", "seq"}),
+			shapes.MakeDynamic(dtypes.Int64, []int{shapes.DynamicDim, shapes.DynamicDim}, []string{"batch", "seq"}),
 		}
 		inputNames := []string{"input_ids", "attention_mask", "token_type_ids"}
 		outputNames := []string{"last_hidden_state"}
-		must.M(modelonnx.SaveToFile(backend, exec, *flagSaveONNX, inputShapes, inputNames, outputNames))
+		saveExec := exec
+		if !useDynamic {
+			saveExec = model.MustNewExec(backend, store, buildModelFn)
+			saveExec.WithDynamicAxes(
+				[]string{"batch", "seq"},
+				[]string{"batch", "seq"},
+				[]string{"batch", "seq"},
+			)
+			defer saveExec.Finalize()
+		}
+		must.M(modelonnx.SaveToFile(backend, saveExec, *flagSaveONNX, dynamicInputShapes, inputNames, outputNames))
 		fmt.Printf("Saved ONNX graph to %q\n", *flagSaveONNX)
 	}
 
