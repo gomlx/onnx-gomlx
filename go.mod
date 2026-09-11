@@ -14,6 +14,7 @@ require (
 	github.com/janpfeifer/must v0.2.0
 	github.com/parquet-go/parquet-go v0.29.0
 	github.com/pkg/errors v0.9.1
+	github.com/streadway/quantile v0.0.0-20220407130108-4246515d968d
 	github.com/stretchr/testify v1.11.1
 	github.com/yalue/onnxruntime_go v1.26.0
 	google.golang.org/protobuf v1.36.11
@@ -33,7 +34,6 @@ require (
 	github.com/parquet-go/jsonlite v1.5.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/streadway/quantile v0.0.0-20220407130108-4246515d968d // indirect
 	github.com/twpayne/go-geom v1.6.1 // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
 	golang.org/x/image v0.43.0 // indirect

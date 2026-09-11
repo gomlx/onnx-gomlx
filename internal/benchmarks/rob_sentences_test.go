@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,13 +23,15 @@ import (
 	"github.com/gomlx/gomlx/support/testutil"
 	"github.com/gomlx/gomlx/support/xsync"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
-	"github.com/janpfeifer/go-benchmarks"
 	"github.com/janpfeifer/must"
+	"github.com/streadway/quantile"
 	ort "github.com/yalue/onnxruntime_go"
 )
 
 var (
-	flagDynamic = flag.Bool("dynamic", true, "Enables dynamic shapes use on TestRobSentences_BenchXLA if backend supports it")
+	flagDynamic          = flag.Bool("dynamic", true, "Enables dynamic shapes use on TestRobSentences_BenchXLA if backend supports it")
+	flagBenchConcurrency []int
+	flagBenchBatchSizes  []int
 
 	robSentences = []string{
 		"robert smith junior",
@@ -68,6 +71,27 @@ var (
 		//"Cloud Based Solutions Unveils New Secure Data Services",
 	}
 )
+
+func init() {
+	// Set-up int list flags
+	flag.Func("bench_concurrency", "Sets the set of concurrency execution to run during benchmarks. If not set, it uses default list.",
+		sliceIntFlag(&flagBenchConcurrency))
+	flag.Func("bench_batch", "Sets the set of BatchSize to use during benchmarks. If not set, it uses default list.",
+		sliceIntFlag(&flagBenchBatchSizes))
+}
+
+func sliceIntFlag(storeValue *[]int) func(string) error {
+	return func(value string) error {
+		for _, part := range strings.Split(value, ",") {
+			v, err := strconv.Atoi(strings.TrimSpace(part))
+			if err != nil {
+				return err
+			}
+			*storeValue = append(*storeValue, v)
+		}
+		return nil
+	}
+}
 
 // initializeRobSentences tokenizes the fixed robSentences (as opposed to using FineWeb, the default)
 // and trims any padding.
@@ -187,20 +211,79 @@ func implParallelBenchmark[E any](
 		}(workerIdx)
 	}
 
-	// Benchmark function is simply reading out finished
-	testFn := benchmarks.NamedFunction{
-		Name: name,
-		Func: func() {
-			<-finishedCounter
-		},
+	// Warm-up:
+	for range warmUpRuns {
+		<-finishedCounter
 	}
-	benchmarks.New(testFn).
-		WithWarmUps(warmUpRuns).
-		WithDuration(*flagBenchDuration).
-		WithHeader(header).
-		WithInnerRepeats(batchSize). // Report will be "per example".
-		WithPrettyPrintFn(formatDuration).
-		Done()
+
+	// Benchmark collection:
+	estimates := []quantile.Estimate{
+		quantile.Known(0.05, 0.001),
+		quantile.Known(0.50, 0.001),
+		quantile.Known(0.99, 0.001),
+	}
+	estimator := quantile.New(estimates...)
+	var totalTime time.Duration
+	var count int
+	timer := time.NewTimer(*flagBenchDuration)
+
+collection:
+	for {
+		select {
+		case <-timer.C:
+			break collection
+		default:
+			start := time.Now()
+			<-finishedCounter
+			elapsed := time.Since(start)
+			estimator.Add(float64(elapsed) / float64(time.Nanosecond))
+			totalTime += elapsed
+			count++
+		}
+	}
+	timer.Stop()
+
+	// Header:
+	const (
+		nameColWidth = 50
+		colWidth     = 10
+	)
+	if header {
+		fmt.Printf("%-*s\t%*s\t%*s\t%*s\t%*s\t%*s\t%*s\n",
+			nameColWidth, "Benchmarks:",
+			colWidth+2, "Sentences/s",
+			colWidth, "Mean",
+			colWidth, "Median",
+			colWidth, "5%-tile",
+			colWidth, "99%-tile",
+			colWidth+2, "Runs(xBatch)")
+	}
+
+	var (
+		meanPerExample   time.Duration
+		medianPerExample time.Duration
+		q5PerExample     time.Duration
+		q99PerExample    time.Duration
+		sentencesPerSec  float64
+	)
+	if count > 0 && totalTime > 0 {
+		meanPerExample = (totalTime / time.Duration(count)) / time.Duration(batchSize)
+		medianPerExample = time.Duration(int(estimator.Get(0.50))) * time.Nanosecond / time.Duration(batchSize)
+		q5PerExample = time.Duration(int(estimator.Get(0.05))) * time.Nanosecond / time.Duration(batchSize)
+		q99PerExample = time.Duration(int(estimator.Get(0.99))) * time.Nanosecond / time.Duration(batchSize)
+		sentencesPerSec = float64(count*batchSize) / totalTime.Seconds()
+	}
+
+	sentencesStr := fmt.Sprintf("%.1f/s", sentencesPerSec)
+	runsStr := fmt.Sprintf("%d (x%d)", count, batchSize)
+	fmt.Printf("%-*s\t%*s\t%*s\t%*s\t%*s\t%*s\t%*s\n",
+		nameColWidth, name,
+		colWidth+2, sentencesStr,
+		colWidth, formatDuration(meanPerExample),
+		colWidth, formatDuration(medianPerExample),
+		colWidth, formatDuration(q5PerExample),
+		colWidth, formatDuration(q99PerExample),
+		colWidth+2, runsStr)
 
 	// done.Trigger will signal all goroutines to end.
 	done.Trigger()
@@ -235,6 +318,8 @@ func implBenchRobSentencesORT(parallelization, batchSize int, header bool) {
 			must.M(options.SetInterOpNumThreads(1))
 			must.M(options.SetCpuMemArena(false))
 			must.M(options.SetMemPattern(false))
+			must.M(options.SetExecutionMode(ort.ExecutionModeParallel))
+			must.M(options.SetGraphOptimizationLevel(99))
 		}
 	}
 
@@ -472,9 +557,17 @@ func TestRobSentences_BenchORT(t *testing.T) {
 		t.SkipNow()
 	}
 	count := 0
-	for _, parallelism := range []int{4} { // {2, 3, 4, 6, 8} {
-		for _, batchSize := range []int{512} { // 1, 2, 4, 8, 16, 32, 256, 512} {
-			implBenchRobSentencesORT(parallelism, batchSize, count == 0)
+	concurrencies := []int{16}
+	if len(flagBenchConcurrency) > 0 {
+		concurrencies = flagBenchConcurrency
+	}
+	batchSizes := []int{16}
+	if len(flagBenchBatchSizes) > 0 {
+		batchSizes = flagBenchBatchSizes
+	}
+	for _, concurrency := range concurrencies { // {4, 6, 8} {
+		for _, batchSize := range batchSizes { // 1, 2, 4, 8, 16, 32} {
+			implBenchRobSentencesORT(concurrency, batchSize, count == 0)
 			count++
 		}
 	}
@@ -488,9 +581,17 @@ func TestRobSentences_BenchXLA(t *testing.T) {
 	// Change parallelism/batchSize according to backend, see best values in the bottom
 	// of the "Rob Sentences" sheet in:
 	// https://docs.google.com/spreadsheets/d/1ikpJH6rVVHq8ES-IA8U4lkKH4XsTSpRyZewXwGTgits/edit?gid=397722581#gid=397722581
-	for _, parallelism := range []int{16} { // {4, 6, 8} {
-		for _, batchSize := range []int{32} { // 1, 2, 4, 8, 16, 32} {
-			implBenchRobSentencesXLA(t, parallelism, batchSize, count == 0)
+	concurrencies := []int{8}
+	if len(flagBenchConcurrency) > 0 {
+		concurrencies = flagBenchConcurrency
+	}
+	batchSizes := []int{128}
+	if len(flagBenchBatchSizes) > 0 {
+		batchSizes = flagBenchBatchSizes
+	}
+	for _, concurrency := range concurrencies { // {4, 6, 8} {
+		for _, batchSize := range batchSizes { // 1, 2, 4, 8, 16, 32} {
+			implBenchRobSentencesXLA(t, concurrency, batchSize, count == 0)
 			count++
 		}
 	}
@@ -580,4 +681,3 @@ func TestRobSentences_DynamicCallGraph(t *testing.T) {
 
 	requireSameTensorsFloat32(t, outStat, outDyn, 1e-4)
 }
-
