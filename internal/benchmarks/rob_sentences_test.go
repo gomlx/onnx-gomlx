@@ -372,7 +372,7 @@ func implBenchRobSentencesORT(parallelization, batchSize int, header bool) {
 			options = must.M1(ort.NewSessionOptions())
 			must.M(options.SetIntraOpNumThreads(1))
 			must.M(options.SetInterOpNumThreads(1))
-			must.M(options.SetCpuMemArena(false))
+			must.M(options.SetCpuMemArena(true))
 			must.M(options.SetMemPattern(false))
 			must.M(options.SetExecutionMode(ort.ExecutionModeParallel))
 			must.M(options.SetGraphOptimizationLevel(99))
