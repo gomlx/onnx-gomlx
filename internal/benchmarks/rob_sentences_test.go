@@ -5,6 +5,7 @@ package benchmarks
 import (
 	"flag"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/gomlx/gomlx/ml/model"
+	modelonnx "github.com/gomlx/gomlx/ml/model/onnx"
 	"github.com/gomlx/gomlx/support/testutil"
 	"github.com/gomlx/gomlx/support/xsync"
 	"github.com/gomlx/onnx-gomlx/onnx/parser"
@@ -32,6 +34,8 @@ var (
 	flagDynamic          = flag.Bool("dynamic", true, "Enables dynamic shapes use on TestRobSentences_BenchXLA if backend supports it")
 	flagBenchConcurrency []int
 	flagBenchBatchSizes  []int
+	flagSaveONNX         = flag.String("save_onnx", "", "If set and backend is ONNX, save the graph after building it to the file path")
+	flagONNXModel        = flag.String("onnx_model", "", "Path to ONNX model to benchmark with TestRobSentences_BenchORT (defaults to downloaded HF model or save_onnx)")
 
 	robSentences = []string{
 		"robert smith junior",
@@ -303,8 +307,16 @@ func implBenchRobSentencesORT(parallelization, batchSize int, header bool) {
 
 	// Create session with ONNX program.
 	ortInitFn()
-	repoModel := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
-	onnxModelPath := must.M1(repoModel.DownloadFile("model.onnx"))
+	onnxModelPath := *flagONNXModel
+	if onnxModelPath == "" && *flagSaveONNX != "" {
+		onnxModelPath = *flagSaveONNX
+	}
+	if onnxModelPath == "" {
+		repoModel := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
+		onnxModelPath = must.M1(repoModel.DownloadFile("model.onnx"))
+	} else {
+		name += fmt.Sprintf("[%s]", filepath.Base(onnxModelPath))
+	}
 	var options *ort.SessionOptions
 	if ortIsCUDA {
 		options = must.M1(ort.NewSessionOptions())
@@ -423,6 +435,7 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	exec := model.MustNewExec(backend, store, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
 		//fmt.Printf("Exec inputs (tokens, mask, types): %s, %s, %s\n", tokenIDs.Shape(), attentionMask.Shape(), tokenTypeIDs.Shape())
 		g := tokenIDs.Graph()
+		scope.SetTraining(g, false) // Inference only.
 		outputs := onnxModel.CallGraph(scope, g,
 			map[string]*graph.Node{
 				"input_ids":      tokenIDs,
@@ -458,6 +471,18 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	maxSeqLen := 0
 	for _, example := range examples {
 		maxSeqLen = max(maxSeqLen, len(example.Encoding[0]))
+	}
+
+	if *flagSaveONNX != "" && modelonnx.IsONNX(backend) {
+		inputShapes := []shapes.Shape{
+			shapes.Make(dtypes.Int64, batchSize, maxSeqLen),
+			shapes.Make(dtypes.Int64, batchSize, maxSeqLen),
+			shapes.Make(dtypes.Int64, batchSize, maxSeqLen),
+		}
+		inputNames := []string{"input_ids", "attention_mask", "token_type_ids"}
+		outputNames := []string{"last_hidden_state"}
+		must.M(modelonnx.SaveToFile(backend, exec, *flagSaveONNX, inputShapes, inputNames, outputNames))
+		fmt.Printf("Saved ONNX graph to %q\n", *flagSaveONNX)
 	}
 
 	var pools sync.Map
