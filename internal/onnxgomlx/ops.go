@@ -21,6 +21,7 @@ import (
 	"github.com/gomlx/gomlx/ml/layers/lstm"
 	"github.com/gomlx/gomlx/ml/layers/norm"
 	"github.com/gomlx/gomlx/ml/model"
+	"github.com/gomlx/gomlx/ml/nn"
 	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/pkg/errors"
 )
@@ -2384,59 +2385,7 @@ func convertLayerNormalization(_ *Model, _ map[string]*Node, node *protos.NodePr
 		axes[i] = axis + i
 	}
 
-	// Reshape scale and bias to match input rank for broadcasting
-	// Scale/bias have shape matching the normalized dimensions
-	// Need to add leading 1s to match the input rank
-	if scale.Rank() < inputRank {
-		scaleShape := make([]int, inputRank)
-		// Set leading dimensions to 1
-		for i := 0; i < axis; i++ {
-			scaleShape[i] = 1
-		}
-		// Copy the scale dimensions for the normalized axes
-		scaleDims := scale.Shape().Dimensions
-		scaleRank := len(scaleDims)
-		for i := axis; i < inputRank; i++ {
-			scaleIdx := i - axis
-			if scaleIdx >= scaleRank {
-				exceptions.Panicf("LayerNormalization: scale tensor has insufficient dimensions (rank=%d) for input rank=%d and axis=%d",
-					scaleRank, inputRank, axis)
-			}
-			scaleShape[i] = scaleDims[scaleIdx]
-		}
-		scale = Reshape(scale, scaleShape...)
-		if bias != nil {
-			biasDims := bias.Shape().Dimensions
-			biasShape := make([]int, inputRank)
-			for i := 0; i < axis; i++ {
-				biasShape[i] = 1
-			}
-			for i := axis; i < inputRank; i++ {
-				biasShape[i] = biasDims[i-axis]
-			}
-			bias = Reshape(bias, biasShape...)
-		}
-	}
-
-	// Calculate mean and variance over the normalization axes
-	// Use ReduceAndKeep to preserve dimensions for broadcasting
-	mean := ReduceAndKeep(x, ReduceMean, axes...)
-	// Variance calculation: E[(X - mean)^2]
-	centered := Sub(x, mean)
-	variance := ReduceAndKeep(Square(centered), ReduceMean, axes...)
-
-	// Normalize: (X - mean) / Sqrt(variance + epsilon)
-	normalized := Div(centered, Sqrt(Add(variance, Scalar(x.Graph(), x.DType(), epsilon))))
-
-	// Apply scale (gamma)
-	result := Mul(normalized, scale)
-
-	// Apply bias (beta) if provided
-	if bias != nil {
-		result = Add(result, bias)
-	}
-
-	return result
+	return nn.LayerNorm(x, axes, float64(epsilon), scale, bias, nil)
 }
 
 // convertSimplifiedLayerNormalization converts the corresponding ONNX node to GoMLX nodes.
