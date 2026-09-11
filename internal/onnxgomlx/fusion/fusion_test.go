@@ -816,6 +816,80 @@ func TestDetectMulScaledSDPAPattern(t *testing.T) {
 	assert.InDelta(t, float64(scaleVal), p.Scale, 1e-6)
 }
 
+// TestDetectSDPAWithConstantExpressionScale tests SDPA detection where the scale factor
+// is computed via a constant subgraph (e.g. Sqrt -> Div) rather than a direct constant.
+func TestDetectSDPAWithConstantExpressionScale(t *testing.T) {
+	graph := &protos.GraphProto{
+		Input: []*protos.ValueInfoProto{
+			makeValueInfo("Q", []int64{1, 2, 4, 8}),
+			makeValueInfo("K", []int64{1, 2, 4, 8}),
+			makeValueInfo("V", []int64{1, 2, 4, 8}),
+		},
+		Output: []*protos.ValueInfoProto{
+			makeValueInfo("output", []int64{1, 2, 4, 8}),
+		},
+		Initializer: []*protos.TensorProto{
+			{
+				Name:      "dim_const",
+				Dims:      []int64{1},
+				DataType:  int32(protos.TensorProto_INT64),
+				Int64Data: []int64{8},
+			},
+			makeScalarFloatTensorProto("one_const", 1.0),
+		},
+		Node: []*protos.NodeProto{
+			{OpType: "Cast", Input: []string{"dim_const"}, Output: []string{"dim_float"}, Attribute: []*protos.AttributeProto{
+				{Name: "to", Type: protos.AttributeProto_INT, I: int64(protos.TensorProto_FLOAT)},
+			}},
+			{OpType: "Sqrt", Input: []string{"dim_float"}, Output: []string{"sqrt_dim"}},
+			{OpType: "Div", Input: []string{"one_const", "sqrt_dim"}, Output: []string{"scale_expr"}},
+
+			{
+				OpType: "Transpose", Input: []string{"K"}, Output: []string{"K_T"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "perm", Type: protos.AttributeProto_INTS, Ints: []int64{0, 1, 3, 2}},
+				},
+			},
+			{OpType: "MatMul", Input: []string{"Q", "K_T"}, Output: []string{"qk"}},
+			{OpType: "Mul", Input: []string{"qk", "scale_expr"}, Output: []string{"qk_scaled"}},
+			{
+				OpType: "Softmax", Input: []string{"qk_scaled"}, Output: []string{"attn_weights"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "axis", Type: protos.AttributeProto_INT, I: -1},
+				},
+			},
+			{OpType: "MatMul", Input: []string{"attn_weights", "V"}, Output: []string{"output"}},
+		},
+	}
+
+	m := buildTestModel(t, graph)
+
+	require.Len(t, m.DetectedFusions, 1, "expected 1 fusion")
+	cand := m.DetectedFusions["output"]
+	require.NotNil(t, cand)
+	assert.Equal(t, "SDPA", cand.Name())
+
+	sdpa, ok := cand.(*sdpaCandidate)
+	require.True(t, ok)
+	assert.Equal(t, "scale_expr", sdpa.params.ScaleNodeName)
+	assert.Equal(t, 0.0, sdpa.params.Scale) // deferred to emit time
+
+	qData := make([]float32, 1*2*4*8)
+	kData := make([]float32, 1*2*4*8)
+	vData := make([]float32, 1*2*4*8)
+	for i := range qData {
+		qData[i] = float32(i%7) * 0.1
+		kData[i] = float32(i%5) * 0.1
+		vData[i] = float32(i%3) * 0.1
+	}
+
+	runFusedVsUnfused(t, graph, map[string]*tensors.Tensor{
+		"Q": tensors.FromFlatDataAndDimensions(qData, 1, 2, 4, 8),
+		"K": tensors.FromFlatDataAndDimensions(kData, 1, 2, 4, 8),
+		"V": tensors.FromFlatDataAndDimensions(vData, 1, 2, 4, 8),
+	})
+}
+
 // buildTestModel creates a onnxgomlx.Model from a GraphProto, wiring up all the maps that onnxgomlx.Parse() normally creates.
 func buildTestModel(t *testing.T, graph *protos.GraphProto) *onnxgomlx.Model {
 	t.Helper()
