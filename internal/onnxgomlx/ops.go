@@ -15,6 +15,7 @@ import (
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
 	timage "github.com/gomlx/gomlx/core/tensors/images"
+	"github.com/gomlx/gomlx/ml/layers/activation"
 	"github.com/gomlx/gomlx/ml/layers/attention"
 	"github.com/gomlx/gomlx/ml/layers/attention/pos"
 	"github.com/gomlx/gomlx/ml/layers/lstm"
@@ -186,6 +187,45 @@ func (m *Model) convertClip(_ *protos.NodeProto, inputs []*Node) *Node {
 		return m.convertBinaryOp(Min, inputs[0], inputs[2])
 	}
 	return m.convertBinaryOp(Min, inputs[2], m.convertBinaryOp(Max, inputs[0], inputs[1]))
+}
+
+// convertLeakyRelu converts an ONNX LeakyRelu node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__LeakyRelu.html
+func (m *Model) convertLeakyRelu(node *protos.NodeProto, inputs []*Node) *Node {
+	alpha := float64(GetFloatAttrOr(node, "alpha", 0.01))
+	x := m.onnxImplicitFloatPromotion(inputs[0])
+	return activation.LeakyReluWith(x, alpha)
+}
+
+// convertHardSigmoid converts an ONNX HardSigmoid node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__HardSigmoid.html
+func (m *Model) convertHardSigmoid(node *protos.NodeProto, inputs []*Node) *Node {
+	alpha := float64(GetFloatAttrOr(node, "alpha", 0.2))
+	beta := float64(GetFloatAttrOr(node, "beta", 0.5))
+	x := m.onnxImplicitFloatPromotion(inputs[0])
+	return activation.HardSigmoidWith(x, alpha, beta)
+}
+
+// convertSelu converts an ONNX Selu node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Selu.html
+func (m *Model) convertSelu(node *protos.NodeProto, inputs []*Node) *Node {
+	alpha := float64(GetFloatAttrOr(node, "alpha", float32(activation.SeluAlpha)))
+	gamma := float64(GetFloatAttrOr(node, "gamma", float32(activation.SeluScale)))
+	x := m.onnxImplicitFloatPromotion(inputs[0])
+	if math.Abs(alpha-activation.SeluAlpha) < 1e-4 && math.Abs(gamma-activation.SeluScale) < 1e-4 {
+		return activation.Selu(x)
+	}
+	xWhere := Where(GreaterThan(x, ScalarZero(x.Graph(), x.DType())),
+		x,
+		MulScalar(MinusOne(Exp(x)), alpha),
+	)
+	return MulScalar(xWhere, gamma)
 }
 
 // convertWhere converts a ONNX node to a GoMLX node.

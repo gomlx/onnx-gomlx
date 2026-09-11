@@ -1,6 +1,8 @@
 package fusion
 
 import (
+	"math"
+
 	"github.com/gomlx/compute"
 	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/ml/layers/activation"
@@ -27,7 +29,7 @@ type denseActivationCandidate struct {
 	externalInputs  []string
 }
 
-func (c *denseActivationCandidate) Name() string                     { return "DenseGelu" }
+func (c *denseActivationCandidate) Name() string                     { return "Dense" + c.params.ActivationType.String() }
 func (c *denseActivationCandidate) Score() float32                   { return 50.0 }
 func (c *denseActivationCandidate) OutputNames() []string            { return []string{c.params.OutputName} }
 func (c *denseActivationCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
@@ -54,7 +56,7 @@ func init() {
 
 // detectDenseActivationCandidates scans the ONNX graph for:
 //
-//	MatMul(x, W) → [Add(·, bias)] → Gelu(·)
+//	MatMul(x, W) → [Add(·, bias)] → Activation(·)
 //
 // and returns FusionCandidates for each match.
 func detectDenseActivationCandidates(m *onnxgomlx.Model) []onnxgomlx.FusionCandidate {
@@ -71,7 +73,7 @@ func detectDenseActivationCandidates(m *onnxgomlx.Model) []onnxgomlx.FusionCandi
 	return candidates
 }
 
-// tryMatchDenseActivation attempts to match MatMul → [Add bias] → Gelu/FastGelu starting from a MatMul node.
+// tryMatchDenseActivation attempts to match MatMul → [Add bias] → Activation starting from a MatMul node.
 func tryMatchDenseActivation(m *onnxgomlx.Model, consumers map[string][]*protos.NodeProto, matmulNode *protos.NodeProto) *denseActivationCandidate {
 	xName := matmulNode.Input[0]
 	weightName := matmulNode.Input[1]
@@ -91,9 +93,8 @@ func tryMatchDenseActivation(m *onnxgomlx.Model, consumers map[string][]*protos.
 	internalNodes := map[*protos.NodeProto]bool{matmulNode: true}
 	internalOutputs := map[string]bool{}
 
-	switch next.OpType {
-	case "Add":
-		// MatMul → Add(bias) → Gelu/FastGelu?
+	if next.OpType == "Add" {
+		// MatMul → Add(bias) → Activation?
 		biasName := onnxgraph.OtherBinaryOpInput(next, matmulOut)
 		if biasName == "" || !m.IsConstant(biasName) {
 			return nil
@@ -105,16 +106,16 @@ func tryMatchDenseActivation(m *onnxgomlx.Model, consumers map[string][]*protos.
 		internalOutputs[matmulOut] = true
 		afterBiasOut := next.Output[0]
 
-		// Now look for Gelu or FastGelu after Add.
-		geluNode := onnxgraph.SoleConsumer(consumers, afterBiasOut)
-		actType := geluActivationType(geluNode)
+		// Now look for supported Activation after Add.
+		actNode := onnxgraph.SoleConsumer(consumers, afterBiasOut)
+		actType := denseActivationType(actNode)
 		if actType == activation.TypeNone {
 			return nil
 		}
-		if len(geluNode.Output) == 0 {
+		if len(actNode.Output) == 0 {
 			return nil
 		}
-		internalNodes[geluNode] = true
+		internalNodes[actNode] = true
 		internalOutputs[afterBiasOut] = true
 
 		if onnxgraph.HasExternalConsumers(internalOutputs, consumers, internalNodes) {
@@ -127,16 +128,17 @@ func tryMatchDenseActivation(m *onnxgomlx.Model, consumers map[string][]*protos.
 				XInputName:     xName,
 				WeightName:     weightName,
 				BiasName:       biasName,
-				OutputName:     geluNode.Output[0],
+				OutputName:     actNode.Output[0],
 				ActivationType: actType,
 			},
 			internalOutputs: internalOutputs,
 			externalInputs:  externalInputs,
 		}
+	}
 
-	case "Gelu", "FastGelu":
-		// MatMul → Gelu/FastGelu (no bias).
-		actType := geluActivationType(next)
+	// MatMul → Activation (no bias).
+	actType := denseActivationType(next)
+	if actType != activation.TypeNone {
 		if len(next.Output) == 0 {
 			return nil
 		}
@@ -163,17 +165,47 @@ func tryMatchDenseActivation(m *onnxgomlx.Model, consumers map[string][]*protos.
 	return nil
 }
 
-// geluActivationType returns the activation type for a Gelu or FastGelu node,
+// denseActivationType returns the activation type for an ONNX node that can be fused into Dense,
 // or TypeNone if the node is nil or not a recognized activation.
-func geluActivationType(node *protos.NodeProto) activation.Type {
+func denseActivationType(node *protos.NodeProto) activation.Type {
 	if node == nil {
 		return activation.TypeNone
 	}
 	switch node.OpType {
+	case "Relu":
+		return activation.TypeRelu
 	case "Gelu":
 		return activation.TypeGelu
 	case "FastGelu":
 		return activation.TypeGeluApprox
+	case "Sigmoid":
+		return activation.TypeSigmoid
+	case "Tanh":
+		return activation.TypeTanh
+	case "Swish", "Silu":
+		return activation.TypeSilu
+	case "HardSwish":
+		return activation.TypeHardSwish
+	case "HardSigmoid":
+		alpha := onnxgomlx.GetFloatAttrOr(node, "alpha", 0.2)
+		beta := onnxgomlx.GetFloatAttrOr(node, "beta", 0.5)
+		if math.Abs(float64(alpha)-0.2) < 1e-4 && math.Abs(float64(beta)-0.5) < 1e-4 {
+			return activation.TypeHardSigmoid
+		}
+		return activation.TypeNone
+	case "LeakyRelu":
+		alpha := onnxgomlx.GetFloatAttrOr(node, "alpha", 0.01)
+		if math.Abs(float64(alpha)-0.3) < 1e-4 {
+			return activation.TypeLeakyRelu
+		}
+		return activation.TypeNone
+	case "Selu":
+		alpha := float64(onnxgomlx.GetFloatAttrOr(node, "alpha", float32(activation.SeluAlpha)))
+		gamma := float64(onnxgomlx.GetFloatAttrOr(node, "gamma", float32(activation.SeluScale)))
+		if math.Abs(alpha-activation.SeluAlpha) < 1e-4 && math.Abs(gamma-activation.SeluScale) < 1e-4 {
+			return activation.TypeSelu
+		}
+		return activation.TypeNone
 	default:
 		return activation.TypeNone
 	}

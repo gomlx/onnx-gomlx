@@ -488,6 +488,16 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 		result = activation.Gelu(inputs[0])
 	case "FastGelu":
 		result = activation.GeluApproximate(inputs[0])
+	case "LeakyRelu":
+		result = m.convertLeakyRelu(node, inputs)
+	case "Selu":
+		result = m.convertSelu(node, inputs)
+	case "HardSigmoid":
+		result = m.convertHardSigmoid(node, inputs)
+	case "HardSwish":
+		result = activation.HardSwish(m.onnxImplicitFloatPromotion(inputs[0]))
+	case "Swish", "Silu":
+		result = activation.Swish(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Abs":
 		result = Abs(inputs[0])
 	case "Neg":
@@ -513,15 +523,13 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 	case "BitwiseNot":
 		result = BitwiseNot(inputs[0])
 	case "Tanh":
-		result = Tanh(m.onnxImplicitFloatPromotion(inputs[0]))
+		result = activation.Apply(activation.TypeTanh, m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Sin":
 		result = Sin(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Cos":
 		result = Cos(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Sigmoid":
-		result = Sigmoid(m.onnxImplicitFloatPromotion(inputs[0]))
-	case "HardSwish":
-		result = activation.HardSwish(inputs[0])
+		result = activation.Apply(activation.TypeSigmoid, m.onnxImplicitFloatPromotion(inputs[0]))
 	case "IsNaN":
 		result = IsNaN(inputs[0])
 	case "Reciprocal":

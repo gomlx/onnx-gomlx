@@ -656,6 +656,142 @@ func TestDenseGeluFusionIntegration(t *testing.T) {
 	})
 }
 
+// TestDetectDenseActivationPatterns tests that MatMul → Add(bias) → Activation is detected for various activations.
+func TestDetectDenseActivationPatterns(t *testing.T) {
+	testCases := []struct {
+		opType   string
+		attrs    []*protos.AttributeProto
+		expected string
+	}{
+		{opType: "Relu", expected: "DenseRelu"},
+		{opType: "Sigmoid", expected: "DenseSigmoid"},
+		{opType: "Tanh", expected: "DenseTanh"},
+		{opType: "HardSwish", expected: "DenseHardSwish"},
+		{
+			opType: "LeakyRelu",
+			attrs: []*protos.AttributeProto{
+				{Name: "alpha", Type: protos.AttributeProto_FLOAT, F: 0.3},
+			},
+			expected: "DenseLeakyRelu",
+		},
+		{
+			opType: "HardSigmoid",
+			attrs: []*protos.AttributeProto{
+				{Name: "alpha", Type: protos.AttributeProto_FLOAT, F: 0.2},
+				{Name: "beta", Type: protos.AttributeProto_FLOAT, F: 0.5},
+			},
+			expected: "DenseHardSigmoid",
+		},
+		{opType: "Selu", expected: "DenseSelu"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.opType, func(t *testing.T) {
+			graph := &protos.GraphProto{
+				Input: []*protos.ValueInfoProto{
+					makeValueInfo("x", []int64{2, 64}),
+				},
+				Output: []*protos.ValueInfoProto{
+					makeValueInfo("act_out", []int64{2, 128}),
+				},
+				Initializer: []*protos.TensorProto{
+					makeFloatTensorProto("W", []int64{64, 128}, make([]float32, 64*128)),
+					makeFloatTensorProto("B", []int64{128}, make([]float32, 128)),
+				},
+				ValueInfo: []*protos.ValueInfoProto{
+					makeValueInfo("mm_out", []int64{2, 128}),
+					makeValueInfo("bias_out", []int64{2, 128}),
+				},
+				Node: []*protos.NodeProto{
+					{OpType: "MatMul", Input: []string{"x", "W"}, Output: []string{"mm_out"}},
+					{OpType: "Add", Input: []string{"mm_out", "B"}, Output: []string{"bias_out"}},
+					{OpType: tc.opType, Input: []string{"bias_out"}, Output: []string{"act_out"}, Attribute: tc.attrs},
+				},
+			}
+
+			m := buildTestModel(t, graph)
+			cand := m.DetectedFusions["act_out"]
+			require.NotNil(t, cand, "expected fusion for 'act_out'")
+			assert.Equal(t, tc.expected, cand.Name())
+		})
+	}
+}
+
+// TestDenseActivationFusionIntegration runs fused Dense+Activation paths and compares with unfused output.
+func TestDenseActivationFusionIntegration(t *testing.T) {
+	inFeatures := 8
+	outFeatures := 16
+
+	wData := make([]float32, inFeatures*outFeatures)
+	bData := make([]float32, outFeatures)
+	for i := range wData {
+		wData[i] = float32(i%7)*0.1 - 0.3
+	}
+	for i := range bData {
+		bData[i] = float32(i%3) * 0.05
+	}
+
+	xData := make([]float32, 2*inFeatures)
+	for i := range xData {
+		xData[i] = float32(i%11)*0.1 - 0.5
+	}
+
+	testCases := []struct {
+		opType string
+		attrs  []*protos.AttributeProto
+	}{
+		{opType: "Relu"},
+		{opType: "Sigmoid"},
+		{opType: "Tanh"},
+		{opType: "HardSwish"},
+		{
+			opType: "LeakyRelu",
+			attrs: []*protos.AttributeProto{
+				{Name: "alpha", Type: protos.AttributeProto_FLOAT, F: 0.3},
+			},
+		},
+		{
+			opType: "HardSigmoid",
+			attrs: []*protos.AttributeProto{
+				{Name: "alpha", Type: protos.AttributeProto_FLOAT, F: 0.2},
+				{Name: "beta", Type: protos.AttributeProto_FLOAT, F: 0.5},
+			},
+		},
+		{opType: "Selu"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.opType, func(t *testing.T) {
+			graphProto := &protos.GraphProto{
+				Name: "dense_" + tc.opType + "_test",
+				Input: []*protos.ValueInfoProto{
+					makeValueInfo("x", []int64{2, int64(inFeatures)}),
+				},
+				Output: []*protos.ValueInfoProto{
+					makeValueInfo("out", []int64{2, int64(outFeatures)}),
+				},
+				Initializer: []*protos.TensorProto{
+					makeFloatTensorProto("W", []int64{int64(inFeatures), int64(outFeatures)}, wData),
+					makeFloatTensorProto("B", []int64{int64(outFeatures)}, bData),
+				},
+				ValueInfo: []*protos.ValueInfoProto{
+					makeValueInfo("mm_out", []int64{2, int64(outFeatures)}),
+					makeValueInfo("bias_out", []int64{2, int64(outFeatures)}),
+				},
+				Node: []*protos.NodeProto{
+					{OpType: "MatMul", Input: []string{"x", "W"}, Output: []string{"mm_out"}},
+					{OpType: "Add", Input: []string{"mm_out", "B"}, Output: []string{"bias_out"}},
+					{OpType: tc.opType, Input: []string{"bias_out"}, Output: []string{"out"}, Attribute: tc.attrs},
+				},
+			}
+
+			runFusedVsUnfused(t, graphProto, map[string]*tensors.Tensor{
+				"x": tensors.FromFlatDataAndDimensions(xData, 2, inFeatures),
+			})
+		})
+	}
+}
+
 // TestFreeUnusedVariables verifies that FreeUnusedVariables removes initializers
 // that are no longer referenced by any node input while retaining fusion-referenced ones.
 func TestFreeUnusedVariables(t *testing.T) {
