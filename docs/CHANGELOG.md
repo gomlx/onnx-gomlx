@@ -1,3 +1,7 @@
+# 2026/09/12
+
+- Enabled `attention.QKVProjection` fusion in ONNX graph conversion for dynamic shapes, delegating directly to `FusedAttentionQKVProjection` instead of falling back to separate `MatMul`, `Slice`, and `Add` nodes.
+
 # 2026/08/17
 
 - Removed `internal/protos`, and instead use `github.com/gomlx/compute-onnx/support/protos`, which is identical

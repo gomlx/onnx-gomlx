@@ -52,39 +52,6 @@ func (c *qkvDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs map[
 		biasV = convertedOutputs[p.BiasVName]
 	}
 
-	if x.Shape().IsDynamic() {
-		// Emit dynamic-safe decomposed QKV projection using MatMul:
-		// x is [..., inFeatures], wQKV is [inFeatures, totalOut].
-		// MatMul handles leading batch dimensions natively (including dynamic ones).
-		combined := MatMul(x, wQKV)
-		totalOut := p.QDim + 2*p.KVDim
-		lastAxis := x.Rank() - 1
-		sliceFor := func(start, end int) *Node {
-			specs := make([]SliceAxisSpec, x.Rank())
-			for i := range lastAxis {
-				specs[i] = AxisRange()
-			}
-			specs[lastAxis] = AxisRange(start, end)
-			return Slice(combined, specs...)
-		}
-		q := sliceFor(0, p.QDim)
-		k := sliceFor(p.QDim, p.QDim+p.KVDim)
-		v := sliceFor(p.QDim+p.KVDim, totalOut)
-		if biasQ != nil {
-			q = Add(q, ExpandLeftToRank(biasQ, q.Rank()))
-		}
-		if biasK != nil {
-			k = Add(k, ExpandLeftToRank(biasK, k.Rank()))
-		}
-		if biasV != nil {
-			v = Add(v, ExpandLeftToRank(biasV, v.Rank()))
-		}
-		convertedOutputs[p.QOutputName] = q
-		convertedOutputs[p.KOutputName] = k
-		convertedOutputs[p.VOutputName] = v
-		return
-	}
-
 	q, k, v := attention.QKVProjection(x, wQKV, biasQ, biasK, biasV, p.QDim, p.KVDim)
 	convertedOutputs[p.QOutputName] = q
 	convertedOutputs[p.KOutputName] = k
