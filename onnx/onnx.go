@@ -47,6 +47,10 @@ type Model interface {
 	// PrioritizeFloat16 configures dtype promotion to prefer Float16 over Float32.
 	PrioritizeFloat16() Model
 
+	// ForceApproximateGelu configures whether to convert Gelu operations to GeluApproximate
+	// automatically, irrespective of the 'approximate' attribute in the ONNX Gelu operation.
+	ForceApproximateGelu(enabled bool) Model
+
 	// WithBaseDir sets the base directory for the model. This is used for resolving external data file paths.
 	// This must be set before any reading of the model data (e.g.: VariablesToScope or CallGraph).
 	//

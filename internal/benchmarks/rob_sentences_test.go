@@ -34,6 +34,7 @@ import (
 
 var (
 	flagDynamic          = flag.Bool("dynamic", true, "Enables dynamic shapes use on TestRobSentences_BenchXLA if backend supports it")
+	flagGeluApproximate  = flag.Bool("gelu_approximate", false, "Force approximate GELU for ONNX models")
 	flagBenchConcurrency []int
 	flagBenchBatchSizes  []int
 	flagSaveONNX         = flag.String("save_onnx", "", "If set and backend is ONNX, save the graph after building it to the file path")
@@ -473,6 +474,9 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 	repoModel := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
 	onnxModelPath := must.M1(repoModel.DownloadFile("model.onnx"))
 	onnxModel := must.M1(parser.ParseFile(onnxModelPath))
+	if *flagGeluApproximate {
+		onnxModel.ForceApproximateGelu(true)
+	}
 
 	store := model.NewStore()
 	must.M(onnxModel.VariablesToScope(store.RootScope()))

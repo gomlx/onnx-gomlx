@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/compute/gobackend"
 	"github.com/gomlx/compute/shapes"
@@ -11,7 +12,6 @@ import (
 	"github.com/gomlx/gomlx/core/graph/graphtest"
 	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/gomlx/gomlx/support/testutil"
-	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -2448,5 +2448,65 @@ func TestActivations(t *testing.T) {
 		return
 	}, []any{
 		[]float32{0.0, 0.0, 4.0},
+	}, 1e-4)
+}
+
+func TestGelu(t *testing.T) {
+	m := &Model{}
+	m.NodeOutputToNode = make(map[string]*protos.NodeProto)
+
+	// Test standard GELU (exact)
+	graphtest.RunTestGraphFn(t, "Gelu(exact)", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{-1.0, 0.0, 1.0})
+		node := &protos.NodeProto{OpType: "Gelu", Input: []string{"x"}, Output: []string{"y"}}
+		converted := map[string]*Node{"x": x}
+		m.convertNode(nil, g, node, converted)
+		inputs = []*Node{x}
+		outputs = []*Node{converted["y"]}
+		return
+	}, []any{
+		[]float32{-0.15865526, 0.0, 0.8413447},
+	}, 1e-4)
+
+	// Test ONNX Gelu with approximate="tanh"
+	graphtest.RunTestGraphFn(t, "Gelu(tanh)", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{-1.0, 0.0, 1.0})
+		node := &protos.NodeProto{
+			OpType: "Gelu",
+			Input:  []string{"x"},
+			Output: []string{"y"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "approximate", Type: protos.AttributeProto_STRING, S: []byte("tanh")},
+			},
+		}
+		converted := map[string]*Node{"x": x}
+		m.convertNode(nil, g, node, converted)
+		inputs = []*Node{x}
+		outputs = []*Node{converted["y"]}
+		return
+	}, []any{
+		[]float32{-0.158808, 0.0, 0.841192},
+	}, 1e-4)
+
+	// Test ForceApproximateGelu(true)
+	mApprox := &Model{forceApproximateGelu: true}
+	mApprox.NodeOutputToNode = make(map[string]*protos.NodeProto)
+	graphtest.RunTestGraphFn(t, "Gelu(forced_approximate)", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{-1.0, 0.0, 1.0})
+		node := &protos.NodeProto{
+			OpType: "Gelu",
+			Input:  []string{"x"},
+			Output: []string{"y"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "approximate", Type: protos.AttributeProto_STRING, S: []byte("none")},
+			},
+		}
+		converted := map[string]*Node{"x": x}
+		mApprox.convertNode(nil, g, node, converted)
+		inputs = []*Node{x}
+		outputs = []*Node{converted["y"]}
+		return
+	}, []any{
+		[]float32{-0.158808, 0.0, 0.841192},
 	}, 1e-4)
 }

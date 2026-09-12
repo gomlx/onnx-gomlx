@@ -4,13 +4,13 @@ import (
 	"math"
 
 	"github.com/gomlx/compute"
+	"github.com/gomlx/compute-onnx/support/protos"
 	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/ml/layers/activation"
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/ml/nn"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
-	"github.com/gomlx/compute-onnx/support/protos"
 )
 
 // DenseActivationParams holds parameters for fused MatMul + optional bias + activation.
@@ -24,6 +24,7 @@ type DenseActivationParams struct {
 
 // denseActivationCandidate implements onnxgomlx.FusionCandidate for fused Dense+Activation.
 type denseActivationCandidate struct {
+	m               *onnxgomlx.Model
 	params          *DenseActivationParams
 	internalOutputs map[string]bool
 	externalInputs  []string
@@ -46,7 +47,12 @@ func (c *denseActivationCandidate) Emit(_ *model.Scope, g *Graph, convertedOutpu
 		bias = convertedOutputs[p.BiasName]
 	}
 
-	result := nn.Dense(x, weight, bias, compute.DenseLayoutInputOutputs, p.ActivationType)
+	actType := p.ActivationType
+	if c.m != nil && c.m.ForceApproximateGeluEnabled() && actType == activation.TypeGelu {
+		actType = activation.TypeGeluApprox
+	}
+
+	result := nn.Dense(x, weight, bias, compute.DenseLayoutInputOutputs, actType)
 	convertedOutputs[p.OutputName] = result
 }
 
@@ -134,6 +140,7 @@ func tryMatchDenseActivation(m *onnxgomlx.Model, consumers map[string][]*protos.
 
 		externalInputs := []string{xName, weightName, biasName}
 		return &denseActivationCandidate{
+			m: m,
 			params: &DenseActivationParams{
 				XInputName:     xName,
 				WeightName:     weightName,
@@ -173,6 +180,7 @@ func tryMatchDenseActivation(m *onnxgomlx.Model, consumers map[string][]*protos.
 
 	externalInputs := []string{xName, weightName}
 	return &denseActivationCandidate{
+		m: m,
 		params: &DenseActivationParams{
 			XInputName:     xName,
 			WeightName:     weightName,
@@ -303,6 +311,9 @@ func denseActivationType(node *protos.NodeProto) activation.Type {
 	case "Relu":
 		return activation.TypeRelu
 	case "Gelu":
+		if onnxgomlx.GetStringAttrOr(node, "approximate", "none") == "tanh" {
+			return activation.TypeGeluApprox
+		}
 		return activation.TypeGelu
 	case "FastGelu":
 		return activation.TypeGeluApprox

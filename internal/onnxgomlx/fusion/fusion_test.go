@@ -4,11 +4,11 @@ import (
 	"math"
 	"testing"
 
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/gobackend"
 	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
-	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -654,6 +654,74 @@ func TestDenseGeluFusionIntegration(t *testing.T) {
 	runFusedVsUnfused(t, graphProto, map[string]*tensors.Tensor{
 		"x": tensors.FromFlatDataAndDimensions(xData, 2, inFeatures),
 	})
+}
+
+// TestDenseGeluForceApproximate tests that ForceApproximateGelu converts DenseGelu to approximate GELU.
+func TestDenseGeluForceApproximate(t *testing.T) {
+	inFeatures := 8
+	outFeatures := 16
+
+	wData := make([]float32, inFeatures*outFeatures)
+	bData := make([]float32, outFeatures)
+
+	graphProto := &protos.GraphProto{
+		Name: "dense_gelu_force_approx_test",
+		Input: []*protos.ValueInfoProto{
+			makeValueInfo("x", []int64{2, int64(inFeatures)}),
+		},
+		Output: []*protos.ValueInfoProto{
+			makeValueInfo("gelu_out", []int64{2, int64(outFeatures)}),
+		},
+		Initializer: []*protos.TensorProto{
+			makeFloatTensorProto("W", []int64{int64(inFeatures), int64(outFeatures)}, wData),
+			makeFloatTensorProto("B", []int64{int64(outFeatures)}, bData),
+		},
+		ValueInfo: []*protos.ValueInfoProto{
+			makeValueInfo("mm_out", []int64{2, int64(outFeatures)}),
+			makeValueInfo("bias_out", []int64{2, int64(outFeatures)}),
+		},
+		Node: []*protos.NodeProto{
+			{OpType: "MatMul", Input: []string{"x", "W"}, Output: []string{"mm_out"}},
+			{OpType: "Add", Input: []string{"mm_out", "B"}, Output: []string{"bias_out"}},
+			{OpType: "Gelu", Input: []string{"bias_out"}, Output: []string{"gelu_out"}},
+		},
+	}
+
+	m := buildTestModel(t, graphProto)
+	cand := m.DetectedFusions["gelu_out"]
+	require.NotNil(t, cand)
+
+	// Before ForceApproximateGelu
+	assert.False(t, m.ForceApproximateGeluEnabled())
+
+	// Enable ForceApproximateGelu
+	m.ForceApproximateGelu(true)
+	assert.True(t, m.ForceApproximateGeluEnabled())
+
+	backend, err := gobackend.New("")
+	require.NoError(t, err)
+	g := NewGraph(backend, "test_force_approx")
+	xData2 := make([][]float32, 2)
+	for i := range xData2 {
+		xData2[i] = make([]float32, inFeatures)
+	}
+	wData2 := make([][]float32, inFeatures)
+	for i := range wData2 {
+		wData2[i] = make([]float32, outFeatures)
+	}
+	bData2 := make([]float32, outFeatures)
+	x := Const(g, xData2)
+	w := Const(g, wData2)
+	b := Const(g, bData2)
+	converted := map[string]*Node{
+		"x": x,
+		"W": w,
+		"B": b,
+	}
+	cand.Emit(nil, g, converted)
+	outNode := converted["gelu_out"]
+	require.NotNil(t, outNode)
+	assert.Contains(t, outNode.String(), "GeluApprox")
 }
 
 // TestDetectDenseActivationPatterns tests that MatMul → Add(bias) → Activation is detected for various activations.

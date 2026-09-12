@@ -5,6 +5,7 @@ import (
 	"maps"
 	"runtime"
 
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph"
@@ -12,7 +13,6 @@ import (
 	"github.com/gomlx/gomlx/ml/layers/activation"
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/support/sets"
-	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
 )
 
@@ -485,7 +485,11 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 	case "Relu":
 		result = activation.Relu(inputs[0])
 	case "Gelu":
-		result = activation.Gelu(inputs[0])
+		if m.forceApproximateGelu || GetStringAttrOr(node, "approximate", "none") == "tanh" {
+			result = activation.GeluApproximate(inputs[0])
+		} else {
+			result = activation.Gelu(inputs[0])
+		}
 	case "FastGelu":
 		result = activation.GeluApproximate(inputs[0])
 	case "LeakyRelu":

@@ -4,6 +4,7 @@ import (
 	"math"
 
 	"github.com/gomlx/compute"
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/dtypes"
 	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/ml/layers/activation"
@@ -11,7 +12,6 @@ import (
 	"github.com/gomlx/gomlx/ml/nn"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
-	"github.com/gomlx/compute-onnx/support/protos"
 )
 
 // broadcastQuantScale converts a weight scale node (scalar or 1D [outputDim]) to the
@@ -61,6 +61,7 @@ type QuantizedDenseParams struct {
 
 // quantizedDenseCandidate implements onnxgomlx.FusionCandidate for quantized dense.
 type quantizedDenseCandidate struct {
+	m               *onnxgomlx.Model
 	params          *QuantizedDenseParams
 	outputName      string
 	internalOutputs map[string]bool
@@ -120,7 +121,11 @@ func (c *quantizedDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOutput
 
 	var result *Node
 	if p.HasGelu {
-		result = nn.QuantizedDense(floatInput, b, quant, bias, activation.TypeGelu)
+		actType := activation.TypeGelu
+		if c.m != nil && c.m.ForceApproximateGeluEnabled() {
+			actType = activation.TypeGeluApprox
+		}
+		result = nn.QuantizedDense(floatInput, b, quant, bias, actType)
 	} else {
 		result = nn.QuantizedDense(floatInput, b, quant, bias)
 	}
@@ -305,6 +310,7 @@ func tryMatchQuantizedDense(m *onnxgomlx.Model, matMulNode *protos.NodeProto) *q
 	}
 
 	return &quantizedDenseCandidate{
+		m:               m,
 		params:          params,
 		outputName:      currentOut,
 		internalOutputs: internalOutputs,
@@ -428,6 +434,7 @@ func tryMatchQuantizedDenseDequantLinear(m *onnxgomlx.Model, matMulNode *protos.
 	}
 
 	return &quantizedDenseCandidate{
+		m:               m,
 		params:          params,
 		outputName:      currentOut,
 		internalOutputs: internalOutputs,

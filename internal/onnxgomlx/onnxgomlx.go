@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 
 	"github.com/gomlx/compute"
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/gobackend"
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/gomlx/support/sets"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx/filesreader"
-	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/onnx-gomlx/onnx"
 	"github.com/pkg/errors"
 	"google.golang.org/protobuf/proto"
@@ -45,6 +45,9 @@ type Model struct {
 	// prioritizeFloat16 prefers Float16 over Float32 when promoting dtypes.
 	// Only applies when allowDTypePromotion is true.
 	prioritizeFloat16 bool
+
+	// forceApproximateGelu forces converting Gelu operations to GeluApproximate.
+	forceApproximateGelu bool
 
 	// ExternalDataReader manages memory-mapped external data files for efficient tensor loading.
 	// It is initialized lazily when external data is first accessed.
@@ -256,6 +259,18 @@ func (m *Model) AllowDTypePromotion() onnx.Model {
 func (m *Model) PrioritizeFloat16() onnx.Model {
 	m.prioritizeFloat16 = true
 	return m
+}
+
+// ForceApproximateGelu configures whether to convert Gelu operations to GeluApproximate
+// automatically, irrespective of the 'approximate' attribute in the ONNX Gelu operation.
+func (m *Model) ForceApproximateGelu(enabled bool) onnx.Model {
+	m.forceApproximateGelu = enabled
+	return m
+}
+
+// ForceApproximateGeluEnabled returns whether ForceApproximateGelu is enabled.
+func (m *Model) ForceApproximateGeluEnabled() bool {
+	return m.forceApproximateGelu
 }
 
 // Write will write the ONNX model to the given writer (usually a file).
