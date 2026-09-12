@@ -10,13 +10,15 @@ import (
 	_ "github.com/gomlx/gomlx/backends/default"
 	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/pkg/errors"
-	"github.com/stretchr/testify/require"
 )
 
 // requireSameTensorsFloat32 compares two tensors and fails the test if they are not within a delta margin.
 func requireSameTensorsFloat32(t *testing.T, want, got *tensors.Tensor, delta float64) {
 	// Make sure shapes are the same.
-	require.Truef(t, got.Shape().EqualDimensions(want.Shape()), "Tensors have different shapes: want=%s, got=%s", want.Shape(), got.Shape())
+	if !got.Shape().EqualDimensions(want.Shape()) {
+		t.Errorf("Tensors have different shapes: want=%s, got=%s", want.Shape(), got.Shape())
+		panic(errors.Errorf("tensors have different shapes: want=%s, got=%s", want.Shape(), got.Shape()))
+	}
 	flatIdx := 0
 	gotFlat := tensors.MustCopyFlatData[float32](got)
 	wantFlat := tensors.MustCopyFlatData[float32](want)
