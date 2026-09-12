@@ -15,11 +15,13 @@ import (
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
 	timage "github.com/gomlx/gomlx/core/tensors/images"
+	"github.com/gomlx/gomlx/ml/layers/activation"
 	"github.com/gomlx/gomlx/ml/layers/attention"
 	"github.com/gomlx/gomlx/ml/layers/attention/pos"
 	"github.com/gomlx/gomlx/ml/layers/lstm"
 	"github.com/gomlx/gomlx/ml/layers/norm"
 	"github.com/gomlx/gomlx/ml/model"
+	"github.com/gomlx/gomlx/ml/nn"
 	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/pkg/errors"
 )
@@ -188,6 +190,45 @@ func (m *Model) convertClip(_ *protos.NodeProto, inputs []*Node) *Node {
 	return m.convertBinaryOp(Min, inputs[2], m.convertBinaryOp(Max, inputs[0], inputs[1]))
 }
 
+// convertLeakyRelu converts an ONNX LeakyRelu node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__LeakyRelu.html
+func (m *Model) convertLeakyRelu(node *protos.NodeProto, inputs []*Node) *Node {
+	alpha := float64(GetFloatAttrOr(node, "alpha", 0.01))
+	x := m.onnxImplicitFloatPromotion(inputs[0])
+	return activation.LeakyReluWith(x, alpha)
+}
+
+// convertHardSigmoid converts an ONNX HardSigmoid node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__HardSigmoid.html
+func (m *Model) convertHardSigmoid(node *protos.NodeProto, inputs []*Node) *Node {
+	alpha := float64(GetFloatAttrOr(node, "alpha", 0.2))
+	beta := float64(GetFloatAttrOr(node, "beta", 0.5))
+	x := m.onnxImplicitFloatPromotion(inputs[0])
+	return activation.HardSigmoidWith(x, alpha, beta)
+}
+
+// convertSelu converts an ONNX Selu node to a GoMLX node.
+//
+// See ONNX documentation in:
+// https://onnx.ai/onnx/operators/onnx__Selu.html
+func (m *Model) convertSelu(node *protos.NodeProto, inputs []*Node) *Node {
+	alpha := float64(GetFloatAttrOr(node, "alpha", float32(activation.SeluAlpha)))
+	gamma := float64(GetFloatAttrOr(node, "gamma", float32(activation.SeluScale)))
+	x := m.onnxImplicitFloatPromotion(inputs[0])
+	if math.Abs(alpha-activation.SeluAlpha) < 1e-4 && math.Abs(gamma-activation.SeluScale) < 1e-4 {
+		return activation.Selu(x)
+	}
+	xWhere := Where(GreaterThan(x, ScalarZero(x.Graph(), x.DType())),
+		x,
+		MulScalar(MinusOne(Exp(x)), alpha),
+	)
+	return MulScalar(xWhere, gamma)
+}
+
 // convertWhere converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
@@ -206,8 +247,8 @@ func (m *Model) convertWhere(node *protos.NodeProto, inputs []*Node) *Node {
 // onnxWhere implements ONNX implicit broadcasting rules.
 // inputs is a tuple with (cond, onTrue, onFalse) values.
 func (m *Model) onnxWhere(inputs []*Node) *Node {
-	// Broadcast according to ONNX rules.
-	inputs = onnxBroadcastToCommonShape(inputs)
+	// Expand to common rank according to ONNX rules.
+	inputs = onnxImplicitExpansion(inputs)
 
 	cond, onTrue, onFalse := inputs[0], inputs[1], inputs[2]
 	onTrue, onFalse = m.checkOrPromoteDTypes(onTrue, onFalse)
@@ -865,6 +906,109 @@ func convertUnsqueeze(m *Model, convertedOutputs map[string]*Node, node *protos.
 	return ExpandAxes(inputs[0], axes...)
 }
 
+// isIotaTensor checks if an integer tensor contains sequential integers (0, 1, 2, ...)
+// along the given axis.
+func isIotaTensor(t *tensors.Tensor, axis int) bool {
+	if t == nil || !t.DType().IsInt() {
+		return false
+	}
+	shape := t.Shape()
+	if axis < 0 || axis >= shape.Rank() {
+		return false
+	}
+	dimSize := shape.Dim(axis)
+	if dimSize <= 0 {
+		return false
+	}
+
+	stride := 1
+	for i := axis + 1; i < shape.Rank(); i++ {
+		stride *= shape.Dim(i)
+	}
+
+	if t.DType() == dtypes.Int64 {
+		flat := tensors.MustCopyFlatData[int64](t)
+		for idx, val := range flat {
+			expected := int64((idx / stride) % dimSize)
+			if val != expected {
+				return false
+			}
+		}
+		return true
+	} else if t.DType() == dtypes.Int32 {
+		flat := tensors.MustCopyFlatData[int32](t)
+		for idx, val := range flat {
+			expected := int32((idx / stride) % dimSize)
+			if val != expected {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// findDynamicDimensionSource traces back an ONNX output name to see if it was derived from
+// Shape(source) -> Gather(axis). If found and the source node is dynamic, it returns
+// the converted source node and the axis index.
+func (m *Model) findDynamicDimensionSource(outputName string, convertedOutputs map[string]*Node) (*Node, int, bool) {
+	curr := outputName
+	for {
+		prod, found := m.NodeOutputToNode[curr]
+		if !found || prod == nil {
+			return nil, 0, false
+		}
+		switch prod.OpType {
+		case "Unsqueeze", "Squeeze", "Reshape", "Identity", "Cast":
+			if len(prod.Input) == 0 {
+				return nil, 0, false
+			}
+			curr = prod.Input[0]
+		case "Gather":
+			if len(prod.Input) < 2 {
+				return nil, 0, false
+			}
+			shapeOutputName := prod.Input[0]
+			indicesInputName := prod.Input[1]
+			shapeNode, foundShape := m.NodeOutputToNode[shapeOutputName]
+			if !foundShape || shapeNode == nil || shapeNode.OpType != "Shape" {
+				return nil, 0, false
+			}
+			if len(shapeNode.Input) == 0 {
+				return nil, 0, false
+			}
+			sourceInputName := shapeNode.Input[0]
+			sourceNode := convertedOutputs[sourceInputName]
+			if sourceNode == nil || !sourceNode.Shape().IsDynamic() {
+				return nil, 0, false
+			}
+			idxTensor, err := m.materializeConstantExpression(indicesInputName, convertedOutputs)
+			if err != nil {
+				return nil, 0, false
+			}
+			indices := tensorToInts(idxTensor)
+			if len(indices) != 1 {
+				return nil, 0, false
+			}
+			gatherIdx := indices[0]
+			if gatherIdx < 0 {
+				gatherIdx += sourceNode.Rank()
+			}
+			start := GetIntAttrOr(shapeNode, "start", 0)
+			if start < 0 {
+				start = sourceNode.Rank() + start
+			}
+			axis := start + gatherIdx
+			if axis < 0 || axis >= sourceNode.Rank() {
+				return nil, 0, false
+			}
+			return sourceNode, axis, true
+		default:
+			return nil, 0, false
+		}
+	}
+}
+
 // convertSlice converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
@@ -876,18 +1020,6 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 
 	operand := inputs[0]
 	rank := operand.Rank()
-
-	startsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
-	if err != nil {
-		panic(errors.WithMessagef(err, "while converting 'starts' for node %s", NodeToString(node)))
-	}
-	inputStarts := tensorToInts(startsT)
-
-	endsT, err := m.materializeConstantExpression(node.Input[2], convertedOutputs)
-	if err != nil {
-		panic(errors.WithMessagef(err, "while converting 'ends' for node %s", NodeToString(node)))
-	}
-	inputEnds := tensorToInts(endsT)
 
 	// optional axes param
 	var inputAxes []int
@@ -914,12 +1046,81 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		}
 		inputSteps = tensorToInts(stepsT)
 	} else {
-		// default steps according to spec
-		inputSteps = make([]int, len(inputStarts))
+		inputSteps = make([]int, len(inputAxes))
 		for i := range inputSteps {
 			inputSteps[i] = 1
 		}
 	}
+
+	// Check if this is a dynamic slice (e.g. slicing an iota table by dynamic seq_len):
+	sliceAxis := 0
+	if len(inputAxes) > 0 {
+		sliceAxis = inputAxes[0]
+		if sliceAxis < 0 {
+			sliceAxis += rank
+		}
+	}
+
+	operandT, _ := m.materializeConstantExpression(node.Input[0], convertedOutputs)
+	dynSource, dynAxis, ok := m.findDynamicDimensionSource(node.Input[2], convertedOutputs)
+	if ok {
+		if isIotaTensor(operandT, sliceAxis) {
+			specs := make([]DimensionSpec, rank)
+			for d := range rank {
+				if d == sliceAxis {
+					specs[d] = DimensionSpecFor(dynSource, dynAxis)
+				} else {
+					specs[d] = StaticDim(operand.Shape().Dim(d))
+				}
+			}
+			res := DynamicIota(operand.Graph(), operand.DType(), sliceAxis, specs...)
+			if startsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs); err == nil {
+				starts := tensorToInts(startsT)
+				if len(starts) > 0 && starts[0] != 0 {
+					res = AddScalar(res, starts[0])
+				}
+			}
+			if len(inputSteps) > 0 && inputSteps[0] != 1 {
+				res = MulScalar(res, inputSteps[0])
+			}
+			return res
+		}
+	}
+
+	endsT, errEnds := m.materializeConstantExpression(node.Input[2], convertedOutputs)
+	if errEnds != nil && convertedOutputs[node.Input[2]] != nil {
+		if isIotaTensor(operandT, sliceAxis) {
+			endNode := convertedOutputs[node.Input[2]]
+			endScalar := Reshape(ConvertDType(endNode, dtypes.Int32))
+			specs := make([]DimensionSpec, rank)
+			for d := range rank {
+				if d == sliceAxis {
+					specs[d] = DynamicDim(endScalar)
+				} else {
+					specs[d] = StaticDim(operand.Shape().Dim(d))
+				}
+			}
+			res := DynamicIota(operand.Graph(), operand.DType(), sliceAxis, specs...)
+			if startsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs); err == nil {
+				starts := tensorToInts(startsT)
+				if len(starts) > 0 && starts[0] != 0 {
+					res = AddScalar(res, starts[0])
+				}
+			}
+			if len(inputSteps) > 0 && inputSteps[0] != 1 {
+				res = MulScalar(res, inputSteps[0])
+			}
+			return res
+		}
+		panic(errors.WithMessagef(errEnds, "while converting 'ends' for node %s", NodeToString(node)))
+	}
+
+	startsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+	if err != nil {
+		panic(errors.WithMessagef(err, "while converting 'starts' for node %s", NodeToString(node)))
+	}
+	inputStarts := tensorToInts(startsT)
+	inputEnds := tensorToInts(endsT)
 
 	min := func(a, b int) int {
 		if a < b {
@@ -2184,59 +2385,7 @@ func convertLayerNormalization(_ *Model, _ map[string]*Node, node *protos.NodePr
 		axes[i] = axis + i
 	}
 
-	// Reshape scale and bias to match input rank for broadcasting
-	// Scale/bias have shape matching the normalized dimensions
-	// Need to add leading 1s to match the input rank
-	if scale.Rank() < inputRank {
-		scaleShape := make([]int, inputRank)
-		// Set leading dimensions to 1
-		for i := 0; i < axis; i++ {
-			scaleShape[i] = 1
-		}
-		// Copy the scale dimensions for the normalized axes
-		scaleDims := scale.Shape().Dimensions
-		scaleRank := len(scaleDims)
-		for i := axis; i < inputRank; i++ {
-			scaleIdx := i - axis
-			if scaleIdx >= scaleRank {
-				exceptions.Panicf("LayerNormalization: scale tensor has insufficient dimensions (rank=%d) for input rank=%d and axis=%d",
-					scaleRank, inputRank, axis)
-			}
-			scaleShape[i] = scaleDims[scaleIdx]
-		}
-		scale = Reshape(scale, scaleShape...)
-		if bias != nil {
-			biasDims := bias.Shape().Dimensions
-			biasShape := make([]int, inputRank)
-			for i := 0; i < axis; i++ {
-				biasShape[i] = 1
-			}
-			for i := axis; i < inputRank; i++ {
-				biasShape[i] = biasDims[i-axis]
-			}
-			bias = Reshape(bias, biasShape...)
-		}
-	}
-
-	// Calculate mean and variance over the normalization axes
-	// Use ReduceAndKeep to preserve dimensions for broadcasting
-	mean := ReduceAndKeep(x, ReduceMean, axes...)
-	// Variance calculation: E[(X - mean)^2]
-	centered := Sub(x, mean)
-	variance := ReduceAndKeep(Square(centered), ReduceMean, axes...)
-
-	// Normalize: (X - mean) / Sqrt(variance + epsilon)
-	normalized := Div(centered, Sqrt(Add(variance, Scalar(x.Graph(), x.DType(), epsilon))))
-
-	// Apply scale (gamma)
-	result := Mul(normalized, scale)
-
-	// Apply bias (beta) if provided
-	if bias != nil {
-		result = Add(result, bias)
-	}
-
-	return result
+	return nn.LayerNorm(x, axes, float64(epsilon), scale, bias, nil)
 }
 
 // convertSimplifiedLayerNormalization converts the corresponding ONNX node to GoMLX nodes.

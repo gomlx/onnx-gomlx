@@ -170,7 +170,9 @@ func (m *Model) materializeConstantExpression(nodeOutputName string, convertedOu
 		return nil, errors.Errorf("node output %q hasn't been converted yet, so we can't materializeConstantExpression!?", nodeOutputName)
 	}
 	if node.Type() == NodeTypeConstant {
-		return node.ConstantValue(), nil
+		if cVal := node.ConstantValue(); cVal != nil {
+			return cVal, nil
+		}
 	}
 
 	// See if it is possible: if the subgraph that generated the node is a constant expression.
@@ -220,9 +222,11 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 	// in which case we take the constant value and inject it directly in the new constant expression
 	if originalNode, found := originalConvertedOutput[nodeOutputName]; found {
 		if originalNode.Type() == NodeTypeConstant {
-			// Duplicate the constant in the new graph.
-			constConvertedOutputs[nodeOutputName] = Const(g, originalNode.ConstantValue())
-			return
+			if cVal := originalNode.ConstantValue(); cVal != nil {
+				// Duplicate the constant in the new graph.
+				constConvertedOutputs[nodeOutputName] = Const(g, cVal)
+				return
+			}
 		}
 	}
 

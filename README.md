@@ -117,6 +117,38 @@ Embeddings: [2][7][384]float32{
   {-0.0213, 0.0019, 0.0043, ..., 0.0561, 0.0170, 0.0256}}}
 ```
 
+## Dynamic Shapes
+
+For backends that support dynamic shapes (such as the Go portable backend `GOMLX_BACKEND=go` or the ONNX Runtime backend `GOMLX_BACKEND=onnx:cpu`), models can be executed with variable batch sizes and sequence lengths without re-compiling the computation graph.
+
+To enable dynamic execution, use `exec.WithDynamicAxes()`:
+
+```go
+exec := model.MustNewExec(backend, store, func(scope *model.Scope, inputIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
+	g := inputIDs.Graph()
+	outputs := onnxModel.CallGraph(scope, g, map[string]*graph.Node{
+		"input_ids":      inputIDs,
+		"attention_mask": attentionMask,
+		"token_type_ids": tokenTypeIDs,
+	})
+	return outputs[0]
+})
+
+// Configure dynamic axes for inputs (e.g. dynamic batch and sequence length):
+exec.WithDynamicAxes(
+	[]string{"batch", "seq"}, // input_ids
+	[]string{"batch", "seq"}, // attention_mask
+	[]string{"batch", "seq"}, // token_type_ids
+)
+defer exec.Finalize()
+
+// Call with varying batch sizes or sequence lengths without triggering recompilation:
+output1 := exec.MustCall1(idsBatch1, maskBatch1, typesBatch1)
+output2 := exec.MustCall1(idsBatch2, maskBatch2, typesBatch2)
+```
+
+Backends that only support static shapes (such as XLA PJRT) will pad inputs to fixed dimensions.
+
 ## Fine-Tuning
 
 1. Extract the ONNX model's weight to GoMLX `model.Store`: see `Model.VariablesToScope()`.

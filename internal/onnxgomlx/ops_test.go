@@ -2335,3 +2335,118 @@ func TestConvertPadReflect(t *testing.T) {
 		},
 	}, -1)
 }
+
+func TestActivations(t *testing.T) {
+	m := createTestModelWithDTypePromoConfig(false, false)
+
+	graphtest.RunTestGraphFn(t, "Sigmoid", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{-2.0, 0.0, 2.0})
+		node := &protos.NodeProto{OpType: "Sigmoid", Input: []string{"x"}, Output: []string{"y"}}
+		converted := map[string]*Node{"x": x}
+		m.convertNode(nil, g, node, converted)
+		inputs = []*Node{x}
+		outputs = []*Node{converted["y"]}
+		return
+	}, []any{
+		[]float32{0.11920292, 0.5, 0.8807971},
+	}, 1e-4)
+
+	graphtest.RunTestGraphFn(t, "Tanh", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{-1.0, 0.0, 1.0})
+		node := &protos.NodeProto{OpType: "Tanh", Input: []string{"x"}, Output: []string{"y"}}
+		converted := map[string]*Node{"x": x}
+		m.convertNode(nil, g, node, converted)
+		inputs = []*Node{x}
+		outputs = []*Node{converted["y"]}
+		return
+	}, []any{
+		[]float32{-0.76159416, 0.0, 0.76159416},
+	}, 1e-4)
+
+	graphtest.RunTestGraphFn(t, "LeakyRelu(default alpha=0.01)", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{-2.0, 0.0, 2.0})
+		node := &protos.NodeProto{OpType: "LeakyRelu", Input: []string{"x"}, Output: []string{"y"}}
+		converted := map[string]*Node{"x": x}
+		m.convertNode(nil, g, node, converted)
+		inputs = []*Node{x}
+		outputs = []*Node{converted["y"]}
+		return
+	}, []any{
+		[]float32{-0.02, 0.0, 2.0},
+	}, 1e-4)
+
+	graphtest.RunTestGraphFn(t, "LeakyRelu(alpha=0.3)", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{-2.0, 0.0, 2.0})
+		node := &protos.NodeProto{
+			OpType: "LeakyRelu",
+			Input:  []string{"x"},
+			Output: []string{"y"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "alpha", Type: protos.AttributeProto_FLOAT, F: 0.3},
+			},
+		}
+		converted := map[string]*Node{"x": x}
+		m.convertNode(nil, g, node, converted)
+		inputs = []*Node{x}
+		outputs = []*Node{converted["y"]}
+		return
+	}, []any{
+		[]float32{-0.6, 0.0, 2.0},
+	}, 1e-4)
+
+	graphtest.RunTestGraphFn(t, "HardSigmoid(default)", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{-3.0, 0.0, 3.0})
+		node := &protos.NodeProto{OpType: "HardSigmoid", Input: []string{"x"}, Output: []string{"y"}}
+		converted := map[string]*Node{"x": x}
+		m.convertNode(nil, g, node, converted)
+		inputs = []*Node{x}
+		outputs = []*Node{converted["y"]}
+		return
+	}, []any{
+		[]float32{0.0, 0.5, 1.0},
+	}, 1e-4)
+
+	graphtest.RunTestGraphFn(t, "HardSigmoid(custom alpha/beta)", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{-5.0, 0.0, 10.0})
+		node := &protos.NodeProto{
+			OpType: "HardSigmoid",
+			Input:  []string{"x"},
+			Output: []string{"y"},
+			Attribute: []*protos.AttributeProto{
+				{Name: "alpha", Type: protos.AttributeProto_FLOAT, F: 0.1},
+				{Name: "beta", Type: protos.AttributeProto_FLOAT, F: 0.4},
+			},
+		}
+		converted := map[string]*Node{"x": x}
+		m.convertNode(nil, g, node, converted)
+		inputs = []*Node{x}
+		outputs = []*Node{converted["y"]}
+		return
+	}, []any{
+		[]float32{0.0, 0.4, 1.0},
+	}, 1e-4)
+
+	graphtest.RunTestGraphFn(t, "Selu(default)", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{-1.0, 0.0, 1.0})
+		node := &protos.NodeProto{OpType: "Selu", Input: []string{"x"}, Output: []string{"y"}}
+		converted := map[string]*Node{"x": x}
+		m.convertNode(nil, g, node, converted)
+		inputs = []*Node{x}
+		outputs = []*Node{converted["y"]}
+		return
+	}, []any{
+		[]float32{-1.1113307, 0.0, 1.050701},
+	}, 1e-4)
+
+	graphtest.RunTestGraphFn(t, "HardSwish", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, []float32{-4.0, 0.0, 4.0})
+		node := &protos.NodeProto{OpType: "HardSwish", Input: []string{"x"}, Output: []string{"y"}}
+		converted := map[string]*Node{"x": x}
+		m.convertNode(nil, g, node, converted)
+		inputs = []*Node{x}
+		outputs = []*Node{converted["y"]}
+		return
+	}, []any{
+		[]float32{0.0, 0.0, 4.0},
+	}, 1e-4)
+}
