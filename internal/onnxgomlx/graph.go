@@ -536,6 +536,14 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 		result = activation.Apply(activation.TypeSigmoid, m.onnxImplicitFloatPromotion(inputs[0]))
 	case "IsNaN":
 		result = IsNaN(inputs[0])
+	case "IsInf":
+		result = convertIsInf(node, inputs)
+	case "Asinh":
+		result = onnxAsinh(m.onnxImplicitFloatPromotion(inputs[0]))
+	case "Sinh":
+		result = onnxSinh(m.onnxImplicitFloatPromotion(inputs[0]))
+	case "Softplus":
+		result = onnxSoftplus(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Reciprocal":
 		result = Inverse(m.onnxImplicitFloatPromotion(inputs[0]))
 
@@ -564,6 +572,8 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 		result = convertGatherElements(node, inputs)
 	case "GatherND":
 		result = convertGatherND(node, inputs)
+	case "ScatterElements":
+		result = convertScatterElements(node, inputs)
 	case "Shape":
 		result = convertShape(node, inputs)
 	case "Size":
@@ -623,6 +633,8 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 		result = convertRange(m, convertedOutputs, node, inputs)
 	case "CumSum":
 		result = convertCumSum(m, convertedOutputs, node, inputs)
+	case "Unique":
+		result = convertUnique(m, convertedOutputs, node, inputs)
 
 	// Full ML layers ops:
 	case "LSTM":
