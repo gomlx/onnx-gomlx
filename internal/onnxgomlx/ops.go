@@ -1232,6 +1232,7 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	// GoMLX's Slice only supports positive strides (and it would interpret an effective end of -1 as
 	// "the last element"). So axes with negative steps are reversed first, and the start/end indices mapped to
 	// the reversed axis: index i becomes dimSize-1-i.
+	// See https://github.com/gomlx/gomlx/issues/472
 	var reversedAxes []int
 	for i := range rank {
 		if effectiveSteps[i] < 0 {
