@@ -1,11 +1,11 @@
 package onnxgomlx
 
 // This file implements ONNX operators that were missing from onnx-gomlx v0.5.14:
-// Asinh, Sinh, Softplus, IsInf, ScatterElements and Unique (for constant inputs).
+// Softplus, IsInf, ScatterElements and Unique (for constant inputs).
+// Asinh and Sinh, also missing, map directly to GoMLX's Asinh and Sinh (see convertNode).
 
 import (
 	"cmp"
-	"math"
 	"reflect"
 	"slices"
 
@@ -26,81 +26,6 @@ import (
 // Element-wise math ops.
 //
 ////////////////////////////////////////////////////////////////////
-
-// withFloat32ForHalfPrecision computes fn in Float32 if x is a half-precision float (Float16/BFloat16),
-// and converts the result back to the original dtype. Otherwise, it simply calls fn(x).
-//
-// This keeps the thresholds used by the numerically safe formulas below simple.
-func withFloat32ForHalfPrecision(x *Node, fn func(x *Node) *Node) *Node {
-	dtype := x.DType()
-	if dtype == dtypes.Float16 || dtype == dtypes.BFloat16 {
-		return ConvertDType(fn(ConvertDType(x, dtypes.Float32)), dtype)
-	}
-	return fn(x)
-}
-
-// applyOddSymmetry returns -r where x < 0, and r elsewhere (NaNs in r are preserved).
-// It is used by odd functions (f(-x) = -f(x)) computed on |x|.
-func applyOddSymmetry(x, r *Node) *Node {
-	return Where(LessThan(x, ScalarZero(x.Graph(), x.DType())), Neg(r), r)
-}
-
-// onnxAsinh implements the ONNX Asinh operator in a numerically safe way:
-//
-//	asinh(x) = sign(x) * log(|x| + sqrt(x²+1))
-//
-// For small |x| it uses the equivalent log1p(a + a²/(1+sqrt(1+a²))) (with a=|x|), which doesn't lose precision
-// for |x| close to 0. For large |x|, where x² would lose precision or overflow, it uses log(|x|) + log(2).
-//
-// See ONNX documentation in:
-// https://onnx.ai/onnx/operators/onnx__Asinh.html
-func onnxAsinh(x *Node) *Node {
-	return withFloat32ForHalfPrecision(x, func(x *Node) *Node {
-		g := x.Graph()
-		dtype := x.DType()
-		// Above the threshold sqrt(1+a²) == a in the dtype's precision (threshold = 1/sqrt(epsilon)).
-		threshold := 4096.0 // 2^12 for Float32.
-		if dtype == dtypes.Float64 {
-			threshold = 67108864.0 // 2^26
-		}
-		thresholdNode := Scalar(g, dtype, threshold)
-		one := ScalarOne(g, dtype)
-		a := Abs(x)
-		isLarge := GreaterThan(a, thresholdNode)
-		// Clamp a for the small branch, so a² never overflows. NaNs are preserved, since NaN > threshold is false.
-		aSmall := Where(isLarge, thresholdNode, a)
-		a2 := Square(aSmall)
-		small := Log1p(Add(aSmall, Div(a2, Add(one, Sqrt(Add(one, a2))))))
-		large := Add(Log(a), Scalar(g, dtype, math.Ln2))
-		return applyOddSymmetry(x, Where(isLarge, large, small))
-	})
-}
-
-// onnxSinh implements the ONNX Sinh operator in a numerically safe way:
-//
-//	sinh(x) = sign(x) * (t + t/(t+1)) / 2, with t = expm1(|x|)
-//
-// which is exactly (e^|x| - e^-|x|)/2 but without the cancellation for |x| close to 0.
-// For large |x| (> 20), where e^-|x| is negligible, it uses exp(|x| - log(2)), which only overflows
-// when sinh(x) itself overflows.
-//
-// See ONNX documentation in:
-// https://onnx.ai/onnx/operators/onnx__Sinh.html
-func onnxSinh(x *Node) *Node {
-	return withFloat32ForHalfPrecision(x, func(x *Node) *Node {
-		g := x.Graph()
-		dtype := x.DType()
-		thresholdNode := Scalar(g, dtype, 20.0)
-		one := ScalarOne(g, dtype)
-		a := Abs(x)
-		isLarge := GreaterThan(a, thresholdNode)
-		aSmall := Where(isLarge, thresholdNode, a) // NaNs are preserved.
-		t := Expm1(aSmall)
-		small := Mul(Scalar(g, dtype, 0.5), Add(t, Div(t, Add(t, one))))
-		large := Exp(Sub(a, Scalar(g, dtype, math.Ln2)))
-		return applyOddSymmetry(x, Where(isLarge, large, small))
-	})
-}
 
 // onnxSoftplus implements the ONNX Softplus operator (log(exp(x) + 1)) in a numerically safe way:
 //

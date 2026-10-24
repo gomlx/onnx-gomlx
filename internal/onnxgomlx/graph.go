@@ -539,9 +539,9 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 	case "IsInf":
 		result = convertIsInf(node, inputs)
 	case "Asinh":
-		result = onnxAsinh(m.onnxImplicitFloatPromotion(inputs[0]))
+		result = Asinh(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Sinh":
-		result = onnxSinh(m.onnxImplicitFloatPromotion(inputs[0]))
+		result = Sinh(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Softplus":
 		result = onnxSoftplus(m.onnxImplicitFloatPromotion(inputs[0]))
 	case "Reciprocal":
