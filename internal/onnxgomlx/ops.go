@@ -1229,6 +1229,23 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		return Zeros(operand.Graph(), shapes.Make(operand.DType(), outputDims...))
 	}
 
+	// GoMLX's Slice only supports positive strides (and it would interpret an effective end of -1 as
+	// "the last element"). So axes with negative steps are reversed first, and the start/end indices mapped to
+	// the reversed axis: index i becomes dimSize-1-i.
+	// See https://github.com/gomlx/gomlx/issues/472
+	var reversedAxes []int
+	for i := range rank {
+		if effectiveSteps[i] < 0 {
+			dimSize := operand.Shape().Dim(i)
+			reversedAxes = append(reversedAxes, i)
+			effectiveStarts[i], effectiveEnds[i] = dimSize-1-effectiveStarts[i], dimSize-1-effectiveEnds[i]
+			effectiveSteps[i] = -effectiveSteps[i]
+		}
+	}
+	if len(reversedAxes) > 0 {
+		operand = Reverse(operand, reversedAxes...)
+	}
+
 	specs := make([]SliceAxisSpec, rank)
 	for i := range rank {
 		specs[i] = AxisRange(effectiveStarts[i], effectiveEnds[i]).Stride(effectiveSteps[i])
