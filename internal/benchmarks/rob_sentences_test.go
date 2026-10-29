@@ -235,9 +235,7 @@ func implParallelBenchmark[E any](
 	// Start consumers:
 	finishedCounter := make(chan struct{})
 	for workerIdx := range numWorkers {
-		wg.Add(1)
-		go func(workerIdx int) {
-			defer wg.Done()
+		wg.Go(func() {
 			runtime.LockOSThread()
 			defer runtime.UnlockOSThread()
 
@@ -257,7 +255,7 @@ func implParallelBenchmark[E any](
 					// Accounted for, loop to next.
 				}
 			}
-		}(workerIdx)
+		})
 	}
 
 	// Warm-up:
@@ -369,13 +367,19 @@ func implBenchRobSentencesORT(parallelization, batchSize int, header bool) {
 		// must.M(cudaOptions.Update(map[string]string{"device_id": "0"}))
 		must.M(options.AppendExecutionProviderCUDA(cudaOptions))
 	} else {
+		options = must.M1(ort.NewSessionOptions())
 		if parallelization > 1 {
-			options = must.M1(ort.NewSessionOptions())
+			// Concurrent executions.
 			must.M(options.SetIntraOpNumThreads(1))
 			must.M(options.SetInterOpNumThreads(1))
 			must.M(options.SetCpuMemArena(true))
 			must.M(options.SetMemPattern(false))
 			must.M(options.SetExecutionMode(ort.ExecutionModeParallel))
+			must.M(options.SetGraphOptimizationLevel(99))
+		} else {
+			// One call at a time execution (Concurrency==1), but we can have
+			// inter and intra ops parallelization.
+			must.M(options.SetExecutionMode(ort.ExecutionModeSequential))
 			must.M(options.SetGraphOptimizationLevel(99))
 		}
 	}
@@ -437,6 +441,10 @@ func implBenchRobSentencesORT(parallelization, batchSize int, header bool) {
 			[]ort.Value{inputTensors[0], inputTensors[1], inputTensors[2]},
 			[]ort.Value{outputTensor},
 		))
+		must.M(outputTensor.Destroy())
+		for _, t := range inputTensors {
+			must.M(t.Destroy())
+		}
 	}
 
 	// Benchmark function is simply reading out finished
