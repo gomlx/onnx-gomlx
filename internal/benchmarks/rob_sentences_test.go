@@ -454,7 +454,7 @@ func implBenchRobSentencesORT(parallelization, batchSize int, header bool) {
 
 const robSentencesEmbeddingsFileName = "rob_sentences_embeddings.bin"
 
-func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, header bool) {
+func implBenchRobSentencesGoMLX(t *testing.T, parallelization, batchSize int, header bool) {
 	// Make sure to release all resources no longer in use.
 	for range 10 {
 		runtime.GC()
@@ -644,132 +644,150 @@ func implBenchRobSentencesXLA(t *testing.T, parallelization, batchSize int, head
 		name, parallelization, batchSize, header, warmUpRuns, inputFn, workerFn)
 }
 
-func TestRobSentences_BenchORT(t *testing.T) {
-	if testing.Short() || *flagBenchDuration == 0 {
-		t.SkipNow()
-	}
-	count := 0
-	concurrencies := []int{16}
-	if len(flagBenchConcurrency) > 0 {
-		concurrencies = flagBenchConcurrency
-	}
-	batchSizes := []int{16}
-	if len(flagBenchBatchSizes) > 0 {
-		batchSizes = flagBenchBatchSizes
-	}
-	for _, concurrency := range concurrencies { // {4, 6, 8} {
-		for _, batchSize := range batchSizes { // 1, 2, 4, 8, 16, 32} {
-			implBenchRobSentencesORT(concurrency, batchSize, count == 0)
-			count++
-		}
-	}
-}
+const checkingEmbeddingsDelta = 1e-2
 
+// Deprecated: run TestRobSentences/BenchGoMLX instead.
 func TestRobSentences_BenchXLA(t *testing.T) {
 	if testing.Short() || *flagBenchDuration == 0 {
 		t.SkipNow()
 	}
-	count := 0
-	// Change parallelism/batchSize according to backend, see best values in the bottom
-	// of the "Rob Sentences" sheet in:
-	// https://docs.google.com/spreadsheets/d/1ikpJH6rVVHq8ES-IA8U4lkKH4XsTSpRyZewXwGTgits/edit?gid=397722581#gid=397722581
-	concurrencies := []int{8}
-	if len(flagBenchConcurrency) > 0 {
-		concurrencies = flagBenchConcurrency
+	t.Error("This test was renamed TestRobSentences/BenchGoMLX instead.")
+}
+
+// Deprecated: run TestRobSentences/BenchORT instead.
+func TestRobSentences_BenchORT(t *testing.T) {
+	if testing.Short() || *flagBenchDuration == 0 {
+		t.SkipNow()
 	}
-	batchSizes := []int{128}
-	if len(flagBenchBatchSizes) > 0 {
-		batchSizes = flagBenchBatchSizes
-	}
-	for _, concurrency := range concurrencies { // {4, 6, 8} {
-		for _, batchSize := range batchSizes { // 1, 2, 4, 8, 16, 32} {
-			implBenchRobSentencesXLA(t, concurrency, batchSize, count == 0)
-			count++
+	t.Error("This test was renamed TestRobSentences/BenchORT instead.")
+}
+
+func TestRobSentences(t *testing.T) {
+	t.Run("BenchORT", func(t *testing.T) {
+		if testing.Short() || *flagBenchDuration == 0 {
+			t.SkipNow()
 		}
-	}
-}
-
-func TestRobSentences_SaveEmbeddings(t *testing.T) {
-	if !*flagSaveEmbeddings {
-		fmt.Println("Skipping SaveEmbeddings test, --save_embeddings not set.")
-		t.SkipNow()
-		return
-	}
-	implBenchRobSentencesXLA(t, 1, len(robSentences), false)
-}
-
-const checkingEmbeddingsDelta = 1e-2
-
-func TestRobSentences_CheckEmbeddings(t *testing.T) {
-	if !*flagCheckEmbeddings {
-		fmt.Println("Skipping CheckEmbeddings test, --check_embeddings not set.")
-		t.SkipNow()
-		return
-	}
-	implBenchRobSentencesXLA(t, 1, len(robSentences), false)
-}
-
-func TestRobSentences_DynamicCallGraph(t *testing.T) {
-	repoModel := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
-	onnxModelPath := must.M1(repoModel.DownloadFile("model.onnx"))
-	backend := testutil.BuildTestBackend()
-	if !backend.Capabilities().HasDynamicShapes() {
-		t.Skipf("Backend %q does not support dynamic shapes", backend.Name())
-	}
-	onnxModel := must.M1(parser.ParseFile(onnxModelPath))
-	store := model.NewStore()
-	must.M(onnxModel.VariablesToScope(store.RootScope()))
-
-	exec := model.MustNewExec(backend, store, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
-		g := tokenIDs.Graph()
-		outputs := onnxModel.CallGraph(scope, g,
-			map[string]*graph.Node{
-				"input_ids":      tokenIDs,
-				"attention_mask": attentionMask,
-				"token_type_ids": tokenTypeIDs,
-			})
-		return outputs[0]
-	})
-	exec.WithDynamicAxes(
-		[]string{"batch", "seq"},
-		[]string{"batch", "seq"},
-		[]string{"batch", "seq"},
-	)
-	defer exec.Finalize()
-
-	// Call with dynamic length based on first 2 examples:
-	examples := initializeRobSentences(2)
-	batchSeqLen := max(len(examples[0].Encoding[0]), len(examples[1].Encoding[0]))
-	tIDs := tensors.FromShape(shapes.Make(dtypes.Int64, 2, batchSeqLen))
-	tMask := tensors.FromShape(shapes.Make(dtypes.Int64, 2, batchSeqLen))
-	tTypes := tensors.FromShape(shapes.Make(dtypes.Int64, 2, batchSeqLen))
-	for inputIdx, tTarget := range []*tensors.Tensor{tIDs, tMask, tTypes} {
-		tensors.MutableFlatData[int64](tTarget, func(flat []int64) {
-			for exIdx := 0; exIdx < 2; exIdx++ {
-				seq := examples[exIdx].Encoding[inputIdx]
-				copy(flat[exIdx*batchSeqLen:], seq)
-				for p := len(seq); p < batchSeqLen; p++ {
-					flat[exIdx*batchSeqLen+p] = 0
-				}
+		count := 0
+		concurrencies := []int{16}
+		if len(flagBenchConcurrency) > 0 {
+			concurrencies = flagBenchConcurrency
+		}
+		batchSizes := []int{16}
+		if len(flagBenchBatchSizes) > 0 {
+			batchSizes = flagBenchBatchSizes
+		}
+		for _, concurrency := range concurrencies { // {4, 6, 8} {
+			for _, batchSize := range batchSizes { // 1, 2, 4, 8, 16, 32} {
+				implBenchRobSentencesORT(concurrency, batchSize, count == 0)
+				count++
 			}
-		})
-	}
-
-	outDyn := exec.MustCall1(tIDs, tMask, tTypes)
-
-	// Now run static exec with same input:
-	execStatic := model.MustNewExec(backend, store, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
-		g := tokenIDs.Graph()
-		outputs := onnxModel.CallGraph(scope, g,
-			map[string]*graph.Node{
-				"input_ids":      tokenIDs,
-				"attention_mask": attentionMask,
-				"token_type_ids": tokenTypeIDs,
-			})
-		return outputs[0]
+		}
 	})
-	defer execStatic.Finalize()
-	outStat := execStatic.MustCall1(tIDs, tMask, tTypes)
 
-	requireSameTensorsFloat32(t, outStat, outDyn, 1e-4)
+	t.Run("BenchGoMLX", func(t *testing.T) {
+		if testing.Short() || *flagBenchDuration == 0 {
+			t.SkipNow()
+		}
+		count := 0
+		// Change parallelism/batchSize according to backend, see best values in the bottom
+		// of the "Rob Sentences" sheet in:
+		// https://docs.google.com/spreadsheets/d/1ikpJH6rVVHq8ES-IA8U4lkKH4XsTSpRyZewXwGTgits/edit?gid=397722581#gid=397722581
+		concurrencies := []int{8}
+		if len(flagBenchConcurrency) > 0 {
+			concurrencies = flagBenchConcurrency
+		}
+		batchSizes := []int{128}
+		if len(flagBenchBatchSizes) > 0 {
+			batchSizes = flagBenchBatchSizes
+		}
+		for _, concurrency := range concurrencies { // {4, 6, 8} {
+			for _, batchSize := range batchSizes { // 1, 2, 4, 8, 16, 32} {
+				implBenchRobSentencesGoMLX(t, concurrency, batchSize, count == 0)
+				count++
+			}
+		}
+	})
+
+	t.Run("SaveEmbeddings", func(t *testing.T) {
+		if !*flagSaveEmbeddings {
+			fmt.Println("Skipping SaveEmbeddings test, --save_embeddings not set.")
+			t.SkipNow()
+			return
+		}
+		implBenchRobSentencesGoMLX(t, 1, len(robSentences), false)
+	})
+
+	t.Run("CheckEmbeddings", func(t *testing.T) {
+		if !*flagCheckEmbeddings {
+			fmt.Println("Skipping CheckEmbeddings test, --check_embeddings not set.")
+			t.SkipNow()
+			return
+		}
+		implBenchRobSentencesGoMLX(t, 1, len(robSentences), false)
+	})
+
+	t.Run("DynamicCallGraph", func(t *testing.T) {
+		repoModel := hub.New(KnightsAnalyticsSBertID).WithAuth(hfAuthToken)
+		onnxModelPath := must.M1(repoModel.DownloadFile("model.onnx"))
+		backend := testutil.BuildTestBackend()
+		if !backend.Capabilities().HasDynamicShapes() {
+			t.Skipf("Backend %q does not support dynamic shapes", backend.Name())
+		}
+		onnxModel := must.M1(parser.ParseFile(onnxModelPath))
+		store := model.NewStore()
+		must.M(onnxModel.VariablesToScope(store.RootScope()))
+
+		exec := model.MustNewExec(backend, store, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
+			g := tokenIDs.Graph()
+			outputs := onnxModel.CallGraph(scope, g,
+				map[string]*graph.Node{
+					"input_ids":      tokenIDs,
+					"attention_mask": attentionMask,
+					"token_type_ids": tokenTypeIDs,
+				})
+			return outputs[0]
+		})
+		exec.WithDynamicAxes(
+			[]string{"batch", "seq"},
+			[]string{"batch", "seq"},
+			[]string{"batch", "seq"},
+		)
+		defer exec.Finalize()
+
+		// Call with dynamic length based on first 2 examples:
+		examples := initializeRobSentences(2)
+		batchSeqLen := max(len(examples[0].Encoding[0]), len(examples[1].Encoding[0]))
+		tIDs := tensors.FromShape(shapes.Make(dtypes.Int64, 2, batchSeqLen))
+		tMask := tensors.FromShape(shapes.Make(dtypes.Int64, 2, batchSeqLen))
+		tTypes := tensors.FromShape(shapes.Make(dtypes.Int64, 2, batchSeqLen))
+		for inputIdx, tTarget := range []*tensors.Tensor{tIDs, tMask, tTypes} {
+			tensors.MutableFlatData[int64](tTarget, func(flat []int64) {
+				for exIdx := 0; exIdx < 2; exIdx++ {
+					seq := examples[exIdx].Encoding[inputIdx]
+					copy(flat[exIdx*batchSeqLen:], seq)
+					for p := len(seq); p < batchSeqLen; p++ {
+						flat[exIdx*batchSeqLen+p] = 0
+					}
+				}
+			})
+		}
+
+		outDyn := exec.MustCall1(tIDs, tMask, tTypes)
+
+		// Now run static exec with same input:
+		execStatic := model.MustNewExec(backend, store, func(scope *model.Scope, tokenIDs, attentionMask, tokenTypeIDs *graph.Node) *graph.Node {
+			g := tokenIDs.Graph()
+			outputs := onnxModel.CallGraph(scope, g,
+				map[string]*graph.Node{
+					"input_ids":      tokenIDs,
+					"attention_mask": attentionMask,
+					"token_type_ids": tokenTypeIDs,
+				})
+			return outputs[0]
+		})
+		defer execStatic.Finalize()
+		outStat := execStatic.MustCall1(tIDs, tMask, tTypes)
+
+		requireSameTensorsFloat32(t, outStat, outDyn, 1e-4)
+	})
 }
