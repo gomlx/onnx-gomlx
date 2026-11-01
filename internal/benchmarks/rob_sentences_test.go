@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -203,6 +204,13 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%.2f%s", f, unit)
 }
 
+// cpuTime returns the total CPU time (user + system) used by the current process so far.
+func cpuTime() time.Duration {
+	var usage syscall.Rusage
+	must.M(syscall.Getrusage(syscall.RUSAGE_SELF, &usage))
+	return time.Duration(usage.Utime.Nano() + usage.Stime.Nano())
+}
+
 func implParallelBenchmark[E any](
 	name string,
 	numWorkers, batchSize int, header bool,
@@ -273,6 +281,8 @@ func implParallelBenchmark[E any](
 	var totalTime time.Duration
 	var count int
 	timer := time.NewTimer(*flagBenchDuration)
+	cpuStart := cpuTime()
+	wallStart := time.Now()
 
 collection:
 	for {
@@ -288,6 +298,8 @@ collection:
 			count++
 		}
 	}
+	wallTime := time.Since(wallStart)
+	elapsedCPU := cpuTime() - cpuStart
 	timer.Stop()
 
 	// Header:
@@ -296,14 +308,16 @@ collection:
 		colWidth     = 10
 	)
 	if header {
-		fmt.Printf("%-*s\t%*s\t%*s\t%*s\t%*s\t%*s\t%*s\n",
+		fmt.Printf("%-*s\t%*s\t%*s\t%*s\t%*s\t%*s\t%*s\t%*s\t%*s\n",
 			nameColWidth, "Benchmarks:",
 			colWidth+2, "Sentences/s",
 			colWidth, "Mean",
 			colWidth, "Median",
 			colWidth, "5%-tile",
 			colWidth, "99%-tile",
-			colWidth+2, "Runs(xBatch)")
+			colWidth+2, "Runs(xBatch)",
+			colWidth, "CPU-Time",
+			colWidth, "Cores")
 	}
 
 	var (
@@ -312,6 +326,7 @@ collection:
 		q5PerExample     time.Duration
 		q99PerExample    time.Duration
 		sentencesPerSec  float64
+		cores            float64
 	)
 	if count > 0 && totalTime > 0 {
 		meanPerExample = (totalTime / time.Duration(count)) / time.Duration(batchSize)
@@ -320,17 +335,23 @@ collection:
 		q99PerExample = time.Duration(int(estimator.Get(0.99))) * time.Nanosecond / time.Duration(batchSize)
 		sentencesPerSec = float64(count*batchSize) / totalTime.Seconds()
 	}
+	if wallTime > 0 {
+		cores = float64(elapsedCPU) / float64(wallTime)
+	}
 
 	sentencesStr := fmt.Sprintf("%.1f/s", sentencesPerSec)
 	runsStr := fmt.Sprintf("%d (x%d)", count, batchSize)
-	fmt.Printf("%-*s\t%*s\t%*s\t%*s\t%*s\t%*s\t%*s\n",
+	coresStr := fmt.Sprintf("%.1f", cores)
+	fmt.Printf("%-*s\t%*s\t%*s\t%*s\t%*s\t%*s\t%*s\t%*s\t%*s\n",
 		nameColWidth, name,
 		colWidth+2, sentencesStr,
 		colWidth, formatDuration(meanPerExample),
 		colWidth, formatDuration(medianPerExample),
 		colWidth, formatDuration(q5PerExample),
 		colWidth, formatDuration(q99PerExample),
-		colWidth+2, runsStr)
+		colWidth+2, runsStr,
+		colWidth, formatDuration(elapsedCPU),
+		colWidth, coresStr)
 
 	// done.Trigger will signal all goroutines to end.
 	done.Trigger()
@@ -463,7 +484,7 @@ func implBenchRobSentencesGoMLX(t *testing.T, parallelization, batchSize int, he
 	backend := testutil.BuildTestBackend()
 	useDynamic := *flagDynamic && backend.Capabilities().HasDynamicShapes()
 
-	name := fmt.Sprintf("XLA/RobSentences/Parallel=%02d/BatchSize=%02d", parallelization, batchSize)
+	name := fmt.Sprintf("%s/RobSentences/Parallel=%02d/BatchSize=%02d", backend.Name(), parallelization, batchSize)
 	if useDynamic {
 		name += "/Dynamic"
 	}
