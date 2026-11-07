@@ -1343,3 +1343,166 @@ func TestDenseBiasOnlyFusion(t *testing.T) {
 		"x": tensors.FromFlatDataAndDimensions(xData, 2, inFeatures),
 	})
 }
+
+func TestSDPAKeyPaddingMaskFrom2DAttentionMask(t *testing.T) {
+	scaleVal := float32(0.35355339) // ≈ 1/sqrt(8)
+	batchSize := 2
+	seqLen := 4
+	numHeads := 2
+	headDim := 8
+
+	graph := &protos.GraphProto{
+		Name: "sdpa_2d_attention_mask_test",
+		Input: []*protos.ValueInfoProto{
+			makeValueInfo("Q_bshd", []int64{int64(batchSize), int64(seqLen), int64(numHeads), int64(headDim)}),
+			makeValueInfo("K_bshd", []int64{int64(batchSize), int64(seqLen), int64(numHeads), int64(headDim)}),
+			makeValueInfo("V_bshd", []int64{int64(batchSize), int64(seqLen), int64(numHeads), int64(headDim)}),
+			{
+				Name: "attention_mask",
+				Type: &protos.TypeProto{
+					Value: &protos.TypeProto_TensorType{
+						TensorType: &protos.TypeProto_Tensor{
+							ElemType: int32(protos.TensorProto_INT64),
+							Shape: &protos.TensorShapeProto{
+								Dim: []*protos.TensorShapeProto_Dimension{
+									{Value: &protos.TensorShapeProto_Dimension_DimValue{DimValue: int64(batchSize)}},
+									{Value: &protos.TensorShapeProto_Dimension_DimValue{DimValue: int64(seqLen)}},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Output: []*protos.ValueInfoProto{
+			makeValueInfo("output_bshd", []int64{int64(batchSize), int64(seqLen), int64(numHeads), int64(headDim)}),
+		},
+		Initializer: []*protos.TensorProto{
+			makeScalarFloatTensorProto("scale_s", scaleVal),
+			makeScalarFloatTensorProto("one_f", 1.0),
+			makeScalarFloatTensorProto("neg_inf", -3.4028235e38),
+			{
+				Name:      "axis_1",
+				Dims:      []int64{1},
+				DataType:  int32(protos.TensorProto_INT64),
+				Int64Data: []int64{1},
+			},
+			{
+				Name:      "axis_2",
+				Dims:      []int64{1},
+				DataType:  int32(protos.TensorProto_INT64),
+				Int64Data: []int64{2},
+			},
+		},
+		Node: []*protos.NodeProto{
+			{OpType: "Unsqueeze", Input: []string{"attention_mask", "axis_1"}, Output: []string{"mask_u1"}},
+			{OpType: "Unsqueeze", Input: []string{"mask_u1", "axis_2"}, Output: []string{"mask_u2"}},
+			{
+				OpType: "Cast", Input: []string{"mask_u2"}, Output: []string{"mask_f"},
+				Attribute: []*protos.AttributeProto{{Name: "to", Type: protos.AttributeProto_INT, I: int64(protos.TensorProto_FLOAT)}},
+			},
+			{OpType: "Sub", Input: []string{"one_f", "mask_f"}, Output: []string{"mask_inv"}},
+			{
+				OpType: "Cast", Input: []string{"mask_inv"}, Output: []string{"mask_bool"},
+				Attribute: []*protos.AttributeProto{{Name: "to", Type: protos.AttributeProto_INT, I: int64(protos.TensorProto_BOOL)}},
+			},
+			{OpType: "Where", Input: []string{"mask_bool", "neg_inf", "mask_inv"}, Output: []string{"mask_4d"}},
+			{
+				OpType: "Transpose", Input: []string{"Q_bshd"}, Output: []string{"Q_bhsd"},
+				Attribute: []*protos.AttributeProto{{Name: "perm", Type: protos.AttributeProto_INTS, Ints: []int64{0, 2, 1, 3}}},
+			},
+			{OpType: "Mul", Input: []string{"Q_bhsd", "scale_s"}, Output: []string{"Q_scaled"}},
+			{
+				OpType: "Transpose", Input: []string{"K_bshd"}, Output: []string{"K_t"},
+				Attribute: []*protos.AttributeProto{{Name: "perm", Type: protos.AttributeProto_INTS, Ints: []int64{0, 2, 3, 1}}},
+			},
+			{OpType: "Mul", Input: []string{"K_t", "scale_s"}, Output: []string{"K_scaled"}},
+			{
+				OpType: "Transpose", Input: []string{"V_bshd"}, Output: []string{"V_bhsd"},
+				Attribute: []*protos.AttributeProto{{Name: "perm", Type: protos.AttributeProto_INTS, Ints: []int64{0, 2, 1, 3}}},
+			},
+			{OpType: "MatMul", Input: []string{"Q_scaled", "K_scaled"}, Output: []string{"qk"}},
+			{OpType: "Add", Input: []string{"qk", "mask_4d"}, Output: []string{"qk_masked"}},
+			{
+				OpType: "Softmax", Input: []string{"qk_masked"}, Output: []string{"attn_weights"},
+				Attribute: []*protos.AttributeProto{{Name: "axis", Type: protos.AttributeProto_INT, I: -1}},
+			},
+			{OpType: "MatMul", Input: []string{"attn_weights", "V_bhsd"}, Output: []string{"attn_out"}},
+			{
+				OpType: "Transpose", Input: []string{"attn_out"}, Output: []string{"output_bshd"},
+				Attribute: []*protos.AttributeProto{{Name: "perm", Type: protos.AttributeProto_INTS, Ints: []int64{0, 2, 1, 3}}},
+			},
+		},
+	}
+
+	mFused := buildTestModel(t, graph)
+	cand := mFused.DetectedFusions["output_bshd"]
+	require.NotNil(t, cand)
+	sdpa, ok := cand.(*sdpaCandidate)
+	require.True(t, ok)
+	assert.True(t, sdpa.params.UseBSHD)
+	assert.Equal(t, "", sdpa.params.MaskInputName)
+	assert.Equal(t, "attention_mask", sdpa.params.SeqMaskInputName)
+
+	mUnfused := buildTestModel(t, graph)
+	mUnfused.DisableFusion()
+
+	total := batchSize * seqLen * numHeads * headDim
+	qData := make([]float32, total)
+	kData := make([]float32, total)
+	vData := make([]float32, total)
+	for i := range total {
+		qData[i] = float32((i%7)-3) * 0.1
+		kData[i] = float32((i%5)-2) * 0.1
+		vData[i] = float32((i%9)-4) * 0.1
+	}
+	// Batch 0 has 3 valid tokens; Batch 1 has 2 valid tokens.
+	validLens := []int{3, 2}
+	maskData := []int64{
+		1, 1, 1, 0,
+		1, 1, 0, 0,
+	}
+
+	inputs := map[string]*tensors.Tensor{
+		"Q_bshd":         tensors.FromFlatDataAndDimensions(qData, batchSize, seqLen, numHeads, headDim),
+		"K_bshd":         tensors.FromFlatDataAndDimensions(kData, batchSize, seqLen, numHeads, headDim),
+		"V_bshd":         tensors.FromFlatDataAndDimensions(vData, batchSize, seqLen, numHeads, headDim),
+		"attention_mask": tensors.FromFlatDataAndDimensions(maskData, batchSize, seqLen),
+	}
+
+	backend, err := gobackend.New("")
+	require.NoError(t, err)
+	ctxFused := model.NewStore()
+	require.NoError(t, mFused.VariablesToScope(ctxFused.RootScope()))
+	ctxUnfused := model.NewStore()
+	require.NoError(t, mUnfused.VariablesToScope(ctxUnfused.RootScope()))
+
+	buildInputNodes := func(g *Graph) map[string]*Node {
+		nodeMap := make(map[string]*Node, len(inputs))
+		for name, tensor := range inputs {
+			nodeMap[name] = Const(g, tensor)
+		}
+		return nodeMap
+	}
+
+	unfusedOut := model.MustCallOnceN(backend, ctxUnfused, func(scope *model.Scope, g *Graph) []*Node {
+		return mUnfused.CallGraph(scope, g, buildInputNodes(g))
+	})[0]
+	fusedOut := model.MustCallOnceN(backend, ctxFused, func(scope *model.Scope, g *Graph) []*Node {
+		return mFused.CallGraph(scope, g, buildInputNodes(g))
+	})[0]
+
+	unfusedFlat := tensors.MustCopyFlatData[float32](unfusedOut)
+	fusedFlat := tensors.MustCopyFlatData[float32](fusedOut)
+	strideS := numHeads * headDim
+	strideB := seqLen * strideS
+	for b, validLen := range validLens {
+		for s := range validLen {
+			for d := range strideS {
+				idx := b*strideB + s*strideS + d
+				assert.InDelta(t, unfusedFlat[idx], fusedFlat[idx], 1e-4, "b=%d s=%d d=%d", b, s, d)
+			}
+		}
+	}
+}
+

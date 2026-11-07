@@ -447,9 +447,19 @@ func TensorProtoToScalar(tp *protos.TensorProto) float64 {
 		if len(tp.Int32Data) > 0 {
 			return float64(tp.Int32Data[0])
 		}
+		if len(tp.RawData) >= 4 {
+			bits := uint32(tp.RawData[0]) | uint32(tp.RawData[1])<<8 | uint32(tp.RawData[2])<<16 | uint32(tp.RawData[3])<<24
+			return float64(int32(bits))
+		}
 	case int32(protos.TensorProto_INT64):
 		if len(tp.Int64Data) > 0 {
 			return float64(tp.Int64Data[0])
+		}
+		if len(tp.RawData) >= 8 {
+			bits := uint64(tp.RawData[0]) | uint64(tp.RawData[1])<<8 | uint64(tp.RawData[2])<<16 |
+				uint64(tp.RawData[3])<<24 | uint64(tp.RawData[4])<<32 | uint64(tp.RawData[5])<<40 |
+				uint64(tp.RawData[6])<<48 | uint64(tp.RawData[7])<<56
+			return float64(int64(bits))
 		}
 	}
 	return 0
