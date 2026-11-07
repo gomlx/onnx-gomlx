@@ -130,6 +130,9 @@ func tryMatchDenseActivation(m *onnxgomlx.Model, consumers map[string][]*protos.
 			for _, goName := range geluOutputs {
 				internalOutputs[goName] = true
 			}
+		} else if is1DBiasFor2DWeight(m, weightName, biasName) {
+			actType = activation.TypeNone
+			outputName = afterBiasOut
 		} else {
 			return nil
 		}
@@ -348,4 +351,16 @@ func denseActivationType(node *protos.NodeProto) activation.Type {
 	default:
 		return activation.TypeNone
 	}
+}
+
+// is1DBiasFor2DWeight checks that weightName has shape [inFeatures, outFeatures] and
+// biasName has shape [outFeatures], so MatMul + Add(bias) can be safely fused into nn.Dense.
+func is1DBiasFor2DWeight(m *onnxgomlx.Model, weightName, biasName string) bool {
+	wShape := m.ShapeForName(weightName)
+	bShape := m.ShapeForName(biasName)
+	return len(wShape.Dimensions) == 2 &&
+		len(bShape.Dimensions) == 1 &&
+		wShape.Dimensions[0] > 0 &&
+		wShape.Dimensions[1] > 0 &&
+		bShape.Dimensions[0] == wShape.Dimensions[1]
 }

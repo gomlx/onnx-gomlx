@@ -1213,3 +1213,133 @@ func TestDecomposedLayerNormFusion(t *testing.T) {
 		"X": tensors.FromFlatDataAndDimensions(xData, 2, 3, 4),
 	})
 }
+
+func TestSDPABSHDTransposeAbsorption(t *testing.T) {
+	scaleVal := float32(0.35355339) // ≈ 1/sqrt(8)
+
+	graph := &protos.GraphProto{
+		Name: "bshd_sdpa_test",
+		Input: []*protos.ValueInfoProto{
+			makeValueInfo("Q_bshd", []int64{1, 4, 2, 8}),
+			makeValueInfo("K_bshd", []int64{1, 4, 2, 8}),
+			makeValueInfo("V_bshd", []int64{1, 4, 2, 8}),
+			makeValueInfo("mask", []int64{1, 1, 1, 4}),
+		},
+		Output: []*protos.ValueInfoProto{
+			makeValueInfo("output_bshd", []int64{1, 4, 2, 8}),
+		},
+		Initializer: []*protos.TensorProto{
+			makeScalarFloatTensorProto("scale_s", scaleVal),
+		},
+		Node: []*protos.NodeProto{
+			{
+				OpType: "Transpose", Input: []string{"Q_bshd"}, Output: []string{"Q_bhsd"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "perm", Type: protos.AttributeProto_INTS, Ints: []int64{0, 2, 1, 3}},
+				},
+			},
+			{OpType: "Mul", Input: []string{"Q_bhsd", "scale_s"}, Output: []string{"Q_scaled"}},
+			{
+				OpType: "Transpose", Input: []string{"K_bshd"}, Output: []string{"K_t"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "perm", Type: protos.AttributeProto_INTS, Ints: []int64{0, 2, 3, 1}},
+				},
+			},
+			{OpType: "Mul", Input: []string{"K_t", "scale_s"}, Output: []string{"K_scaled"}},
+			{
+				OpType: "Transpose", Input: []string{"V_bshd"}, Output: []string{"V_bhsd"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "perm", Type: protos.AttributeProto_INTS, Ints: []int64{0, 2, 1, 3}},
+				},
+			},
+			{OpType: "MatMul", Input: []string{"Q_scaled", "K_scaled"}, Output: []string{"qk"}},
+			{OpType: "Add", Input: []string{"qk", "mask"}, Output: []string{"qk_masked"}},
+			{
+				OpType: "Softmax", Input: []string{"qk_masked"}, Output: []string{"attn_weights"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "axis", Type: protos.AttributeProto_INT, I: -1},
+				},
+			},
+			{OpType: "MatMul", Input: []string{"attn_weights", "V_bhsd"}, Output: []string{"attn_out"}},
+			{
+				OpType: "Transpose", Input: []string{"attn_out"}, Output: []string{"output_bshd"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "perm", Type: protos.AttributeProto_INTS, Ints: []int64{0, 2, 1, 3}},
+				},
+			},
+		},
+	}
+
+	m := buildTestModel(t, graph)
+	require.Len(t, m.DetectedFusions, 1, "expected 1 fusion")
+	cand := m.DetectedFusions["output_bshd"]
+	require.NotNil(t, cand)
+
+	sdpa, ok := cand.(*sdpaCandidate)
+	require.True(t, ok)
+	assert.True(t, sdpa.params.UseBSHD)
+	assert.False(t, sdpa.params.KNeedsHeadsFirst)
+	assert.Equal(t, "Q_bshd", sdpa.params.QInputName)
+	assert.Equal(t, "K_bshd", sdpa.params.KInputName)
+	assert.Equal(t, "V_bshd", sdpa.params.VInputName)
+
+	qData := make([]float32, 1*4*2*8)
+	kData := make([]float32, 1*4*2*8)
+	vData := make([]float32, 1*4*2*8)
+	for i := range qData {
+		qData[i] = float32((i%7)-3) * 0.1
+		kData[i] = float32((i%5)-2) * 0.1
+		vData[i] = float32((i%9)-4) * 0.1
+	}
+	maskData := []float32{0, 0, 0, -1000.0}
+
+	runFusedVsUnfused(t, graph, map[string]*tensors.Tensor{
+		"Q_bshd": tensors.FromFlatDataAndDimensions(qData, 1, 4, 2, 8),
+		"K_bshd": tensors.FromFlatDataAndDimensions(kData, 1, 4, 2, 8),
+		"V_bshd": tensors.FromFlatDataAndDimensions(vData, 1, 4, 2, 8),
+		"mask":   tensors.FromFlatDataAndDimensions(maskData, 1, 1, 1, 4),
+	})
+}
+
+func TestDenseBiasOnlyFusion(t *testing.T) {
+	inFeatures := 8
+	outFeatures := 16
+	wData := make([]float32, inFeatures*outFeatures)
+	bData := make([]float32, outFeatures)
+	for i := range wData {
+		wData[i] = float32(i%7)*0.1 - 0.3
+	}
+	for i := range bData {
+		bData[i] = float32(i%3) * 0.05
+	}
+
+	graph := &protos.GraphProto{
+		Name: "dense_bias_only_test",
+		Input: []*protos.ValueInfoProto{
+			makeValueInfo("x", []int64{2, int64(inFeatures)}),
+		},
+		Output: []*protos.ValueInfoProto{
+			makeValueInfo("out", []int64{2, int64(outFeatures)}),
+		},
+		Initializer: []*protos.TensorProto{
+			makeFloatTensorProto("W", []int64{int64(inFeatures), int64(outFeatures)}, wData),
+			makeFloatTensorProto("B", []int64{int64(outFeatures)}, bData),
+		},
+		Node: []*protos.NodeProto{
+			{OpType: "MatMul", Input: []string{"x", "W"}, Output: []string{"mm_out"}},
+			{OpType: "Add", Input: []string{"mm_out", "B"}, Output: []string{"out"}},
+		},
+	}
+
+	m := buildTestModel(t, graph)
+	cand := m.DetectedFusions["out"]
+	require.NotNil(t, cand, "expected Dense fusion for MatMul + Add(bias)")
+
+	xData := make([]float32, 2*inFeatures)
+	for i := range xData {
+		xData[i] = float32(i%11)*0.1 - 0.5
+	}
+	runFusedVsUnfused(t, graph, map[string]*tensors.Tensor{
+		"x": tensors.FromFlatDataAndDimensions(xData, 2, inFeatures),
+	})
+}
