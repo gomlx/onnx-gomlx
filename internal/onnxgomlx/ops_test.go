@@ -161,6 +161,52 @@ func TestONNXGatherND(t *testing.T) {
 	}, -1)
 }
 
+func TestONNXGatherNDNegativeIndices(t *testing.T) {
+	backend, err := gobackend.New("")
+	require.NoError(t, err)
+	defer backend.Finalize()
+	tests := []struct {
+		name                string
+		data, indices, want any
+	}{
+		{
+			name:    "mixed coordinates with different axis sizes",
+			data:    [][]int32{{1, 2, 3}, {4, 5, 6}},
+			indices: [][]int64{{0, -1}, {-1, 0}, {-2, -3}, {1, 1}},
+			want:    []int32{3, 4, 1, 5},
+		},
+		{
+			name:    "partial indexing with int32 indices",
+			data:    [][][]int32{{{1, 2}, {3, 4}}, {{5, 6}, {7, 8}}},
+			indices: [][]int32{{-1}, {0}},
+			want:    [][][]int32{{{5, 6}, {7, 8}}, {{1, 2}, {3, 4}}},
+		},
+		{
+			name:    "higher rank indices",
+			data:    [][]int32{{1, 2, 3}, {4, 5, 6}},
+			indices: [][][]int64{{{0, -1}, {-1, 0}}, {{-2, -2}, {1, -1}}},
+			want:    [][]int32{{3, 4}, {2, 6}},
+		},
+		{
+			name:    "single index vector",
+			data:    [][]int32{{1, 2, 3}, {4, 5, 6}},
+			indices: []int64{-1, -2},
+			want:    int32(5),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			exec := MustNewExec(backend, func(data, indices *Node) *Node {
+				return onnxGatherND(data, indices, 0)
+			})
+			defer exec.Finalize()
+			got := exec.MustExec(test.data, test.indices)[0]
+			defer got.FinalizeAll()
+			assert.Equal(t, test.want, got.Value())
+		})
+	}
+}
+
 func TestTile(t *testing.T) {
 	graphtest.RunTestGraphFn(t, "Tile 1D", func(g *Graph) (inputs, outputs []*Node) {
 		operand := Const(g, []float32{1, 2})
