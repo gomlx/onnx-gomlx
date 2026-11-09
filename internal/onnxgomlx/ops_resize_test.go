@@ -5,7 +5,9 @@ import (
 
 	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/gobackend"
+	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph"
+	"github.com/gomlx/gomlx/support/sets"
 	"github.com/stretchr/testify/require"
 )
 
@@ -52,6 +54,38 @@ func TestResizeCoordinateSemantics(t *testing.T) {
 			got := exec.MustExec1(test.data)
 			defer got.FinalizeAll()
 			require.InDeltaSlice(t, test.want, got.Value(), 1e-4)
+		})
+	}
+}
+
+func TestResizeFloatInitializer(t *testing.T) {
+	backend, err := gobackend.New("")
+	require.NoError(t, err)
+	defer backend.Finalize()
+	for _, name := range []string{"scales", "exported_scale_0"} {
+		t.Run(name, func(t *testing.T) {
+			exec := MustNewExec(backend, func(x *Node) *Node {
+				m := &Model{Backend: backend, VariableNameToValue: map[string]*protos.TensorProto{
+					name: {Name: name, DataType: int32(protos.TensorProto_FLOAT), Dims: []int64{1}, FloatData: []float32{2}},
+				}, NodeOutputToNode: make(map[string]*protos.NodeProto)}
+				node := &protos.NodeProto{OpType: "Resize", Input: []string{"x", "", name}, Output: []string{"result"}, Attribute: []*protos.AttributeProto{
+					{Name: "mode", Type: protos.AttributeProto_STRING, S: []byte("linear")},
+				}}
+				// The normal importer represents initializers as runtime variable nodes.
+				converted := map[string]*Node{name: SliceAxis(x, 0, AxisRange(0, 1))}
+				m.InputsNameSet = sets.Make[string]()
+				m.InputsNameSet.Insert(name)
+				err := exceptions.TryCatch[error](func() {
+					convertResize(m, converted, node, []*Node{x})
+				})
+				require.ErrorContains(t, err, "non-constant")
+				m.InputsNameSet = nil
+				return convertResize(m, converted, node, []*Node{x})
+			})
+			defer exec.Finalize()
+			got := exec.MustExec1([]float32{0, 10, 20})
+			defer got.FinalizeAll()
+			require.InDeltaSlice(t, []float32{0, 2.5, 7.5, 12.5, 17.5, 20}, got.Value(), 1e-4)
 		})
 	}
 }

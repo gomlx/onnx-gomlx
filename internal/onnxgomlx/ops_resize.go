@@ -6,6 +6,7 @@ import (
 	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph"
+	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/pkg/errors"
 )
 
@@ -79,6 +80,16 @@ func convertResize(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 	return config.Done()
 }
 
+// materializeResizeInput reads fixed ONNX initializers used as Resize metadata.
+// Initializers that are also graph inputs may be overridden at runtime and retain
+// the existing constant-expression checks.
+func (m *Model) materializeResizeInput(name string, convertedOutputs map[string]*Node) (*tensors.Tensor, error) {
+	if tensor, found := m.VariableNameToValue[name]; found && !m.InputsNameSet.Has(name) {
+		return ONNXTensorToGoMLX(m.Backend, tensor, m.getExternalDataReader())
+	}
+	return m.materializeConstantExpression(name, convertedOutputs)
+}
+
 // resizeOutputSizes resolves the target dimensions for a Resize op from either
 // the "sizes" input (index 3) or the "scales" input (index 2).
 func resizeOutputSizes(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputDims []int) ([]int, []float64) {
@@ -86,7 +97,7 @@ func resizeOutputSizes(m *Model, convertedOutputs map[string]*Node, node *protos
 
 	// Try sizes first (takes priority over scales per ONNX spec).
 	if len(node.Input) > 3 && node.Input[3] != "" {
-		sizesT, err := m.materializeConstantExpression(node.Input[3], convertedOutputs)
+		sizesT, err := m.materializeResizeInput(node.Input[3], convertedOutputs)
 		if err != nil {
 			panic(errors.WithMessagef(err, "while converting 'sizes' for node %s", NodeToString(node)))
 		}
@@ -102,7 +113,7 @@ func resizeOutputSizes(m *Model, convertedOutputs map[string]*Node, node *protos
 
 	// Fall back to scales.
 	if len(node.Input) > 2 && node.Input[2] != "" {
-		scalesT, err := m.materializeConstantExpression(node.Input[2], convertedOutputs)
+		scalesT, err := m.materializeResizeInput(node.Input[2], convertedOutputs)
 		if err != nil {
 			panic(errors.WithMessagef(err, "while converting 'scales' for node %s", NodeToString(node)))
 		}
