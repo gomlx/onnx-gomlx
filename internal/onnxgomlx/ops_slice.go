@@ -6,8 +6,112 @@ import (
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph"
+	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/pkg/errors"
 )
+
+// isIotaTensor checks if an integer tensor contains sequential integers (0, 1, 2, ...)
+// along the given axis.
+func isIotaTensor(t *tensors.Tensor, axis int) bool {
+	if t == nil || !t.DType().IsInt() {
+		return false
+	}
+	shape := t.Shape()
+	if axis < 0 || axis >= shape.Rank() {
+		return false
+	}
+	dimSize := shape.Dim(axis)
+	if dimSize <= 0 {
+		return false
+	}
+
+	stride := 1
+	for i := axis + 1; i < shape.Rank(); i++ {
+		stride *= shape.Dim(i)
+	}
+
+	if t.DType() == dtypes.Int64 {
+		flat := tensors.MustCopyFlatData[int64](t)
+		for idx, val := range flat {
+			expected := int64((idx / stride) % dimSize)
+			if val != expected {
+				return false
+			}
+		}
+		return true
+	} else if t.DType() == dtypes.Int32 {
+		flat := tensors.MustCopyFlatData[int32](t)
+		for idx, val := range flat {
+			expected := int32((idx / stride) % dimSize)
+			if val != expected {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// findDynamicDimensionSource traces back an ONNX output name to see if it was derived from
+// Shape(source) -> Gather(axis). If found and the source node is dynamic, it returns
+// the converted source node and the axis index.
+func (m *Model) findDynamicDimensionSource(outputName string, convertedOutputs map[string]*Node) (*Node, int, bool) {
+	curr := outputName
+	for {
+		prod, found := m.NodeOutputToNode[curr]
+		if !found || prod == nil {
+			return nil, 0, false
+		}
+		switch prod.OpType {
+		case "Unsqueeze", "Squeeze", "Reshape", "Identity", "Cast":
+			if len(prod.Input) == 0 {
+				return nil, 0, false
+			}
+			curr = prod.Input[0]
+		case "Gather":
+			if len(prod.Input) < 2 {
+				return nil, 0, false
+			}
+			shapeOutputName := prod.Input[0]
+			indicesInputName := prod.Input[1]
+			shapeNode, foundShape := m.NodeOutputToNode[shapeOutputName]
+			if !foundShape || shapeNode == nil || shapeNode.OpType != "Shape" {
+				return nil, 0, false
+			}
+			if len(shapeNode.Input) == 0 {
+				return nil, 0, false
+			}
+			sourceInputName := shapeNode.Input[0]
+			sourceNode := convertedOutputs[sourceInputName]
+			if sourceNode == nil || !sourceNode.Shape().IsDynamic() {
+				return nil, 0, false
+			}
+			idxTensor, err := m.materializeConstantExpression(indicesInputName, convertedOutputs)
+			if err != nil {
+				return nil, 0, false
+			}
+			indices := tensorToInts(idxTensor)
+			if len(indices) != 1 {
+				return nil, 0, false
+			}
+			gatherIdx := indices[0]
+			if gatherIdx < 0 {
+				gatherIdx += sourceNode.Rank()
+			}
+			start := GetIntAttrOr(shapeNode, "start", 0)
+			if start < 0 {
+				start = sourceNode.Rank() + start
+			}
+			axis := start + gatherIdx
+			if axis < 0 || axis >= sourceNode.Rank() {
+				return nil, 0, false
+			}
+			return sourceNode, axis, true
+		default:
+			return nil, 0, false
+		}
+	}
+}
 
 // convertSlice converts a ONNX node to a GoMLX node.
 //
