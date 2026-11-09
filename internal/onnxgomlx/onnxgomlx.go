@@ -62,6 +62,12 @@ type Model struct {
 	// (attention.Core, attention.QKVProjection, nn.Dense) handle fused-vs-decomposed
 	// fallback internally, so all detected fusions are always active.
 	DetectedFusions map[string]FusionCandidate
+
+	// disableAllPasses disables all graph optimization passes when true.
+	disableAllPasses bool
+
+	// disabledPasses tracks specific optimization passes disabled by name.
+	disabledPasses map[string]bool
 }
 
 // Ensure Model implements onnx.Model.
@@ -69,9 +75,19 @@ var _ onnx.Model = &Model{}
 
 // Parse parses an ONNX model into an internal representation that can be used to build a GoMLX graph.
 func Parse(contents []byte) (*Model, error) {
+	return ParseWithOptions(contents)
+}
+
+// ParseWithOptions parses an ONNX model with the given ParseOptions.
+func ParseWithOptions(contents []byte, opts ...ParseOption) (*Model, error) {
 	// Parse the ONNX proto.
 	m := &Model{
 		baseDir: ".",
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(m)
+		}
 	}
 	err := proto.Unmarshal(contents, &m.Proto)
 	if err != nil {
@@ -123,15 +139,13 @@ func Parse(contents []byte) (*Model, error) {
 	}
 
 	// Maps the intermediary node outputs to the nodes that create them.
-	m.NodeOutputToNode = make(map[string]*protos.NodeProto)
-	for _, node := range m.Proto.Graph.Node {
-		for _, outputName := range node.GetOutput() {
-			if otherNode, found := m.NodeOutputToNode[outputName]; found {
-				return nil, errors.Errorf("invalid graph: node output name %q used by 2 different nodes: (1) %s, (2) %s",
-					outputName, NodeToString(otherNode), NodeToString(node))
-			}
-			m.NodeOutputToNode[outputName] = node
-		}
+	if err := m.RebuildGraphIndex(); err != nil {
+		return nil, err
+	}
+
+	// Run registered graph optimization passes (e.g. ImplicitExpandPushdown).
+	if err := m.applyOptimizationPasses(); err != nil {
+		return nil, err
 	}
 
 	// Detect fusible patterns (SDPA, QKV Dense) for potential acceleration.

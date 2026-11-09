@@ -20,9 +20,6 @@ package fusion
 // Grouped Query Attention (GQA) is supported when NumHeads != NumKVHeads.
 
 import (
-	"encoding/binary"
-
-	"github.com/gomlx/compute/dtypes"
 	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/ml/layers/attention"
 	"github.com/gomlx/gomlx/ml/model"
@@ -35,8 +32,7 @@ import (
 // SDPAParams holds parameters for fused scaled dot-product attention.
 type SDPAParams struct {
 	QInputName, KInputName, VInputName string
-	MaskInputName                      string  // empty if no mask or if converted to SeqMaskInputName
-	SeqMaskInputName                   string  // rank-2 [batch, seq] attention_mask input for QuerySeqLen/KVSeqLen
+	MaskInputName                      string  // empty if no mask
 	Scale                              float64 // 1/sqrt(headDim)
 	QScaleNodeName                     string  // non-empty if Q scale is deferred constant expression
 	KScaleNodeName                     string  // non-empty if K scale is deferred constant expression
@@ -106,22 +102,10 @@ func (c *sdpaCandidate) Emit(scope *model.Scope, g *Graph, convertedOutputs map[
 		mask = convertedOutputs[p.MaskInputName]
 	}
 
-	var querySeqLen, kvSeqLen *Node
 	layout := attention.LayoutBHSD
 	if p.UseBSHD {
 		layout = attention.LayoutBSHD
-		if p.SeqMaskInputName != "" {
-			if seqMask := convertedOutputs[p.SeqMaskInputName]; seqMask != nil && seqMask.Rank() == 2 {
-				cacheKey := p.SeqMaskInputName + "#sdpa_seqlen"
-				seqLen := convertedOutputs[cacheKey]
-				if seqLen == nil {
-					seqLen = ReduceSum(ConvertDType(seqMask, dtypes.Int32), 1)
-					convertedOutputs[cacheKey] = seqLen
-				}
-				querySeqLen = seqLen
-				kvSeqLen = seqLen
-			}
-		} else if mask != nil && mask.Rank() == 4 && (mask.Shape().Dim(1) != 1 || mask.Shape().Dim(2) != 1) {
+		if mask != nil && mask.Rank() == 4 && (mask.Shape().Dim(1) != 1 || mask.Shape().Dim(2) != 1) {
 			mask = TransposeAllDims(mask, 0, 2, 1, 3)
 		}
 	}
@@ -129,8 +113,6 @@ func (c *sdpaCandidate) Emit(scope *model.Scope, g *Graph, convertedOutputs map[
 	output, _ := attention.Core(q, k, v, layout, attention.CoreOptions{
 		Scale:         scale,
 		AttentionMask: mask,
-		QuerySeqLen:   querySeqLen,
-		KVSeqLen:      kvSeqLen,
 	})
 	convertedOutputs[c.outputName] = output
 }
@@ -281,6 +263,18 @@ func sdpaTryMatch(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *sdpaCandidate 
 		}
 		if !isMaskRankAcceptable(m, maskInputName) {
 			return nil
+		}
+		// Unwrap a trailing Expand on the mask if its input is already a rank-4 broadcastable
+		// mask (e.g. [B, 1, 1, S] expanded to [B, 1, S, S] after ImplicitExpandPushdown).
+		// attention.Core broadcasts singleton mask axes directly without materializing [B, 1, S, S].
+		if expNode, ok := m.NodeOutputToNode[maskInputName]; ok && expNode.OpType == "Expand" && len(expNode.Input) == 2 {
+			unexpMask := expNode.Input[0]
+			unexpShape := m.InferShapeForName(unexpMask)
+			if unexpShape.Rank() == 4 &&
+				(unexpShape.Dimensions[1] == 1 || unexpShape.Dimensions[2] == 1) &&
+				unexpShape.Dimensions[3] != 1 {
+				maskInputName = unexpMask
+			}
 		}
 		if len(addNode.Output) == 0 {
 			return nil
@@ -492,25 +486,9 @@ func sdpaTryMatch(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *sdpaCandidate 
 		}
 	}
 
-	var seqMaskInputName string
-	if useBSHD && maskInputName != "" {
-		qShape := m.ShapeForName(qInputName)
-		kShape := m.ShapeForName(kInputName)
-		sameSeqDim := len(qShape.Dimensions) != 4 || len(kShape.Dimensions) != 4 || qShape.Dimensions[1] == kShape.Dimensions[1]
-		if sameSeqDim {
-			if seqMask := matchKeyPaddingMaskFrom2DAttentionMask(m, maskInputName); seqMask != "" {
-				seqMaskInputName = seqMask
-				maskInputName = ""
-			}
-		}
-	}
-
 	externalInputs := []string{qInputName, kInputName, vInputName}
 	if maskInputName != "" {
 		externalInputs = append(externalInputs, maskInputName)
-	}
-	if seqMaskInputName != "" {
-		externalInputs = append(externalInputs, seqMaskInputName)
 	}
 	if qScaleNodeName != "" {
 		externalInputs = append(externalInputs, qScaleNodeName)
@@ -532,7 +510,6 @@ func sdpaTryMatch(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *sdpaCandidate 
 			KInputName:       kInputName,
 			VInputName:       vInputName,
 			MaskInputName:    maskInputName,
-			SeqMaskInputName: seqMaskInputName,
 			Scale:            scale,
 			QScaleNodeName:   qScaleNodeName,
 			KScaleNodeName:   kScaleNodeName,
@@ -544,188 +521,6 @@ func sdpaTryMatch(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *sdpaCandidate 
 			UseBSHD:          useBSHD,
 		},
 	}
-}
-
-// matchKeyPaddingMaskFrom2DAttentionMask detects when an additive 4D attention mask is derived
-// from a 2D [batch, seq] attention_mask input via standard HuggingFace / PyTorch ONNX patterns:
-//   - Mul(Sub(1.0, Cast?(Expand?(Unsqueeze+(attention_mask)))), neg_const)
-//   - Where(Cast+(Sub(1.0, Cast?(Expand?(Unsqueeze+(attention_mask))))), neg_const, Sub(...))
-//
-// Returns the 2D input name (e.g. "attention_mask") if matched, or "" otherwise.
-func matchKeyPaddingMaskFrom2DAttentionMask(m *onnxgomlx.Model, maskInputName string) string {
-	topNode, ok := m.NodeOutputToNode[maskInputName]
-	if !ok {
-		return ""
-	}
-
-	var subOutName string
-	switch topNode.OpType {
-	case "Mul":
-		if len(topNode.Input) != 2 {
-			return ""
-		}
-		if s := tryGetConstantScalar(m, topNode.Input[1]); s <= -1e3 {
-			subOutName = topNode.Input[0]
-		} else if s := tryGetConstantScalar(m, topNode.Input[0]); s <= -1e3 {
-			subOutName = topNode.Input[1]
-		} else {
-			return ""
-		}
-	case "Where":
-		if len(topNode.Input) != 3 {
-			return ""
-		}
-		if s := tryGetConstantScalar(m, topNode.Input[1]); s > -1e3 {
-			return ""
-		}
-		condBase := unwrapCasts(m, topNode.Input[0])
-		falseBase := unwrapCasts(m, topNode.Input[2])
-		if condBase == "" || condBase != falseBase {
-			return ""
-		}
-		subOutName = falseBase
-	default:
-		return ""
-	}
-
-	// Unwrap optional Cast / Expand before Sub(1.0, x).
-	curr := subOutName
-	for range 8 {
-		n, ok := m.NodeOutputToNode[curr]
-		if !ok {
-			return ""
-		}
-		if n.OpType == "Cast" || n.OpType == "Expand" {
-			if len(n.Input) == 0 {
-				return ""
-			}
-			curr = n.Input[0]
-			continue
-		}
-		break
-	}
-
-	subNode, ok := m.NodeOutputToNode[curr]
-	if !ok || subNode.OpType != "Sub" || len(subNode.Input) != 2 {
-		return ""
-	}
-	if tryGetConstantScalar(m, subNode.Input[0]) != 1.0 {
-		return ""
-	}
-
-	// Walk from subNode.Input[1] through Cast, Expand, and Unsqueeze(axes in {1, 2}) up to a rank-2 input.
-	curr = subNode.Input[1]
-	unsqueezedAxes := 0
-	for range 12 {
-		n, ok := m.NodeOutputToNode[curr]
-		if !ok {
-			break
-		}
-		switch n.OpType {
-		case "Cast", "Expand":
-			if len(n.Input) == 0 {
-				return ""
-			}
-			curr = n.Input[0]
-		case "Unsqueeze":
-			if len(n.Input) == 0 {
-				return ""
-			}
-			axes, ok := extractUnsqueezeAxes(m, n)
-			if !ok || len(axes) == 0 {
-				return ""
-			}
-			for _, ax := range axes {
-				if ax != 1 && ax != 2 {
-					return ""
-				}
-			}
-			unsqueezedAxes += len(axes)
-			curr = n.Input[0]
-		default:
-			return ""
-		}
-	}
-
-	if unsqueezedAxes != 2 || !m.InputsNameSet.Has(curr) {
-		return ""
-	}
-	inShape := m.ShapeForName(curr)
-	if len(inShape.Dimensions) != 2 {
-		return ""
-	}
-	return curr
-}
-
-func unwrapCasts(m *onnxgomlx.Model, name string) string {
-	curr := name
-	for range 6 {
-		n, ok := m.NodeOutputToNode[curr]
-		if !ok || n.OpType != "Cast" || len(n.Input) == 0 {
-			return curr
-		}
-		curr = n.Input[0]
-	}
-	return curr
-}
-
-func extractUnsqueezeAxes(m *onnxgomlx.Model, node *protos.NodeProto) ([]int, bool) {
-	if axes := onnxgomlx.GetIntsAttrOr(node, "axes", nil); len(axes) > 0 {
-		return axes, true
-	}
-	if len(node.Input) < 2 {
-		return nil, false
-	}
-	axesName := node.Input[1]
-	var tp *protos.TensorProto
-	if initTP, ok := m.VariableNameToValue[axesName]; ok {
-		tp = initTP
-	} else if cNode, ok := m.NodeOutputToNode[axesName]; ok && cNode.OpType == "Constant" {
-		for _, attr := range cNode.Attribute {
-			if attr.Name == "value" && attr.T != nil {
-				tp = attr.T
-				break
-			}
-		}
-	}
-	if tp == nil {
-		return nil, false
-	}
-	if len(tp.Int64Data) > 0 {
-		out := make([]int, len(tp.Int64Data))
-		for i, v := range tp.Int64Data {
-			out[i] = int(v)
-		}
-		return out, true
-	}
-	if len(tp.Int32Data) > 0 {
-		out := make([]int, len(tp.Int32Data))
-		for i, v := range tp.Int32Data {
-			out[i] = int(v)
-		}
-		return out, true
-	}
-	switch tp.DataType {
-	case int32(protos.TensorProto_INT64):
-		if len(tp.RawData) >= 8 && len(tp.RawData)%8 == 0 {
-			n := len(tp.RawData) / 8
-			out := make([]int, n)
-			for i := range n {
-				out[i] = int(int64(binary.LittleEndian.Uint64(tp.RawData[i*8:])))
-			}
-			return out, true
-		}
-	case int32(protos.TensorProto_INT32):
-		if len(tp.RawData) >= 4 && len(tp.RawData)%4 == 0 {
-			n := len(tp.RawData) / 4
-			out := make([]int, n)
-			for i := range n {
-				out[i] = int(int32(binary.LittleEndian.Uint32(tp.RawData[i*4:])))
-			}
-			return out, true
-		}
-	}
-	return nil, false
 }
 
 // isGraphOutput reports whether name is one of the ONNX graph's declared outputs.

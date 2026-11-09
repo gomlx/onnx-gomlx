@@ -6,6 +6,7 @@ import (
 
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	_ "github.com/gomlx/onnx-gomlx/internal/onnxgomlx/fusion"
+	_ "github.com/gomlx/onnx-gomlx/internal/onnxgomlx/passes"
 	"github.com/gomlx/onnx-gomlx/onnx"
 )
 
