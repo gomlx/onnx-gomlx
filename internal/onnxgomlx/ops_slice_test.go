@@ -6,6 +6,7 @@ import (
 	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/gobackend"
 	. "github.com/gomlx/gomlx/core/graph"
+	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/gomlx/gomlx/support/sets"
 	"github.com/stretchr/testify/require"
 )
@@ -72,4 +73,25 @@ func TestSliceOptionalPlaceholders(t *testing.T) {
 			require.Equal(t, test.want, got.Value())
 		})
 	}
+}
+
+func TestSliceEmptyReverse(t *testing.T) {
+	backend, err := gobackend.New("")
+	require.NoError(t, err)
+	defer backend.Finalize()
+	exec := MustNewExec(backend, func(x *Node) *Node {
+		g := x.Graph()
+		starts, ends, steps := Const(g, []int64{0, 0}), Const(g, []int64{0, 2}), Const(g, []int64{-1, -1})
+		converted := map[string]*Node{"x": x, "starts": starts, "ends": ends, "steps": steps}
+		m := &Model{InputsNameSet: sets.Make[string]()}
+		m.InputsNameSet.Insert("x")
+		node := &protos.NodeProto{Input: []string{"x", "starts", "ends", "", "steps"}}
+		return convertSlice(m, converted, node, []*Node{x, starts, ends, nil, steps})
+	})
+	defer exec.Finalize()
+	data := tensors.FromFlatDataAndDimensions([]float32{}, 0, 3)
+	defer data.FinalizeAll()
+	got := exec.MustExec1(data)
+	defer got.FinalizeAll()
+	require.Equal(t, []int{0, 0}, got.Shape().Dimensions)
 }

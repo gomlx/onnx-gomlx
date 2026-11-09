@@ -294,7 +294,8 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 			// Negative stepping (step < 0)
 			// start clamped to [0, dimSize-1]
 			// end clamped to [-1, dimSize-1]
-			start = max(0, min(start, dimSize-1))
+			// An empty axis must keep start == end == -1 when reversing.
+			start = min(dimSize-1, max(0, start))
 			end = max(-1, min(end, dimSize-1))
 		}
 
