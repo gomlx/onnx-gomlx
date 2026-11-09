@@ -1,11 +1,12 @@
 package onnxgomlx
 
 import (
+	"testing"
+
 	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/gobackend"
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 func TestResizeCoordinateSemantics(t *testing.T) {
