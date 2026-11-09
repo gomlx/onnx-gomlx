@@ -5,6 +5,7 @@ import (
 
 	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/gobackend"
+	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/stretchr/testify/require"
 )
@@ -41,4 +42,24 @@ func TestPoolDefaultStrides(t *testing.T) {
 			require.Equal(t, [][][]float32{{test.want}}, got.Value())
 		})
 	}
+}
+
+func TestAveragePoolRejectsNonUnitDilation(t *testing.T) {
+	backend, err := gobackend.New("")
+	require.NoError(t, err)
+	defer backend.Finalize()
+	exec := MustNewExec(backend, func(x *Node) *Node {
+		node := &protos.NodeProto{Attribute: []*protos.AttributeProto{
+			{Name: "kernel_shape", Type: protos.AttributeProto_INTS, Ints: []int64{2}},
+			{Name: "strides", Type: protos.AttributeProto_INTS, Ints: []int64{1}},
+			{Name: "dilations", Type: protos.AttributeProto_INTS, Ints: []int64{2}},
+		}}
+		return convertAveragePool(nil, nil, node, []*Node{x})
+	})
+	defer exec.Finalize()
+	err = exceptions.TryCatch[error](func() {
+		got := exec.MustExec1([][][]float32{{{1, 2, 3, 4, 5}}})
+		defer got.FinalizeAll()
+	})
+	require.ErrorContains(t, err, "dilations")
 }

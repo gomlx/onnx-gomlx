@@ -25,6 +25,11 @@ func convertAveragePool(_ *Model, _ map[string]*Node, node *protos.NodeProto, in
 		// GoMLX MeanPool doesn't support including padding in the count.
 		exceptions.Panicf("AveragePool: support for attribute 'count_include_pad' is not yet implemented")
 	}
+	for _, dilation := range GetIntsAttrOr(node, "dilations", nil) {
+		if dilation != 1 {
+			exceptions.Panicf("AveragePool: support for non-unit dilations is not yet implemented")
+		}
+	}
 	kernelShape := GetIntsAttrOr(node, "kernel_shape", nil)
 	strides := GetIntsAttrOr(node, "strides", nil)
 	pads := GetIntsAttrOr(node, "pads", nil)
