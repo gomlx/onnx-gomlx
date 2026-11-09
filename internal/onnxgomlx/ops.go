@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/gomlx/compute"
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/compute/dtypes/gotype"
 	"github.com/gomlx/compute/shapes"
@@ -22,7 +23,6 @@ import (
 	"github.com/gomlx/gomlx/ml/layers/norm"
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/ml/nn"
-	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/pkg/errors"
 )
 
@@ -519,6 +519,18 @@ func onnxGatherND(data, indices *Node, batchDims int) *Node {
 	if batchDims != 0 {
 		exceptions.Panicf("GatherND: batch_dims=%d not yet supported (only batch_dims=0 is implemented)", batchDims)
 	}
+
+	// ONNX allows negative coordinates, while GoMLX Gather clamps them to zero.
+	// Each coordinate indexes a different data axis, so normalize with a vector
+	// of axis sizes broadcast over the leading dimensions of indices.
+	indexDepth := indices.Shape().Dimensions[indices.Rank()-1]
+	axisSizes := make([]*Node, indexDepth)
+	for axis := range axisSizes {
+		axisSizes[axis] = ConvertDType(DimensionSize(data, axis), indices.DType())
+	}
+	isNegative := LessThan(indices, ScalarZero(indices.Graph(), indices.DType()))
+	sizes := BroadcastLike(Stack(axisSizes, 0), indices)
+	indices = Where(isNegative, Add(indices, sizes), indices)
 
 	// GoMLX's Gather function already handles the GatherND semantics for batch_dims=0:
 	// - indices has shape [i0, i1, ..., im, indexDepth]
