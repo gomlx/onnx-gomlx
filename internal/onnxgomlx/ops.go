@@ -130,35 +130,6 @@ func (m *Model) convertBinaryOp(fn gomlxBinaryOp, lhs, rhs *Node) *Node {
 	return fn(lhs, rhs)
 }
 
-// convertMod converts an ONNX Mod node to GoMLX.
-//
-// See ONNX documentation in:
-// https://onnx.ai/onnx/operators/onnx__Mod.html
-//
-// The fmod attribute (default 0) controls the behavior:
-//   - fmod=1: C-style fmod — the result has the same sign as the dividend.
-//     This maps directly to GoMLX's Mod/Rem.
-//   - fmod=0: Python-style modulo — the result has the same sign as the divisor.
-func (m *Model) convertMod(node *protos.NodeProto, inputs []*Node) *Node {
-	fmod := GetIntAttrOr(node, "fmod", 0)
-
-	operands := onnxImplicitExpansion([]*Node{inputs[0], inputs[1]})
-	lhs, rhs := operands[0], operands[1]
-	lhs, rhs = m.checkOrPromoteDTypes(lhs, rhs)
-
-	r := Mod(lhs, rhs)
-	if fmod == 1 {
-		return r
-	}
-
-	// fmod=0: adjust C-style remainder to Python-style modulo.
-	// r and rhs have different signs exactly when r*rhs < 0;
-	// this also correctly skips adjustment when r == 0.
-	zero := ScalarZero(r.Graph(), r.DType())
-	needsAdjust := LessThan(Mul(r, rhs), zero)
-	return Where(needsAdjust, Add(r, rhs), r)
-}
-
 // convertMatMul handles dtype promotion before matrix multiplication.
 // Dtype mismatches are handled based on the Model's dtype promotion config.
 func (m *Model) convertMatMul(lhs, rhs *Node) *Node {
