@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/gomlx/compute"
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/compute/dtypes/gotype"
 	"github.com/gomlx/compute/shapes"
@@ -22,7 +23,6 @@ import (
 	"github.com/gomlx/gomlx/ml/layers/norm"
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/ml/nn"
-	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/pkg/errors"
 )
 
@@ -3612,7 +3612,10 @@ func convertResize(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 	coordTransformMode := GetStringAttrOr(node, "coordinate_transformation_mode", "half_pixel")
 
 	// Resolve target output sizes from either the "sizes" or "scales" input.
-	outputSizes := resizeOutputSizes(m, convertedOutputs, node, inputDims)
+	outputSizes, scales := resizeOutputSizes(m, convertedOutputs, node, inputDims)
+	if mode == "nearest" || (mode == "linear" && (scales != nil || coordTransformMode == "pytorch_half_pixel")) {
+		return resizeWithCoordinates(x, outputSizes, scales, mode, coordTransformMode, GetStringAttrOr(node, "nearest_mode", "round_prefer_floor"))
+	}
 
 	// Use NoInterpolation for dimensions that don't change.
 	for i := range outputSizes {
@@ -3666,7 +3669,7 @@ func convertResize(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 
 // resizeOutputSizes resolves the target dimensions for a Resize op from either
 // the "sizes" input (index 3) or the "scales" input (index 2).
-func resizeOutputSizes(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputDims []int) []int {
+func resizeOutputSizes(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputDims []int) ([]int, []float64) {
 	rank := len(inputDims)
 
 	// Try sizes first (takes priority over scales per ONNX spec).
@@ -3681,7 +3684,7 @@ func resizeOutputSizes(m *Model, convertedOutputs map[string]*Node, node *protos
 				exceptions.Panicf("Resize: sizes length (%d) != input rank (%d) in %s",
 					len(sizes), rank, NodeToString(node))
 			}
-			return sizes
+			return sizes, nil
 		}
 	}
 
@@ -3701,12 +3704,12 @@ func resizeOutputSizes(m *Model, convertedOutputs map[string]*Node, node *protos
 			for i, s := range scales {
 				out[i] = max(int(float64(inputDims[i])*s), 1)
 			}
-			return out
+			return out, scales
 		}
 	}
 
 	// Neither provided — return input dimensions unchanged.
 	out := make([]int, rank)
 	copy(out, inputDims)
-	return out
+	return out, nil
 }
