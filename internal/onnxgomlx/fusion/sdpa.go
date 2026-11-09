@@ -264,6 +264,18 @@ func sdpaTryMatch(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *sdpaCandidate 
 		if !isMaskRankAcceptable(m, maskInputName) {
 			return nil
 		}
+		// Unwrap a trailing Expand on the mask if its input is already a rank-4 broadcastable
+		// mask (e.g. [B, 1, 1, S] expanded to [B, 1, S, S] after ImplicitExpandPushdown).
+		// attention.Core broadcasts singleton mask axes directly without materializing [B, 1, S, S].
+		if expNode, ok := m.NodeOutputToNode[maskInputName]; ok && expNode.OpType == "Expand" && len(expNode.Input) == 2 {
+			unexpMask := expNode.Input[0]
+			unexpShape := m.InferShapeForName(unexpMask)
+			if unexpShape.Rank() == 4 &&
+				(unexpShape.Dimensions[1] == 1 || unexpShape.Dimensions[2] == 1) &&
+				unexpShape.Dimensions[3] != 1 {
+				maskInputName = unexpMask
+			}
+		}
 		if len(addNode.Output) == 0 {
 			return nil
 		}

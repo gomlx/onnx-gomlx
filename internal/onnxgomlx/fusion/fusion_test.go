@@ -9,6 +9,7 @@ import (
 	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
+	_ "github.com/gomlx/onnx-gomlx/internal/onnxgomlx/passes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -1343,4 +1344,160 @@ func TestDenseBiasOnlyFusion(t *testing.T) {
 		"x": tensors.FromFlatDataAndDimensions(xData, 2, inFeatures),
 	})
 }
+
+func TestSDPAExpandedKeyPaddingMask(t *testing.T) {
+	// Tests that a 2D attention_mask [B, S] expanded to [B, 1, S, S] via:
+	//   Unsqueeze(1) -> Unsqueeze(2) -> Expand([B, 1, S, S]) -> Cast(f32) -> Sub(1.0, x) -> Cast(bool) -> Where(c, -1e9, 0.0)
+	// has its Expand pushed down by ImplicitExpandPushdown and unwrapped by SDPA fusion so that
+	// SDPA receives the unexpanded [B, 1, 1, S] mask and matches unfused outputs across all
+	// query positions (including padded query positions).
+	sqrtD := float32(math.Sqrt(8))
+	batch, seqLen, numHeads, headDim := int64(2), int64(4), int64(2), int64(8)
+
+	maskValueInfo := &protos.ValueInfoProto{
+		Name: "attention_mask",
+		Type: &protos.TypeProto{
+			Value: &protos.TypeProto_TensorType{
+				TensorType: &protos.TypeProto_Tensor{
+					ElemType: int32(protos.TensorProto_INT64),
+					Shape: &protos.TensorShapeProto{
+						Dim: []*protos.TensorShapeProto_Dimension{
+							{Value: &protos.TensorShapeProto_Dimension_DimValue{DimValue: batch}},
+							{Value: &protos.TensorShapeProto_Dimension_DimValue{DimValue: seqLen}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	graph := &protos.GraphProto{
+		Name: "sdpa_expanded_key_padding_mask",
+		Input: []*protos.ValueInfoProto{
+			makeValueInfo("Q_bshd", []int64{batch, seqLen, numHeads, headDim}),
+			makeValueInfo("K_bshd", []int64{batch, seqLen, numHeads, headDim}),
+			makeValueInfo("V_bshd", []int64{batch, seqLen, numHeads, headDim}),
+			maskValueInfo,
+		},
+		Output: []*protos.ValueInfoProto{
+			makeValueInfo("output", []int64{batch, seqLen, numHeads, headDim}),
+		},
+		Initializer: []*protos.TensorProto{
+			makeScalarFloatTensorProto("scale_val", sqrtD),
+			makeScalarFloatTensorProto("one_f32", 1.0),
+			makeScalarFloatTensorProto("neg_inf", -1e9),
+			{
+				Name:      "axis1",
+				Dims:      []int64{1},
+				DataType:  int32(protos.TensorProto_INT64),
+				Int64Data: []int64{1},
+			},
+			{
+				Name:      "axis2",
+				Dims:      []int64{1},
+				DataType:  int32(protos.TensorProto_INT64),
+				Int64Data: []int64{2},
+			},
+			{
+				Name:      "expand_shape",
+				Dims:      []int64{4},
+				DataType:  int32(protos.TensorProto_INT64),
+				Int64Data: []int64{batch, 1, seqLen, seqLen},
+			},
+		},
+		Node: []*protos.NodeProto{
+			// 2D attention_mask -> [B, 1, 1, S] -> Expand([B, 1, S, S]) -> Cast -> Sub -> Cast -> Where
+			{Name: "u1", OpType: "Unsqueeze", Input: []string{"attention_mask", "axis1"}, Output: []string{"mask_3d"}},
+			{Name: "u2", OpType: "Unsqueeze", Input: []string{"mask_3d", "axis2"}, Output: []string{"mask_4d_unexp"}},
+			{Name: "exp", OpType: "Expand", Input: []string{"mask_4d_unexp", "expand_shape"}, Output: []string{"mask_4d_exp"}},
+			{
+				Name: "cast_f32", OpType: "Cast", Input: []string{"mask_4d_exp"}, Output: []string{"mask_f32"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "to", Type: protos.AttributeProto_INT, I: int64(protos.TensorProto_FLOAT)},
+				},
+			},
+			{Name: "sub", OpType: "Sub", Input: []string{"one_f32", "mask_f32"}, Output: []string{"mask_inv"}},
+			{
+				Name: "cast_bool", OpType: "Cast", Input: []string{"mask_inv"}, Output: []string{"mask_bool"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "to", Type: protos.AttributeProto_INT, I: int64(protos.TensorProto_BOOL)},
+				},
+			},
+			{Name: "where", OpType: "Where", Input: []string{"mask_bool", "neg_inf", "mask_inv"}, Output: []string{"mask_4d"}},
+			// BSHD -> BHSD transposes
+			{
+				Name: "q_tr", OpType: "Transpose", Input: []string{"Q_bshd"}, Output: []string{"Q"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "perm", Type: protos.AttributeProto_INTS, Ints: []int64{0, 2, 1, 3}},
+				},
+			},
+			{
+				Name: "k_tr", OpType: "Transpose", Input: []string{"K_bshd"}, Output: []string{"K"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "perm", Type: protos.AttributeProto_INTS, Ints: []int64{0, 2, 1, 3}},
+				},
+			},
+			{
+				Name: "v_tr", OpType: "Transpose", Input: []string{"V_bshd"}, Output: []string{"V"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "perm", Type: protos.AttributeProto_INTS, Ints: []int64{0, 2, 1, 3}},
+				},
+			},
+			// SDPA core
+			{
+				Name: "kt_tr", OpType: "Transpose", Input: []string{"K"}, Output: []string{"K_T"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "perm", Type: protos.AttributeProto_INTS, Ints: []int64{0, 1, 3, 2}},
+				},
+			},
+			{Name: "mm1", OpType: "MatMul", Input: []string{"Q", "K_T"}, Output: []string{"qk"}},
+			{Name: "div", OpType: "Div", Input: []string{"qk", "scale_val"}, Output: []string{"qk_scaled"}},
+			{Name: "add_mask", OpType: "Add", Input: []string{"qk_scaled", "mask_4d"}, Output: []string{"qk_masked"}},
+			{
+				Name: "softmax", OpType: "Softmax", Input: []string{"qk_masked"}, Output: []string{"attn_weights"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "axis", Type: protos.AttributeProto_INT, I: -1},
+				},
+			},
+			{Name: "mm2", OpType: "MatMul", Input: []string{"attn_weights", "V"}, Output: []string{"attn_bhsd"}},
+			{
+				Name: "out_tr", OpType: "Transpose", Input: []string{"attn_bhsd"}, Output: []string{"output"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "perm", Type: protos.AttributeProto_INTS, Ints: []int64{0, 2, 1, 3}},
+				},
+			},
+		},
+	}
+
+	m := buildTestModel(t, graph)
+	require.Len(t, m.DetectedFusions, 1)
+	cand := m.DetectedFusions["output"]
+	require.NotNil(t, cand)
+	sdpa := cand.(*sdpaCandidate)
+	assert.True(t, sdpa.params.UseBSHD)
+	assert.Equal(t, "mask_4d#unexpanded", sdpa.params.MaskInputName, "expected trailing Expand to be unwrapped to [B, 1, 1, S] mask")
+
+	nElems := int(batch * seqLen * numHeads * headDim)
+	qData := make([]float32, nElems)
+	kData := make([]float32, nElems)
+	vData := make([]float32, nElems)
+	for i := range nElems {
+		qData[i] = float32(i%7)*0.1 - 0.3
+		kData[i] = float32((i+3)%11)*0.08 - 0.4
+		vData[i] = float32((i+5)%13)*0.06 - 0.3
+	}
+	// Batch 0: length 3 (1 padded token); Batch 1: length 2 (2 padded tokens).
+	maskData := []int64{
+		1, 1, 1, 0,
+		1, 1, 0, 0,
+	}
+
+	runFusedVsUnfused(t, graph, map[string]*tensors.Tensor{
+		"Q_bshd":         tensors.FromFlatDataAndDimensions(qData, int(batch), int(seqLen), int(numHeads), int(headDim)),
+		"K_bshd":         tensors.FromFlatDataAndDimensions(kData, int(batch), int(seqLen), int(numHeads), int(headDim)),
+		"V_bshd":         tensors.FromFlatDataAndDimensions(vData, int(batch), int(seqLen), int(numHeads), int(headDim)),
+		"attention_mask": tensors.FromFlatDataAndDimensions(maskData, int(batch), int(seqLen)),
+	})
+}
+
 
