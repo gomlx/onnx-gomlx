@@ -491,17 +491,7 @@ func onnxGatherND(data, indices *Node, batchDims int) *Node {
 		exceptions.Panicf("GatherND: batch_dims=%d not yet supported (only batch_dims=0 is implemented)", batchDims)
 	}
 
-	// ONNX allows negative coordinates, while GoMLX Gather clamps them to zero.
-	// Each coordinate indexes a different data axis, so normalize with a vector
-	// of axis sizes broadcast over the leading dimensions of indices.
-	indexDepth := indices.Shape().Dimensions[indices.Rank()-1]
-	axisSizes := make([]*Node, indexDepth)
-	for axis := range axisSizes {
-		axisSizes[axis] = ConvertDType(DimensionSize(data, axis), indices.DType())
-	}
-	isNegative := LessThan(indices, ScalarZero(indices.Graph(), indices.DType()))
-	sizes := BroadcastLike(Stack(axisSizes, 0), indices)
-	indices = Where(isNegative, Add(indices, sizes), indices)
+	indices = normalizeNDIndices(data, indices)
 
 	// GoMLX's Gather function already handles the GatherND semantics for batch_dims=0:
 	// - indices has shape [i0, i1, ..., im, indexDepth]
@@ -1822,58 +1812,6 @@ func convertTrilu(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	} else {
 		return TakeLowerTriangular(input, k)
 	}
-}
-
-// convertScatterND operator
-//
-// See ONNX documentation in:
-// https://onnx.ai/onnx/operators/onnx__ScatterND.html
-func convertScatterND(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
-	// inputs
-	data := inputs[0]
-	indices := inputs[1]
-	updates := inputs[2]
-
-	// attributes
-	reduction := GetStringAttrOr(node, "reduction", "none")
-
-	r := data.Rank()
-	if !(r >= 1) {
-		exceptions.Panicf("ScatterND: data must have rank >= 1, got %d", r)
-	}
-
-	q := indices.Rank()
-	if !(q >= 1) {
-		exceptions.Panicf("ScatterND: indices must have rank >= 1, got %d", q)
-	}
-
-	v := q + r - indices.Shape().Dimensions[len(indices.Shape().Dimensions)-1] - 1
-
-	if updates.Rank() != v {
-		exceptions.Panicf("ScatterND: updates has wrong rank")
-	}
-
-	operand := Identity(data)
-	var output *Node
-	switch reduction {
-	case "add":
-		output = ScatterSum(operand, indices, updates, false, false)
-	case "mul":
-		exceptions.Panicf("ScatterMul has not been implemented yet")
-	case "max":
-		output = ScatterMax(operand, indices, updates, false, false)
-	case "min":
-		output = ScatterMin(operand, indices, updates, false, false)
-	case "none", "":
-		output = ScatterUpdate(operand, indices, updates, false, true)
-	default:
-		exceptions.Panicf("ScatterND: unrecognized reduction mode %q", reduction)
-	}
-
-	if output.Rank() < 1 {
-		exceptions.Panicf("ScatterND: output must have rank >= 1, got rank %d", output.Rank())
-	}
-	return output
 }
 
 ////////////////////////////////////////////////////////////////////
