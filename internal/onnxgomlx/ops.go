@@ -558,27 +558,6 @@ func onnxGatherElements(data *Node, indices *Node, gatherAxis int) *Node {
 	return output
 }
 
-// convertShape converts a ONNX node to a GoMLX node.
-//
-// See ONNX documentation in:
-// https://onnx.ai/onnx/operators/onnx__Shape.html
-func convertShape(node *protos.NodeProto, inputs []*Node) *Node {
-	shape := inputs[0].Shape()
-	start := GetIntAttrOr(node, "start", 0)
-	if start < 0 {
-		start = shape.Rank() + start
-	}
-	end := GetIntAttrOr(node, "end", 0)
-	if end == 0 {
-		end = shape.Rank()
-	} else if end < 0 {
-		end = shape.Rank() + end
-	}
-	dims := sliceMap(shape.Dimensions[start:end], func(dim int) int64 { return int64(dim) })
-	g := inputs[0].Graph()
-	return Const(g, dims)
-}
-
 // convertSize converts an ONNX Size node to a GoMLX constant.
 // Size returns the total number of elements of the input tensor as a scalar int64.
 //
