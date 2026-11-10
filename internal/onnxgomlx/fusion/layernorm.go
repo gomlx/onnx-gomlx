@@ -3,22 +3,23 @@ package fusion
 import (
 	"math"
 
+	"github.com/gomlx/compute-onnx/support/protos"
 	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/ml/nn"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
-	"github.com/gomlx/compute-onnx/support/protos"
 )
 
 // LayerNormParams holds parameters for fused LayerNorm.
 type LayerNormParams struct {
-	XInputName string
-	WeightName string // empty if no scale
-	BiasName   string // empty if no bias
-	OutputName string // final output of LayerNorm
-	Axes       []int
-	Epsilon    float64
+	XInputName        string
+	WeightName        string // empty if no scale
+	BiasName          string // empty if no bias
+	OutputName        string // final output of LayerNorm
+	Axes              []int
+	NormalizeFromAxis bool // Explicit ONNX LayerNormalization normalizes this axis and all following axes.
+	Epsilon           float64
 }
 
 // layerNormCandidate implements onnxgomlx.FusionCandidate for LayerNorm.
@@ -52,6 +53,12 @@ func (c *layerNormCandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs map
 			axes[i] = x.Rank() + a
 		} else {
 			axes[i] = a
+		}
+	}
+
+	if p.NormalizeFromAxis {
+		for axis := axes[0] + 1; axis < x.Rank(); axis++ {
+			axes = append(axes, axis)
 		}
 	}
 
@@ -106,12 +113,13 @@ func matchExplicitLayerNorm(node *protos.NodeProto) *layerNormCandidate {
 
 	return &layerNormCandidate{
 		params: &LayerNormParams{
-			XInputName: xName,
-			WeightName: weightName,
-			BiasName:   biasName,
-			OutputName: node.Output[0],
-			Axes:       []int{int(axis)},
-			Epsilon:    epsilon,
+			XInputName:        xName,
+			WeightName:        weightName,
+			BiasName:          biasName,
+			OutputName:        node.Output[0],
+			Axes:              []int{int(axis)},
+			NormalizeFromAxis: true,
+			Epsilon:           epsilon,
 		},
 		internalOutputs: map[string]bool{},
 		externalInputs:  externalInputs,
