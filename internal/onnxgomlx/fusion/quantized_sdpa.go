@@ -21,7 +21,7 @@ type QuantizedSDPAParams struct {
 	// and needs a [0,2,1,3] transpose to become [batch, numKVHeads, kvLen, headDim].
 	KNeedsHeadsFirst bool
 	// KIsTransposed is true when the K input is already in K^T layout [batch, numKVHeads, headDim, kvLen]
-	// because the K^T Transpose was hidden inside a pre-scale Mul: DQL(Mul(Transpose(K), scalar)).
+	// because the K^T Transpose was hidden inside a pre-scale Mul: DynamicQuantizeLinear(Mul(Transpose(K), scalar)).
 	// The emitter swaps the last two dims to restore BHSD layout before passing to the fused op.
 	KIsTransposed bool
 }
@@ -49,7 +49,7 @@ func (c *quantizedSDPACandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs
 
 	// When K is already transposed (K^T in [batch, numKVHeads, headDim, kvLen] layout),
 	// swap the last two dims to restore BHSD [batch, numKVHeads, kvLen, headDim].
-	// This happens when the K^T Transpose is inside a pre-scale Mul: DQL(Mul(K^T, scalar)).
+	// This happens when the K^T Transpose is inside a pre-scale Mul: DynamicQuantizeLinear(Mul(K^T, scalar)).
 	if p.KIsTransposed {
 		k = TransposeAllDims(k, 0, 1, 3, 2)
 	}
@@ -87,8 +87,8 @@ func init() {
 
 // detectQuantizedSDPACandidates scans the ONNX graph for the quantized attention chain:
 //
-//	DQL(Q) → MatMulInteger(Q_uint8, K_uint8^T) → Cast → Mul(qk_scale) → [Add(mask)] → Softmax
-//	→ DQL(attn) → MatMulInteger(attn_uint8, V_uint8) → Cast → Mul(av_scale) → output
+//	DynamicQuantizeLinear(Q) → MatMulInteger(Q_uint8, K_uint8^T) → Cast → Mul(qk_scale) → [Add(mask)] → Softmax
+//	→ DynamicQuantizeLinear(attn) → MatMulInteger(attn_uint8, V_uint8) → Cast → Mul(av_scale) → output
 //
 // and returns onnxgomlx.FusionCandidates for each match.
 func detectQuantizedSDPACandidates(m *onnxgomlx.Model) []onnxgomlx.FusionCandidate {
@@ -168,18 +168,18 @@ func tryMatchQuantizedSDPA(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *quant
 	softmaxOut := softmaxNode.Output[0]
 
 	// Softmax → sole consumer DynamicQuantizeLinear → uint8 attn probs
-	dqlAttn := onnxgraph.SoleConsumer(consumers, softmaxOut)
-	if dqlAttn == nil || dqlAttn.OpType != "DynamicQuantizeLinear" || len(dqlAttn.Output) < 1 {
+	dynamicQuantizeAttn := onnxgraph.SoleConsumer(consumers, softmaxOut)
+	if dynamicQuantizeAttn == nil || dynamicQuantizeAttn.OpType != "DynamicQuantizeLinear" || len(dynamicQuantizeAttn.Output) < 1 {
 		return nil
 	}
-	dqlAttnUint8 := dqlAttn.Output[0]
+	dynamicQuantizeAttnUint8 := dynamicQuantizeAttn.Output[0]
 
-	// DQL attn → sole consumer MatMulInteger2 (attn @ V)
-	matmul2 := onnxgraph.SoleConsumer(consumers, dqlAttnUint8)
+	// DynamicQuantizeLinear attn → sole consumer MatMulInteger2 (attn @ V)
+	matmul2 := onnxgraph.SoleConsumer(consumers, dynamicQuantizeAttnUint8)
 	if matmul2 == nil || matmul2.OpType != "MatMulInteger" || len(matmul2.Input) < 2 || len(matmul2.Output) == 0 {
 		return nil
 	}
-	if matmul2.Input[0] != dqlAttnUint8 {
+	if matmul2.Input[0] != dynamicQuantizeAttnUint8 {
 		return nil
 	}
 	mm2Out := matmul2.Output[0]
@@ -199,20 +199,20 @@ func tryMatchQuantizedSDPA(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *quant
 
 	// --- Backward trace: find float Q, K, V inputs ---
 
-	// Q: matmul1.Input[0] → DQL → Q_float (possibly pre-scaled by 1/√headDim)
+	// Q: matmul1.Input[0] → DynamicQuantizeLinear → Q_float (possibly pre-scaled by 1/√headDim)
 	qUint8Name := matmul1.Input[0]
-	qDqlNode, ok := m.NodeOutputToNode[qUint8Name]
-	if !ok || qDqlNode.OpType != "DynamicQuantizeLinear" || len(qDqlNode.Input) == 0 {
+	qDynamicQuantizeNode, ok := m.NodeOutputToNode[qUint8Name]
+	if !ok || qDynamicQuantizeNode.OpType != "DynamicQuantizeLinear" || len(qDynamicQuantizeNode.Input) == 0 {
 		return nil
 	}
-	qDqlInput := qDqlNode.Input[0]
+	qDynamicQuantizeInput := qDynamicQuantizeNode.Input[0]
 
 	// Check for attention pre-scale: Mul(Q_raw, 1/√headDim)
 	var qFloatName string
 	var attentionScale float64 = 1.0
 	var qPreScaleMulNode *protos.NodeProto
 
-	qInputNode, qInputFound := m.NodeOutputToNode[qDqlInput]
+	qInputNode, qInputFound := m.NodeOutputToNode[qDynamicQuantizeInput]
 	if qInputFound && qInputNode.OpType == "Mul" && len(qInputNode.Input) >= 2 {
 		for _, scalarIdx := range []int{0, 1} {
 			otherIdx := 1 - scalarIdx
@@ -226,38 +226,38 @@ func tryMatchQuantizedSDPA(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *quant
 		}
 	}
 	if qFloatName == "" {
-		// No pre-scale, use DQL input directly.
-		qFloatName = qDqlInput
+		// No pre-scale, use DynamicQuantizeLinear input directly.
+		qFloatName = qDynamicQuantizeInput
 	}
 
-	// K: matmul1.Input[1] → possibly Transpose → DQL → K_float (BHSD layout)
+	// K: matmul1.Input[1] → possibly Transpose → DynamicQuantizeLinear → K_float (BHSD layout)
 	kUint8Name := matmul1.Input[1]
-	kDqlNode, kFloatName, kTransposeNode, kNeedsHeadsFirst, kIsTransposed := traceQuantizedKBackward(m, kUint8Name)
-	if kDqlNode == nil {
+	kDynamicQuantizeNode, kFloatName, kTransposeNode, kNeedsHeadsFirst, kIsTransposed := traceQuantizedKBackward(m, kUint8Name)
+	if kDynamicQuantizeNode == nil {
 		return nil
 	}
 
-	// V: matmul2.Input[1] → DQL → V_float
+	// V: matmul2.Input[1] → DynamicQuantizeLinear → V_float
 	vUint8Name := matmul2.Input[1]
-	vDqlNode, vOk := m.NodeOutputToNode[vUint8Name]
-	if !vOk || vDqlNode.OpType != "DynamicQuantizeLinear" || len(vDqlNode.Input) == 0 {
+	vDynamicQuantizeNode, vOk := m.NodeOutputToNode[vUint8Name]
+	if !vOk || vDynamicQuantizeNode.OpType != "DynamicQuantizeLinear" || len(vDynamicQuantizeNode.Input) == 0 {
 		return nil
 	}
-	vFloatName := vDqlNode.Input[0]
+	vFloatName := vDynamicQuantizeNode.Input[0]
 
 	// --- Collect all internal nodes ---
 	internalNodes := map[*protos.NodeProto]bool{
-		qDqlNode:      true,
-		kDqlNode:      true,
-		matmul1:       true,
-		castNode:      true,
-		scaleMulNode:  true,
-		softmaxNode:   true,
-		dqlAttn:       true,
-		vDqlNode:      true,
-		matmul2:       true,
-		castNode2:     true,
-		scaleMulNode2: true,
+		qDynamicQuantizeNode: true,
+		kDynamicQuantizeNode: true,
+		matmul1:              true,
+		castNode:             true,
+		scaleMulNode:         true,
+		softmaxNode:          true,
+		dynamicQuantizeAttn:  true,
+		vDynamicQuantizeNode: true,
+		matmul2:              true,
+		castNode2:            true,
+		scaleMulNode2:        true,
 	}
 	if qPreScaleMulNode != nil {
 		internalNodes[qPreScaleMulNode] = true
@@ -342,17 +342,17 @@ func tryMatchQuantizedSDPA(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *quant
 	}
 }
 
-// traceQuantizedKBackward traces MatMulInteger input[1] backward to find the DQL node,
+// traceQuantizedKBackward traces MatMulInteger input[1] backward to find the DynamicQuantizeLinear node,
 // the float K input, and any intermediate Transpose node.
 //
 // Three layouts are supported:
-//   - K^T before DQL: MatMulInteger ← DQL ← Transpose(K_BHSD)
-//   - K^T after DQL:  MatMulInteger ← Transpose ← DQL ← K_BHSD
-//   - Pre-scaled K^T: MatMulInteger ← DQL ← Mul(Transpose(K_BHSD), scalar)
+//   - K^T before DynamicQuantizeLinear: MatMulInteger ← DynamicQuantizeLinear ← Transpose(K_BHSD)
+//   - K^T after DynamicQuantizeLinear:  MatMulInteger ← Transpose ← DynamicQuantizeLinear ← K_BHSD
+//   - Pre-scaled K^T: MatMulInteger ← DynamicQuantizeLinear ← Mul(Transpose(K_BHSD), scalar)
 //
 // When kIsTransposed is true, kFloatName points to a K^T tensor (already transposed)
 // that needs the last two dims swapped before passing to the fused op.
-func traceQuantizedKBackward(m *onnxgomlx.Model, uint8Name string) (dqlNode *protos.NodeProto, kFloatName string, transposeNode *protos.NodeProto, kNeedsHeadsFirst, kIsTransposed bool) {
+func traceQuantizedKBackward(m *onnxgomlx.Model, uint8Name string) (dynamicQuantizeNode *protos.NodeProto, kFloatName string, transposeNode *protos.NodeProto, kNeedsHeadsFirst, kIsTransposed bool) {
 	node, ok := m.NodeOutputToNode[uint8Name]
 	if !ok {
 		return
@@ -360,25 +360,25 @@ func traceQuantizedKBackward(m *onnxgomlx.Model, uint8Name string) (dqlNode *pro
 
 	switch node.OpType {
 	case "DynamicQuantizeLinear":
-		// K^T was applied before DQL. Trace through DQL input.
-		dqlNode = node
-		if len(dqlNode.Input) == 0 {
+		// K^T was applied before DynamicQuantizeLinear. Trace through DynamicQuantizeLinear input.
+		dynamicQuantizeNode = node
+		if len(dynamicQuantizeNode.Input) == 0 {
 			return nil, "", nil, false, false
 		}
-		kTransposedFloat := dqlNode.Input[0]
+		kTransposedFloat := dynamicQuantizeNode.Input[0]
 
 		// Match standard K^T (swap last two axes).
 		tNode, preInput := matchKTranspose(m, kTransposedFloat)
 		if tNode != nil {
-			return dqlNode, preInput, tNode, false, false
+			return dynamicQuantizeNode, preInput, tNode, false, false
 		}
 		// Try combined heads-first + K^T (e.g. perm [0,2,3,1]).
 		tNode, preInput, matched := matchCombinedKTranspose(m, kTransposedFloat)
 		if matched {
-			return dqlNode, preInput, tNode, true, false
+			return dynamicQuantizeNode, preInput, tNode, true, false
 		}
 
-		// Pre-scaled K^T: DQL ← Mul(Transpose(K_BHSD), scalar).
+		// Pre-scaled K^T: DynamicQuantizeLinear ← Mul(Transpose(K_BHSD), scalar).
 		// The Transpose is hidden inside the Mul. We can't strip it without losing
 		// the pre-scale, so return the Mul output (K^T_scaled) and flag as transposed.
 		if mulNode, mulOk := m.NodeOutputToNode[kTransposedFloat]; mulOk && mulNode.OpType == "Mul" && len(mulNode.Input) >= 2 {
@@ -386,22 +386,22 @@ func traceQuantizedKBackward(m *onnxgomlx.Model, uint8Name string) (dqlNode *pro
 				tNode, _ = matchKTranspose(m, mulNode.Input[transposeIdx])
 				if tNode != nil {
 					// Mul(K^T, scalar) — return Mul output as K^T_scaled.
-					return dqlNode, kTransposedFloat, nil, false, true
+					return dynamicQuantizeNode, kTransposedFloat, nil, false, true
 				}
 				tNode, _, matched = matchCombinedKTranspose(m, mulNode.Input[transposeIdx])
 				if matched {
 					// The combined transpose already placed heads in dim 1,
 					// so kNeedsHeadsFirst=false. Only need to swap last two dims.
-					return dqlNode, kTransposedFloat, nil, false, true
+					return dynamicQuantizeNode, kTransposedFloat, nil, false, true
 				}
 			}
 		}
 
 		// No transpose found — K used directly (unusual).
-		return dqlNode, kTransposedFloat, nil, false, false
+		return dynamicQuantizeNode, kTransposedFloat, nil, false, false
 
 	case "Transpose":
-		// K^T was applied after DQL (uint8 transpose).
+		// K^T was applied after DynamicQuantizeLinear (uint8 transpose).
 		// Validate that the permutation actually swaps the last two axes.
 		if tNode, _ := matchKTranspose(m, uint8Name); tNode == nil {
 			return nil, "", nil, false, false
@@ -410,11 +410,11 @@ func traceQuantizedKBackward(m *onnxgomlx.Model, uint8Name string) (dqlNode *pro
 		if len(transposeNode.Input) == 0 {
 			return nil, "", nil, false, false
 		}
-		dqlNode, ok = m.NodeOutputToNode[transposeNode.Input[0]]
-		if !ok || dqlNode.OpType != "DynamicQuantizeLinear" || len(dqlNode.Input) == 0 {
+		dynamicQuantizeNode, ok = m.NodeOutputToNode[transposeNode.Input[0]]
+		if !ok || dynamicQuantizeNode.OpType != "DynamicQuantizeLinear" || len(dynamicQuantizeNode.Input) == 0 {
 			return nil, "", nil, false, false
 		}
-		return dqlNode, dqlNode.Input[0], transposeNode, false, false
+		return dynamicQuantizeNode, dynamicQuantizeNode.Input[0], transposeNode, false, false
 	}
 
 	return nil, "", nil, false, false

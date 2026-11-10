@@ -59,7 +59,7 @@ func makeValueInfoWithType(name string, dims []int64, elemType protos.TensorProt
 	}
 }
 
-// makeQuantizedDenseGraph builds the DQL → MatMulInteger → Cast → Mul(a_scale*B_scale) → Mul pattern.
+// makeQuantizedDenseGraph builds the DynamicQuantizeLinear → MatMulInteger → Cast → Mul(a_scale*B_scale) → Mul pattern.
 // If perChannelScale is true, bScale is [N] (per output channel) instead of scalar.
 func makeQuantizedDenseGraph(K, N int, perChannelScale bool) *protos.GraphProto {
 	// B weights: [K, N] int8
@@ -93,7 +93,7 @@ func makeQuantizedDenseGraph(K, N int, perChannelScale bool) *protos.GraphProto 
 			makeZeroUint8TensorProtoN("b_zp", N),
 		},
 		ValueInfo: []*protos.ValueInfoProto{
-			makeValueInfoWithType("dql_uint8", []int64{2, int64(K)}, protos.TensorProto_UINT8),
+			makeValueInfoWithType("quantized_uint8", []int64{2, int64(K)}, protos.TensorProto_UINT8),
 			makeValueInfoWithType("a_scale", []int64{}, protos.TensorProto_FLOAT),
 			makeValueInfoWithType("a_zp", []int64{}, protos.TensorProto_UINT8),
 			makeValueInfoWithType("matmul_out", []int64{2, int64(N)}, protos.TensorProto_INT32),
@@ -105,11 +105,11 @@ func makeQuantizedDenseGraph(K, N int, perChannelScale bool) *protos.GraphProto 
 			{
 				OpType: "DynamicQuantizeLinear",
 				Input:  []string{"float_input"},
-				Output: []string{"dql_uint8", "a_scale", "a_zp"},
+				Output: []string{"quantized_uint8", "a_scale", "a_zp"},
 			},
 			{
 				OpType: "MatMulInteger",
-				Input:  []string{"dql_uint8", "B", "a_zp", "b_zp"},
+				Input:  []string{"quantized_uint8", "B", "a_zp", "b_zp"},
 				Output: []string{"matmul_out"},
 			},
 			{

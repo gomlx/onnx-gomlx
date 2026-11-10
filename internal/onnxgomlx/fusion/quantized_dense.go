@@ -79,7 +79,7 @@ func (c *quantizedDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOutput
 
 	var floatInput *Node
 	if p.FloatInputName != "" {
-		// DQL-based variant: float input comes directly from DynamicQuantizeLinear's original input.
+		// DynamicQuantizeLinear-based variant: float input comes directly from DynamicQuantizeLinear's original input.
 		floatInput = convertedOutputs[p.FloatInputName]
 	} else {
 		// DequantizeLinear variant: construct float from quantized A.
@@ -161,7 +161,7 @@ func detectQuantizedDenseCandidates(m *onnxgomlx.Model) []onnxgomlx.FusionCandid
 }
 
 // tryMatchQuantizedDense attempts to match the full DynamicQuantizeLinear → MatMulInteger →
-// Cast → Mul(combined_scale) chain, tracing backward through DQL to find the original float
+// Cast → Mul(combined_scale) chain, tracing backward through DynamicQuantizeLinear to find the original float
 // input and extracting the constant weight scale from the scale combiner.
 func tryMatchQuantizedDense(m *onnxgomlx.Model, matMulNode *protos.NodeProto) *quantizedDenseCandidate {
 	consumers := m.Consumers
@@ -192,13 +192,13 @@ func tryMatchQuantizedDense(m *onnxgomlx.Model, matMulNode *protos.NodeProto) *q
 	}
 
 	// A input must come from DynamicQuantizeLinear.
-	dqlNode, ok := m.NodeOutputToNode[aName]
-	if !ok || dqlNode.OpType != "DynamicQuantizeLinear" || len(dqlNode.Input) == 0 || len(dqlNode.Output) < 2 {
-		// DQL not found — try DequantizeLinear variant instead.
+	dynamicQuantizeNode, ok := m.NodeOutputToNode[aName]
+	if !ok || dynamicQuantizeNode.OpType != "DynamicQuantizeLinear" || len(dynamicQuantizeNode.Input) == 0 || len(dynamicQuantizeNode.Output) < 2 {
+		// DynamicQuantizeLinear not found — try DequantizeLinear variant instead.
 		return tryMatchQuantizedDenseDequantLinear(m, matMulNode, bName, K, N)
 	}
-	floatInputName := dqlNode.Input[0] // original float32 input
-	aScaleName := dqlNode.Output[1]    // dynamic per-tensor scale
+	floatInputName := dynamicQuantizeNode.Input[0] // original float32 input
+	aScaleName := dynamicQuantizeNode.Output[1]    // dynamic per-tensor scale
 
 	// Follow forward: MatMulInteger → sole consumer Cast → sole consumer Mul(combined_scale).
 	matMulOut := matMulNode.Output[0]
@@ -247,7 +247,7 @@ func tryMatchQuantizedDense(m *onnxgomlx.Model, matMulNode *protos.NodeProto) *q
 	resultMulOut := resultMulNode.Output[0]
 
 	// Collect internal nodes/outputs for the base pattern.
-	// Note: DQL is NOT internal — it may be shared across multiple MatMulIntegers.
+	// Note: DynamicQuantizeLinear is NOT internal — it may be shared across multiple MatMulIntegers.
 	internalNodes := map[*protos.NodeProto]bool{
 		matMulNode:    true,
 		castNode:      true,
@@ -323,7 +323,7 @@ func tryMatchQuantizedDense(m *onnxgomlx.Model, matMulNode *protos.NodeProto) *q
 //	MatMulInteger(A, int8_B, a_zp?, b_zp=0) → int32
 //	  sole consumer → DequantizeLinear(int32_out, scalar_scale, no_zp) → float output
 //
-// This variant is emitted by some ONNX exporters instead of the DQL-based
+// This variant is emitted by some ONNX exporters instead of the DynamicQuantizeLinear-based
 // Cast+Mul(a_scale*B_scale) chain. Both are semantically equivalent.
 func tryMatchQuantizedDenseDequantLinear(m *onnxgomlx.Model, matMulNode *protos.NodeProto, bName string, K, N int) *quantizedDenseCandidate {
 	consumers := m.Consumers
@@ -443,7 +443,7 @@ func tryMatchQuantizedDenseDequantLinear(m *onnxgomlx.Model, matMulNode *protos.
 }
 
 // identifyConstantPeer checks a Mul node with two inputs: one must be knownDynamic
-// (runtime-computed, e.g. a_scale from DQL), the other must be a constant. Returns
+// (runtime-computed, e.g. a_scale from DynamicQuantizeLinear), the other must be a constant. Returns
 // the constant input name, or "" if the pattern doesn't match.
 func identifyConstantPeer(m *onnxgomlx.Model, mulNode *protos.NodeProto, knownDynamic string) string {
 	if len(mulNode.Input) < 2 {
