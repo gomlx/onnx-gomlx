@@ -134,7 +134,11 @@ func (c *quantizedDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOutput
 }
 
 func init() {
-	onnxgomlx.RegisterFusionDetector(detectQuantizedDenseCandidates)
+	// TODO: Re-enable detectQuantizedDenseCandidates once compute.FusedOps.FusedQuantizedDense
+	// supports quantized integer input activations (e.g. uint8/int8 x with inputQuantization
+	// and int32 accumulation) to match ONNX DynamicQuantizeLinear + MatMulInteger semantics
+	// without bypassing DynamicQuantizeLinear. See ../FusedQuantizedDense_TODO.md.
+	_ = detectQuantizedDenseCandidates
 }
 
 // detectQuantizedDenseCandidates scans the ONNX graph for:

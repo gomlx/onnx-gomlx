@@ -196,3 +196,85 @@ func TestQuantizedDenseScalarScale(t *testing.T) {
 	assert.Equal(t, dtypes.Float32, result.DType())
 	assert.Equal(t, []int{2, N}, result.Shape().Dimensions)
 }
+
+// TestQuantizedDenseFusionParity verifies that DynamicQuantizeLinear + MatMulInteger graphs
+// produce identical outputs whether fusion is enabled or disabled, preserving the uint8
+// quantization rounding of DynamicQuantizeLinear.
+func TestQuantizedDenseFusionParity(t *testing.T) {
+	graphProto := &protos.GraphProto{
+		Name: "mlp_0_perchannel_0",
+		Input: []*protos.ValueInfoProto{
+			makeValueInfo("x", []int64{1, 3}),
+		},
+		Output: []*protos.ValueInfoProto{
+			makeValueInfo("result", []int64{1, 1}),
+		},
+		Initializer: []*protos.TensorProto{
+			makeInt8TensorProto("w0_quantized", []int64{3, 1}, []int8{0, 127, 0}),
+			makeScalarFloatTensorProto("w0_scale", 1.0/127.0),
+			makeInt8TensorProto("w0_zero_point", nil, []int8{0}),
+			makeFloatTensorProto("b0", []int64{1}, []float32{0}),
+		},
+		Node: []*protos.NodeProto{
+			{
+				OpType: "DynamicQuantizeLinear",
+				Input:  []string{"x"},
+				Output: []string{"x_quantized", "x_scale", "x_zero_point"},
+			},
+			{
+				OpType: "Mul",
+				Input:  []string{"x_scale", "w0_scale"},
+				Output: []string{"x_scale_w0_scale_mul"},
+			},
+			{
+				OpType: "MatMulInteger",
+				Input:  []string{"x_quantized", "w0_quantized", "x_zero_point", "w0_zero_point"},
+				Output: []string{"mm0_output_quantized"},
+			},
+			{
+				OpType: "Cast",
+				Input:  []string{"mm0_output_quantized"},
+				Output: []string{"mm0_output_quantized_cast_output"},
+				Attribute: []*protos.AttributeProto{
+					{Name: "to", Type: protos.AttributeProto_INT, I: int64(protos.TensorProto_FLOAT)},
+				},
+			},
+			{
+				OpType: "Mul",
+				Input:  []string{"mm0_output_quantized_cast_output", "x_scale_w0_scale_mul"},
+				Output: []string{"mm0"},
+			},
+			{
+				OpType: "Add",
+				Input:  []string{"mm0", "b0"},
+				Output: []string{"result"},
+			},
+		},
+	}
+
+	backend, err := gobackend.New("")
+	require.NoError(t, err)
+
+	runModel := func(disableFusion bool) []float32 {
+		m := buildTestModel(t, graphProto)
+		if disableFusion {
+			m.DisableFusion()
+		}
+		store := model.NewStore()
+		require.NoError(t, m.VariablesToScope(store.RootScope()))
+
+		results := model.MustCallOnceN(backend, store, func(scope *model.Scope, g *Graph) []*Node {
+			xNode := Const(g, tensors.FromFlatDataAndDimensions([]float32{-1, 0.1, 1}, 1, 3))
+			return m.CallGraph(scope, g, map[string]*Node{"x": xNode})
+		})
+		require.Len(t, results, 1)
+		vals, err := tensors.CopyFlatData[float32](results[0])
+		require.NoError(t, err)
+		return vals
+	}
+
+	fusedOut := runModel(false)
+	unfusedOut := runModel(true)
+	require.Equal(t, unfusedOut, fusedOut)
+	assert.InDelta(t, float32(26.0/255.0), fusedOut[0], 1e-7)
+}

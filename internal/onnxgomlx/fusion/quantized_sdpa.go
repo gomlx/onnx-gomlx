@@ -82,7 +82,10 @@ func (c *quantizedSDPACandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs
 }
 
 func init() {
-	onnxgomlx.RegisterFusionDetector(detectQuantizedSDPACandidates)
+	// TODO: Re-enable detectQuantizedSDPACandidates once compute.FusedOps.FusedScaledDotProductAttention
+	// implements QuantizedMatmuls with ONNX DynamicQuantizeLinear + MatMulInteger semantics
+	// rather than falling back to unquantized float32 matmuls. See ../FusedQuantizedDense_TODO.md.
+	_ = detectQuantizedSDPACandidates
 }
 
 // detectQuantizedSDPACandidates scans the ONNX graph for the quantized attention chain:

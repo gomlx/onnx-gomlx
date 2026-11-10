@@ -89,7 +89,11 @@ func (c *quantizedQKVDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOut
 }
 
 func init() {
-	onnxgomlx.RegisterFusionDetector(detectQuantizedQKVDenseCandidates)
+	// TODO: Re-enable detectQuantizedQKVDenseCandidates once compute.FusedOps.FusedQuantizedDense
+	// supports quantized integer input activations (e.g. uint8/int8 x with inputQuantization
+	// and int32 accumulation) to match ONNX DynamicQuantizeLinear + MatMulInteger semantics
+	// without bypassing DynamicQuantizeLinear. See ../FusedQuantizedDense_TODO.md.
+	_ = detectQuantizedQKVDenseCandidates
 }
 
 // detectQuantizedQKVDenseCandidates runs the individual quantized dense detector internally,
