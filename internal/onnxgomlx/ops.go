@@ -1758,6 +1758,31 @@ func convertSimplifiedLayerNormalization(_ *Model, _ map[string]*Node, node *pro
 	return Mul(normalized, scale)
 }
 
+// convertSkipSimplifiedLayerNormalization converts the corresponding ONNX node to GoMLX nodes.
+//
+// SkipSimplifiedLayerNormalization is SimplifiedLayerNormalization (RMSNorm) of input + skip (+ bias).
+// This is a Microsoft ONNX Runtime contrib op.
+//
+// See ONNX Runtime contrib ops documentation in:
+// https://github.com/microsoft/onnxruntime/blob/main/docs/ContribOperators.md#com.microsoft.SkipSimplifiedLayerNormalization
+func convertSkipSimplifiedLayerNormalization(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	// Inputs: [input, skip, gamma, bias (optional)]
+	// Outputs: [output, mean, inv_std_var, input_skip_bias_sum]; mean and inv_std_var are not converted.
+	if len(inputs) < 3 {
+		exceptions.Panicf("SkipSimplifiedLayerNormalization: expected at least 3 inputs (input, skip, gamma), got %d", len(inputs))
+	}
+	operands := onnxImplicitExpansion([]*Node{inputs[0], inputs[1]})
+	sum := Add(operands[0], operands[1])
+	if len(inputs) > 3 && inputs[3] != nil {
+		operands = onnxImplicitExpansion([]*Node{sum, inputs[3]})
+		sum = Add(operands[0], operands[1])
+	}
+	if len(node.Output) >= 4 && node.Output[3] != "" {
+		convertedOutputs[node.Output[3]] = sum
+	}
+	return convertSimplifiedLayerNormalization(m, convertedOutputs, node, []*Node{sum, inputs[2]})
+}
+
 // convertRotaryEmbedding converts the corresponding ONNX node to GoMLX nodes.
 //
 // RotaryEmbedding implements rotary positional embeddings (RoPE) which encode position
