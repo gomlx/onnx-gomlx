@@ -8,8 +8,8 @@ require (
 	github.com/gomlx/compute v0.1.27
 	github.com/gomlx/compute-onnx v0.1.27
 	github.com/gomlx/exceptions v0.0.3
-	github.com/gomlx/go-huggingface v0.4.30
-	github.com/gomlx/gomlx v0.28.32
+	github.com/gomlx/go-huggingface v0.4.31
+	github.com/gomlx/gomlx v0.28.33
 	github.com/janpfeifer/go-benchmarks v0.1.1
 	github.com/janpfeifer/must v0.2.0
 	github.com/parquet-go/parquet-go v0.29.0
