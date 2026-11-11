@@ -838,6 +838,55 @@ func TestSimplifiedLayerNormalization(t *testing.T) {
 	}, 1e-3)
 }
 
+func TestSkipSimplifiedLayerNormalization(t *testing.T) {
+	// Test SkipSimplifiedLayerNormalization: RMSNorm of input + skip, and the sum as the 4th output
+	graphtest.RunTestGraphFn(t, "SkipSimplifiedLayerNormalization-basic", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{1.0, 2.0}})
+		skip := Const(g, [][]float32{{3.0, 0.0}})
+		gamma := Const(g, []float32{1.0, 1.0})
+
+		node := &protos.NodeProto{
+			OpType: "SkipSimplifiedLayerNormalization",
+			Output: []string{"output", "", "", "input_skip_bias_sum"},
+		}
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{x, skip, gamma}
+		outputs = []*Node{
+			convertSkipSimplifiedLayerNormalization(nil, convertedOutputs, node, inputs),
+		}
+		outputs = append(outputs, convertedOutputs["input_skip_bias_sum"])
+		return
+	}, []any{
+		// sum = [4,2]: mean(sum^2)=10, rms=sqrt(10)≈3.162, normalized ≈ [1.265, 0.632]
+		[][]float32{{1.2649, 0.6325}},
+		[][]float32{{4.0, 2.0}},
+	}, 1e-3)
+
+	// Test with bias and scale
+	graphtest.RunTestGraphFn(t, "SkipSimplifiedLayerNormalization-bias", func(g *Graph) (inputs, outputs []*Node) {
+		x := Const(g, [][]float32{{1.0, 2.0}})
+		skip := Const(g, [][]float32{{3.0, 0.0}})
+		gamma := Const(g, []float32{2.0, 2.0})
+		bias := Const(g, []float32{0.0, 1.0})
+
+		node := &protos.NodeProto{
+			OpType: "SkipSimplifiedLayerNormalization",
+			Output: []string{"output", "", "", "input_skip_bias_sum"},
+		}
+		convertedOutputs := make(map[string]*Node)
+		inputs = []*Node{x, skip, gamma, bias}
+		outputs = []*Node{
+			convertSkipSimplifiedLayerNormalization(nil, convertedOutputs, node, inputs),
+		}
+		outputs = append(outputs, convertedOutputs["input_skip_bias_sum"])
+		return
+	}, []any{
+		// sum = [4,3]: mean(sum^2)=12.5, rms=sqrt(12.5)≈3.536, normalized*2 ≈ [2.263, 1.697]
+		[][]float32{{2.2627, 1.6971}},
+		[][]float32{{4.0, 3.0}},
+	}, 1e-3)
+}
+
 func TestReduceL2(t *testing.T) {
 	// Test basic ReduceL2 over all elements
 	graphtest.RunTestGraphFn(t, "ReduceL2-all", func(g *Graph) (inputs, outputs []*Node) {
