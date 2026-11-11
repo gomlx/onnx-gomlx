@@ -598,9 +598,34 @@ func (m *Model) convertConcat(node *protos.NodeProto, inputs []*Node) *Node {
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Softmax.html
-func convertSoftmax(node *protos.NodeProto, inputs []*Node) *Node {
-	axis := GetIntAttrOr(node, "axis", -1)
-	return Softmax(inputs[0], axis)
+func convertSoftmax(m *Model, node *protos.NodeProto, inputs []*Node) *Node {
+	opset := int64(13)
+	for _, imported := range m.Proto.OpsetImport {
+		if imported.GetDomain() == "" || imported.GetDomain() == "ai.onnx" {
+			opset = imported.GetVersion()
+			break
+		}
+	}
+	if opset >= 13 {
+		return Softmax(inputs[0], GetIntAttrOr(node, "axis", -1))
+	}
+	x := inputs[0]
+	axis := GetIntAttrOr(node, "axis", 1)
+	if axis < 0 {
+		axis += x.Rank()
+	}
+	if axis < 0 || axis >= x.Rank() {
+		exceptions.Panicf("Softmax: axis %d out of range for rank %d", axis, x.Rank())
+	}
+	outer, inner := 1, 1
+	for index, dimension := range x.Shape().Dimensions {
+		if index < axis {
+			outer *= dimension
+		} else {
+			inner *= dimension
+		}
+	}
+	return Reshape(Softmax(Reshape(x, outer, inner), 1), x.Shape().Dimensions...)
 }
 
 // convertCast converts a ONNX node to a GoMLX node.
