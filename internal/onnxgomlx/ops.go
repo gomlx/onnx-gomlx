@@ -1854,6 +1854,16 @@ func convertRotaryEmbedding(m *Model, convertedOutputs map[string]*Node, node *p
 	var cos, sin *Node
 
 	if positionIds != nil {
+		// A scalar or 1-element position_ids is a single offset: token s is at position_ids[0] + s.
+		// This follows ONNX Runtime, where rotary_embedding_helper.h selects this format
+		// (IsScalarOr1ElementVector) and rotary_embedding.cc computes the positions.
+		if positionIds.IsScalar() || positionIds.Shape().CheckDims(1) == nil {
+			offset := Reshape(positionIds)
+			numPositions := x.Shape().Dimensions[2]
+			positionIds = Iota(x.Graph(), shapes.Make(offset.DType(), numPositions), 0)
+			positionIds = Add(positionIds, offset)
+			positionIds = Reshape(positionIds, 1, numPositions)
+		}
 		// cos_cache/sin_cache shape: (max_pos+1, rotary_dim/2)
 		// Gather using position_ids to get (batch, seq_len, rotary_dim/2)
 		cos = onnxGather(cosCache, positionIds, 0)

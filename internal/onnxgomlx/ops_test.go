@@ -1046,6 +1046,70 @@ func TestRotaryEmbedding(t *testing.T) {
 		[][][][]float32{{{{1.0, 2.0, 3.0, 4.0}, {-7.0, -8.0, 5.0, 6.0}}}},
 	}, 1e-5)
 
+	// Test RotaryEmbedding with position_ids of shape (1): the position of the first token
+	graphtest.RunTestGraphFn(t, "RotaryEmbedding-with-position-offset", func(g *Graph) (inputs, outputs []*Node) {
+		// Input: (batch=1, heads=1, seq=2, head_size=4)
+		x := Const(g, [][][][]float32{{{{1.0, 2.0, 3.0, 4.0}, {5.0, 6.0, 7.0, 8.0}}}})
+
+		// cos_cache and sin_cache: (max_pos=3, head_size/2=2)
+		cosCache := Const(g, [][]float32{{1.0, 1.0}, {0.5, 0.5}, {0.0, 0.0}})
+		sinCache := Const(g, [][]float32{{0.0, 0.0}, {0.5, 0.5}, {1.0, 1.0}})
+
+		// position_ids: [1], so the two tokens are at positions 1 and 2
+		positionIds := Const(g, []int64{1})
+
+		node := &protos.NodeProto{
+			OpType: "RotaryEmbedding",
+		}
+		// Inputs: [input, position_ids, cos_cache, sin_cache]
+		inputs = []*Node{x, positionIds, cosCache, sinCache}
+		outputs = []*Node{
+			convertRotaryEmbedding(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Position 1: cos=[0.5,0.5], sin=[0.5,0.5]
+		//   x1=[1,2], x2=[3,4]
+		//   real = [1,2]*[0.5,0.5] - [3,4]*[0.5,0.5] = [-1,-1]
+		//   imag = [1,2]*[0.5,0.5] + [3,4]*[0.5,0.5] = [2,3]
+		//   output = [-1,-1,2,3]
+		// Position 2: cos=[0,0], sin=[1,1]
+		//   x1=[5,6], x2=[7,8]
+		//   real = [5,6]*[0,0] - [7,8]*[1,1] = [-7,-8]
+		//   imag = [5,6]*[1,1] + [7,8]*[0,0] = [5,6]
+		//   output = [-7,-8,5,6]
+		[][][][]float32{{{{-1.0, -1.0, 2.0, 3.0}, {-7.0, -8.0, 5.0, 6.0}}}},
+	}, 1e-5)
+
+	// Test RotaryEmbedding with 3D input and position_ids of shape (1)
+	graphtest.RunTestGraphFn(t, "RotaryEmbedding-3D-with-position-offset", func(g *Graph) (inputs, outputs []*Node) {
+		// Input: (batch=1, seq=2, hidden=4), one head of size 4
+		x := Const(g, [][][]float32{{{1.0, 2.0, 3.0, 4.0}, {5.0, 6.0, 7.0, 8.0}}})
+
+		cosCache := Const(g, [][]float32{{1.0, 1.0}, {0.5, 0.5}, {0.0, 0.0}})
+		sinCache := Const(g, [][]float32{{0.0, 0.0}, {0.5, 0.5}, {1.0, 1.0}})
+
+		// position_ids: [0], so the two tokens are at positions 0 and 1
+		positionIds := Const(g, []int64{0})
+
+		node := &protos.NodeProto{
+			OpType: "RotaryEmbedding",
+		}
+		inputs = []*Node{x, positionIds, cosCache, sinCache}
+		outputs = []*Node{
+			convertRotaryEmbedding(nil, nil, node, inputs),
+		}
+		return
+	}, []any{
+		// Position 0: cos=[1,1], sin=[0,0], output = [1,2,3,4]
+		// Position 1: cos=[0.5,0.5], sin=[0.5,0.5]
+		//   x1=[5,6], x2=[7,8]
+		//   real = [2.5,3] - [3.5,4] = [-1,-1]
+		//   imag = [2.5,3] + [3.5,4] = [6,7]
+		//   output = [-1,-1,6,7]
+		[][][]float32{{{1.0, 2.0, 3.0, 4.0}, {-1.0, -1.0, 6.0, 7.0}}},
+	}, 1e-5)
+
 	// Test RotaryEmbedding with interleaved mode
 	graphtest.RunTestGraphFn(t, "RotaryEmbedding-interleaved", func(g *Graph) (inputs, outputs []*Node) {
 		// Input: (batch=1, heads=1, seq=1, head_size=4)
