@@ -599,13 +599,7 @@ func (m *Model) convertConcat(node *protos.NodeProto, inputs []*Node) *Node {
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Softmax.html
 func convertSoftmax(m *Model, node *protos.NodeProto, inputs []*Node) *Node {
-	opset := int64(13)
-	for _, imported := range m.Proto.OpsetImport {
-		if imported.GetDomain() == "" || imported.GetDomain() == "ai.onnx" {
-			opset = imported.GetVersion()
-			break
-		}
-	}
+	opset := m.GetOpsetVersion(13)
 	if opset >= 13 {
 		return Softmax(inputs[0], GetIntAttrOr(node, "axis", -1))
 	}

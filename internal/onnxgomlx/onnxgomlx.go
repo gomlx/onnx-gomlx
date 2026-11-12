@@ -70,6 +70,17 @@ type Model struct {
 	disabledPasses map[string]bool
 }
 
+// GetOpsetVersion returns the ONNX default-domain opset version, or defaultVersion
+// when no default-domain opset is declared.
+func (m *Model) GetOpsetVersion(defaultVersion int) int {
+	for _, imported := range m.Proto.OpsetImport {
+		if imported != nil && (imported.GetDomain() == "" || imported.GetDomain() == "ai.onnx") {
+			return int(imported.GetVersion())
+		}
+	}
+	return defaultVersion
+}
+
 // Ensure Model implements onnx.Model.
 var _ onnx.Model = &Model{}
 

@@ -51,3 +51,26 @@ func TestSoftmaxOpsetSemantics(t *testing.T) {
 }
 
 func int64Ptr(value int64) *int64 { return &value }
+
+func TestGetOpsetVersion(t *testing.T) {
+	tests := []struct {
+		name           string
+		imports        []*protos.OperatorSetIdProto
+		defaultVersion int
+		want           int
+	}{
+		{"missing imports", nil, 13, 13},
+		{"caller default", nil, 18, 18},
+		{"default domain", []*protos.OperatorSetIdProto{{Version: 11}}, 13, 11},
+		{"explicit ONNX domain", []*protos.OperatorSetIdProto{{Domain: "ai.onnx", Version: 12}}, 13, 12},
+		{"custom domain only", []*protos.OperatorSetIdProto{{Domain: "custom", Version: 1}}, 13, 13},
+		{"custom domain first", []*protos.OperatorSetIdProto{{Domain: "custom", Version: 1}, {Version: 18}}, 13, 18},
+		{"nil import", []*protos.OperatorSetIdProto{nil, {Version: 11}}, 13, 11},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			model := &Model{Proto: protos.ModelProto{OpsetImport: test.imports}}
+			require.Equal(t, test.want, model.GetOpsetVersion(test.defaultVersion))
+		})
+	}
+}
