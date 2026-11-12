@@ -3,11 +3,11 @@ package fusion
 import (
 	"testing"
 
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/dtypes"
 	"github.com/gomlx/compute/gobackend"
 	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/gomlx/gomlx/ml/model"
-	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -142,8 +142,10 @@ func TestQuantizedDensePerChannelScale(t *testing.T) {
 	graphProto := makeQuantizedDenseGraph(K, N, true) // per-channel
 	graphProto.Name = "quantized_dense_per_channel"
 
-	// Build model — should not panic during fusion detection.
+	// Build model — should detect QuantizedDense fusion without panicking.
 	m := buildTestModel(t, graphProto)
+	require.Contains(t, m.DetectedFusions, "output")
+	assert.Equal(t, "QuantizedDense", m.DetectedFusions["output"].Name())
 
 	// VariablesToScope should succeed.
 	backend, err := gobackend.New("")
@@ -259,6 +261,9 @@ func TestQuantizedDenseFusionParity(t *testing.T) {
 		m := buildTestModel(t, graphProto)
 		if disableFusion {
 			m.DisableFusion()
+		} else {
+			require.Contains(t, m.DetectedFusions, "result")
+			assert.Equal(t, "QuantizedDense", m.DetectedFusions["result"].Name())
 		}
 		store := model.NewStore()
 		require.NoError(t, m.VariablesToScope(store.RootScope()))
@@ -277,4 +282,103 @@ func TestQuantizedDenseFusionParity(t *testing.T) {
 	unfusedOut := runModel(true)
 	require.Equal(t, unfusedOut, fusedOut)
 	assert.InDelta(t, float32(26.0/255.0), fusedOut[0], 1e-7)
+}
+
+// TestQuantizedQKVDenseFusionParity verifies that three MatMulInteger Q/K/V projections sharing
+// one DynamicQuantizeLinear(x) fuse into a single QuantizedQKVDense op (including GQA QDim != KVDim,
+// mixed scalar/per-channel scales, non-zero weight zero point, and biases) with exact numerical parity.
+func TestQuantizedQKVDenseFusionParity(t *testing.T) {
+	const K, QDim, KVDim = 6, 4, 2
+	makeWeight := func(seed int, rows, cols int) []int8 {
+		out := make([]int8, rows*cols)
+		for i := range out {
+			out[i] = int8(((i*3 + seed) % 11) - 5)
+		}
+		return out
+	}
+
+	graphProto := &protos.GraphProto{
+		Name: "quantized_qkv_gqa_parity",
+		Input: []*protos.ValueInfoProto{
+			makeValueInfo("x", []int64{2, K}),
+		},
+		Output: []*protos.ValueInfoProto{
+			makeValueInfo("q_out", []int64{2, QDim}),
+			makeValueInfo("k_out", []int64{2, KVDim}),
+			makeValueInfo("v_out", []int64{2, KVDim}),
+		},
+		Initializer: []*protos.TensorProto{
+			makeInt8TensorProto("w_q", []int64{K, QDim}, makeWeight(1, K, QDim)),
+			makeInt8TensorProto("w_k", []int64{K, KVDim}, makeWeight(2, K, KVDim)),
+			makeInt8TensorProto("w_v", []int64{K, KVDim}, makeWeight(4, K, KVDim)),
+			makeFloatTensorProto("s_q", []int64{QDim}, []float32{0.02, 0.03, 0.04, 0.05}),
+			makeScalarFloatTensorProto("s_k", 0.025),
+			makeFloatTensorProto("s_v", []int64{KVDim}, []float32{0.03, 0.015}),
+			makeInt8TensorProto("zp_q", []int64{QDim}, []int8{1, -1, 0, 2}),
+			makeInt8TensorProto("zp_zero_kv", []int64{KVDim}, []int8{0, 0}),
+			makeFloatTensorProto("b_q", []int64{QDim}, []float32{0.1, -0.2, 0.3, -0.4}),
+			makeFloatTensorProto("b_k", []int64{KVDim}, []float32{0.05, -0.05}),
+			makeFloatTensorProto("b_v", []int64{KVDim}, []float32{-0.1, 0.2}),
+		},
+		Node: []*protos.NodeProto{
+			{
+				OpType: "DynamicQuantizeLinear",
+				Input:  []string{"x"},
+				Output: []string{"x_q", "x_scale", "x_zp"},
+			},
+			// Q branch
+			{OpType: "MatMulInteger", Input: []string{"x_q", "w_q", "x_zp", "zp_q"}, Output: []string{"q_i32"}},
+			{OpType: "Cast", Input: []string{"q_i32"}, Output: []string{"q_f32"}, Attribute: []*protos.AttributeProto{{Name: "to", Type: protos.AttributeProto_INT, I: int64(protos.TensorProto_FLOAT)}}},
+			{OpType: "Mul", Input: []string{"x_scale", "s_q"}, Output: []string{"cs_q"}},
+			{OpType: "Mul", Input: []string{"q_f32", "cs_q"}, Output: []string{"q_scaled"}},
+			{OpType: "Add", Input: []string{"q_scaled", "b_q"}, Output: []string{"q_out"}},
+			// K branch
+			{OpType: "MatMulInteger", Input: []string{"x_q", "w_k", "x_zp", "zp_zero_kv"}, Output: []string{"k_i32"}},
+			{OpType: "Cast", Input: []string{"k_i32"}, Output: []string{"k_f32"}, Attribute: []*protos.AttributeProto{{Name: "to", Type: protos.AttributeProto_INT, I: int64(protos.TensorProto_FLOAT)}}},
+			{OpType: "Mul", Input: []string{"x_scale", "s_k"}, Output: []string{"cs_k"}},
+			{OpType: "Mul", Input: []string{"k_f32", "cs_k"}, Output: []string{"k_scaled"}},
+			{OpType: "Add", Input: []string{"k_scaled", "b_k"}, Output: []string{"k_out"}},
+			// V branch
+			{OpType: "MatMulInteger", Input: []string{"x_q", "w_v", "x_zp", "zp_zero_kv"}, Output: []string{"v_i32"}},
+			{OpType: "Cast", Input: []string{"v_i32"}, Output: []string{"v_f32"}, Attribute: []*protos.AttributeProto{{Name: "to", Type: protos.AttributeProto_INT, I: int64(protos.TensorProto_FLOAT)}}},
+			{OpType: "Mul", Input: []string{"x_scale", "s_v"}, Output: []string{"cs_v"}},
+			{OpType: "Mul", Input: []string{"v_f32", "cs_v"}, Output: []string{"v_scaled"}},
+			{OpType: "Add", Input: []string{"v_scaled", "b_v"}, Output: []string{"v_out"}},
+		},
+	}
+
+	backend, err := gobackend.New("")
+	require.NoError(t, err)
+	xData := []float32{-0.8, 0.2, 0.5, -0.3, 1.1, -0.4, 0.6, -1.2, 0.0, 0.9, -0.5, 0.3}
+
+	run := func(disableFusion bool) [][]float32 {
+		m := buildTestModel(t, graphProto)
+		if disableFusion {
+			m.DisableFusion()
+		} else {
+			require.Contains(t, m.DetectedFusions, "q_out")
+			assert.Equal(t, "QuantizedQKVDense", m.DetectedFusions["q_out"].Name())
+		}
+		store := model.NewStore()
+		require.NoError(t, m.VariablesToScope(store.RootScope()))
+
+		results := model.MustCallOnceN(backend, store, func(scope *model.Scope, g *Graph) []*Node {
+			xNode := Const(g, tensors.FromFlatDataAndDimensions(xData, 2, K))
+			return m.CallGraph(scope, g, map[string]*Node{"x": xNode})
+		})
+		require.Len(t, results, 3)
+		outs := make([][]float32, 3)
+		for i, r := range results {
+			vals, err := tensors.CopyFlatData[float32](r)
+			require.NoError(t, err)
+			outs[i] = vals
+		}
+		return outs
+	}
+
+	fused := run(false)
+	unfused := run(true)
+	for i, name := range []string{"Q", "K", "V"} {
+		assert.InDeltaSlice(t, unfused[i], fused[i], 1e-6, "%s projection mismatch", name)
+	}
 }

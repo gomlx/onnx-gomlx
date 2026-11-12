@@ -160,6 +160,7 @@ GoMLX and its backends provide hardware-accelerated fused operations:
 - **`FusedScaledDotProductAttention`** (`compute.OpTypeFusedScaledDotProductAttention` via `attention.Core`)
 - **`FusedAttentionQKVProjection`** (`compute.OpTypeFusedAttentionQKVProjection`)
 - **`FusedDense`** (`compute.OpTypeFusedDense`)
+- **`FusedQuantizedDense`** (`compute.OpTypeFusedQuantizedDense` via `nn.QuantizedDense` with `QuantizedDenseConfig`)
 - **`FusedLayerNorm`** (`compute.OpTypeFusedLayerNorm`)
 - **`FusedSoftmax`** (`compute.OpTypeFusedSoftmax`)
 
