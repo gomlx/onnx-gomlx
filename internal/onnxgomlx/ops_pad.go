@@ -28,6 +28,33 @@ func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodePr
 	}
 
 	rank := x.Rank()
+	if len(inputs) > 3 && inputs[3] != nil {
+		axesTensor, err := m.materializeConstantExpression(node.Input[3], convertedOutputs)
+		if err != nil {
+			panic(errors.WithMessage(err, "while converting Pad axes"))
+		}
+		axes := tensorToInts(axesTensor)
+		if len(pads) != 2*len(axes) {
+			exceptions.Panicf("Pad: expected two padding values per axis")
+		}
+		expanded := make([]int, 2*rank)
+		seen := make([]bool, rank)
+		for index, axis := range axes {
+			if axis < 0 {
+				axis += rank
+			}
+			if axis < 0 || axis >= rank {
+				exceptions.Panicf("Pad: axis %d out of range for rank %d", axis, rank)
+			}
+			if seen[axis] {
+				exceptions.Panicf("Pad: duplicate axis %d", axis)
+			}
+			seen[axis] = true
+			expanded[axis] = pads[index]
+			expanded[axis+rank] = pads[index+len(axes)]
+		}
+		pads = expanded
+	}
 	if len(pads) != 2*rank {
 		exceptions.Panicf("invalid number of padding values: %d axes, got %d padding values -- expected 2 pads per axis", rank, len(pads))
 	}
@@ -35,7 +62,7 @@ func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodePr
 	switch mode {
 	case "constant":
 		var constantValueNode *Node
-		if len(inputs) > 2 {
+		if len(inputs) > 2 && inputs[2] != nil {
 			constantValueNode = inputs[2]
 		} else {
 			constantValueNode = Scalar(x.Graph(), x.DType(), 0)
