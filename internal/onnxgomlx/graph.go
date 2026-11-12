@@ -581,7 +581,7 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 	case "Concat":
 		result = m.convertConcat(node, inputs)
 	case "Softmax":
-		result = convertSoftmax(node, inputs)
+		result = convertSoftmax(m, node, inputs)
 	case "Cast":
 		result = convertCast(node, inputs)
 	case "Transpose":
