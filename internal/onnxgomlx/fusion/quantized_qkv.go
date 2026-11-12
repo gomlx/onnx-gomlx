@@ -2,20 +2,26 @@ package fusion
 
 import (
 	"github.com/gomlx/compute"
+	"github.com/gomlx/compute/dtypes"
+	"github.com/gomlx/compute/shapes"
 	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/gomlx/ml/nn"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 )
 
-// QuantizedQKVDenseParams holds parameters for fused Q/K/V int8 projections sharing
-// the same float input. Instead of 3 separate QuantizedDense calls (each with its own
-// SMEGuard + parallel dispatch), we concatenate weights and call QuantizedDense once.
+// QuantizedQKVDenseParams holds parameters for fused Q/K/V int8/uint8 projections sharing
+// the same pre-quantized activation input (e.g. from a single DynamicQuantizeLinear).
+// Instead of 3 separate QuantizedDense calls, weights/scales/biases are concatenated along
+// the output feature axis and executed in a single fused QuantizedDense call.
 type QuantizedQKVDenseParams struct {
-	FloatInputName string
+	AInputName     string
+	AScaleName     string
+	AZeroPointName string
 
 	WQName, WKName, WVName             string
 	ScaleQName, ScaleKName, ScaleVName string
+	ZPQName, ZPKName, ZPVName          string
 	BiasQName, BiasKName, BiasVName    string
 
 	QOutputName, KOutputName, VOutputName string
@@ -40,68 +46,112 @@ func (c *quantizedQKVDenseCandidate) OutputNames() []string {
 func (c *quantizedQKVDenseCandidate) InternalOutputs() map[string]bool { return c.internalOutputs }
 func (c *quantizedQKVDenseCandidate) ExternalInputs() []string         { return c.externalInputs }
 
+func expandWeightParam1D(node *Node, targetDType dtypes.DType, dim int) *Node {
+	p := ConvertDType(node, targetDType)
+	if p.Rank() == 1 && p.Shape().Dimensions[0] == dim {
+		return p
+	}
+	return BroadcastToDims(Reshape(p, 1), dim)
+}
+
 func (c *quantizedQKVDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs map[string]*Node) {
 	p := c.params
 
-	floatInput := convertedOutputs[p.FloatInputName]
+	a := convertedOutputs[p.AInputName]
+	var aScaleNode, aZPNode *Node
+	if p.AScaleName != "" {
+		aScaleNode = convertedOutputs[p.AScaleName]
+	}
+	if p.AZeroPointName != "" {
+		aZPNode = convertedOutputs[p.AZeroPointName]
+	}
+	xScale, xZP := prepareActivationQuantParams(g, a, aScaleNode, aZPNode)
+
 	wQ := convertedOutputs[p.WQName]
 	wK := convertedOutputs[p.WKName]
 	wV := convertedOutputs[p.WVName]
 
-	scaleQ := convertedOutputs[p.ScaleQName]
-	scaleK := convertedOutputs[p.ScaleKName]
-	scaleV := convertedOutputs[p.ScaleVName]
-
-	// Concatenate int8 weights: [K, QDim] + [K, KVDim] + [K, KVDim] → [K, totalN]
+	// Concatenate quantized weights: [K, QDim] + [K, KVDim] + [K, KVDim] → [K, totalN]
 	wQKV := Concatenate([]*Node{wQ, wK, wV}, 1)
 
-	// Build fused scales. broadcastQuantScale handles both scalar and per-channel [N] cases:
-	//   - Scalar: each becomes [K, 1], concatenated to [K, 3], blockSize = QDim
-	//   - Per-channel: each becomes [K, dim], concatenated to [K, totalN], blockSize = 1
-	scaleQCol, blockSize := broadcastQuantScale(scaleQ, p.K, p.QDim)
-	scaleKCol, _ := broadcastQuantScale(scaleK, p.K, p.KVDim)
-	scaleVCol, _ := broadcastQuantScale(scaleV, p.K, p.KVDim)
-	fusedScales := Concatenate([]*Node{scaleQCol, scaleKCol, scaleVCol}, 1)
+	// Expand scalar or 1D scales to 1D [dim] and concatenate to 1D [totalN].
+	scaleQ := expandWeightParam1D(convertedOutputs[p.ScaleQName], dtypes.Float32, p.QDim)
+	scaleK := expandWeightParam1D(convertedOutputs[p.ScaleKName], dtypes.Float32, p.KVDim)
+	scaleV := expandWeightParam1D(convertedOutputs[p.ScaleVName], dtypes.Float32, p.KVDim)
+	fusedScales := Concatenate([]*Node{scaleQ, scaleK, scaleV}, 0)
+
+	// Concatenate weight zero points to 1D [totalN] if any projection has a non-zero zero point.
+	var fusedBZP *Node
+	if p.ZPQName != "" || p.ZPKName != "" || p.ZPVName != "" {
+		zpDType := wQ.DType()
+		zpOrZero := func(name string, dim int) *Node {
+			if name == "" {
+				return Zeros(g, shapes.Make(zpDType, dim))
+			}
+			return expandWeightParam1D(convertedOutputs[name], zpDType, dim)
+		}
+		fusedBZP = Concatenate([]*Node{
+			zpOrZero(p.ZPQName, p.QDim),
+			zpOrZero(p.ZPKName, p.KVDim),
+			zpOrZero(p.ZPVName, p.KVDim),
+		}, 0)
+	}
 
 	// Concatenate biases if present: [QDim] + [KVDim] + [KVDim] → [totalN]
 	var bias *Node
 	if p.BiasQName != "" {
-		biasQ := convertedOutputs[p.BiasQName]
-		biasK := convertedOutputs[p.BiasKName]
-		biasV := convertedOutputs[p.BiasVName]
+		biasQ := ConvertDType(convertedOutputs[p.BiasQName], dtypes.Float32)
+		biasK := ConvertDType(convertedOutputs[p.BiasKName], dtypes.Float32)
+		biasV := ConvertDType(convertedOutputs[p.BiasVName], dtypes.Float32)
 		bias = Concatenate([]*Node{biasQ, biasK, biasV}, 0)
 	}
 
-	// Single fused QuantizedDense for all 3 projections.
-	quant := &Quantization{
-		Scheme:    compute.QuantLinear,
-		Scale:     fusedScales,
-		BlockAxis: 1,
-		BlockSize: blockSize,
+	cfg := QuantizedDenseConfig{
+		WeightQuantization: &Quantization{
+			Scheme:    compute.QuantLinear,
+			Scale:     fusedScales,
+			ZeroPoint: fusedBZP,
+		},
+		XQuantization: &Quantization{
+			Scheme:    compute.QuantLinear,
+			Scale:     xScale,
+			ZeroPoint: xZP,
+		},
+		WeightLayout: compute.DenseLayoutInputOutputs,
 	}
-	result := nn.QuantizedDense(floatInput, wQKV, quant, bias)
+	result := nn.QuantizedDense(a, wQKV, bias, cfg)
 
-	// Split output along last axis: [batch..., totalN] → Q, K, V each [batch..., QDim]
-	parts := Split(result, -1, 3)
-	convertedOutputs[p.QOutputName] = parts[0]
-	convertedOutputs[p.KOutputName] = parts[1]
-	convertedOutputs[p.VOutputName] = parts[2]
+	// Slice output along last axis into Q, K, V (supports both MHA QDim==KVDim and GQA QDim!=KVDim,
+	// as well as dynamic leading batch/sequence dimensions).
+	totalOut := p.QDim + 2*p.KVDim
+	lastAxis := result.Rank() - 1
+	sliceLastAxis := func(start, end int) *Node {
+		specs := make([]SliceAxisSpec, result.Rank())
+		for i := range lastAxis {
+			specs[i] = AxisRange()
+		}
+		specs[lastAxis] = AxisRange(start, end)
+		return Slice(result, specs...)
+	}
+	convertedOutputs[p.QOutputName] = sliceLastAxis(0, p.QDim)
+	convertedOutputs[p.KOutputName] = sliceLastAxis(p.QDim, p.QDim+p.KVDim)
+	convertedOutputs[p.VOutputName] = sliceLastAxis(p.QDim+p.KVDim, totalOut)
 }
 
 func init() {
-	// TODO: Re-enable detectQuantizedQKVDenseCandidates once compute.FusedOps.FusedQuantizedDense
-	// supports quantized integer input activations (e.g. uint8/int8 x with inputQuantization
-	// and int32 accumulation) to match ONNX DynamicQuantizeLinear + MatMulInteger semantics
-	// without bypassing DynamicQuantizeLinear. See ../FusedQuantizedDense_TODO.md.
-	_ = detectQuantizedQKVDenseCandidates
+	onnxgomlx.RegisterFusionDetector(detectQuantizedQKVDenseCandidates)
+}
+
+type sharedQuantActKey struct {
+	aInput string
+	aScale string
+	aZP    string
 }
 
 // detectQuantizedQKVDenseCandidates runs the individual quantized dense detector internally,
-// then merges triplets of QuantizedDense candidates sharing the same FloatInputName into
-// a single QuantizedQKVDense candidate. This reduces kernel launches (and SMEGuard transitions)
-// from 3 to 1 per attention layer.
+// then merges triplets of QuantizedDense candidates sharing the same quantized activation
+// input (e.g. from a shared DynamicQuantizeLinear) into a single QuantizedQKVDense candidate.
 func detectQuantizedQKVDenseCandidates(m *onnxgomlx.Model) []onnxgomlx.FusionCandidate {
-	// First, get all individual QuantizedDense candidates.
 	var qdCandidates []*quantizedDenseCandidate
 	for _, node := range m.Proto.Graph.Node {
 		if node.OpType != "MatMulInteger" || len(node.Input) < 2 || len(node.Output) == 0 {
@@ -112,14 +162,19 @@ func detectQuantizedQKVDenseCandidates(m *onnxgomlx.Model) []onnxgomlx.FusionCan
 		}
 	}
 
-	// Group by FloatInputName. Only consider groups without GELU (attention projections don't use GELU).
-	byInput := make(map[string][]*quantizedDenseCandidate)
+	// Group by shared quantized activation (A, AScale, AZP). Skip GELU-fused FFN projections.
+	byInput := make(map[sharedQuantActKey][]*quantizedDenseCandidate)
 	for _, cand := range qdCandidates {
 		p := cand.params
-		if p.HasGelu || p.FloatInputName == "" {
+		if p.HasGelu || p.AInputName == "" {
 			continue
 		}
-		byInput[p.FloatInputName] = append(byInput[p.FloatInputName], cand)
+		key := sharedQuantActKey{
+			aInput: p.AInputName,
+			aScale: p.AScaleName,
+			aZP:    p.AZeroPointName,
+		}
+		byInput[key] = append(byInput[key], cand)
 	}
 
 	var candidates []onnxgomlx.FusionCandidate
@@ -141,16 +196,17 @@ func tryMergeQuantizedQKV(entries []*quantizedDenseCandidate) *quantizedQKVDense
 		params[i] = e.params
 	}
 
-	// All must share the same K (input features).
+	// All must share the same K (input features) and quantized weight DType.
 	K := params[0].K
+	bDType := params[0].BDType
 	for _, p := range params[1:] {
-		if p.K != K {
+		if p.K != K || p.BDType != bDType {
 			return nil
 		}
 	}
 
 	// Determine Q, K, V ordering by dimension. If two share the same N and
-	// one differs, the differing one is Q. If all equal, keep appearance order.
+	// one differs, the differing one is Q (GQA). If all equal, keep appearance order.
 	qIdx, kIdx, vIdx := 0, 1, 2
 	d0, d1, d2 := params[0].N, params[1].N, params[2].N
 	if d0 == d1 && d0 != d2 {
@@ -165,23 +221,18 @@ func tryMergeQuantizedQKV(entries []*quantizedDenseCandidate) *quantizedQKVDense
 	kP := params[kIdx]
 	vP := params[vIdx]
 
-	// K and V must have equal N, and QDim must equal KVDim for uniform groupSize.
+	// K and V must have equal N.
 	if kP.N != vP.N {
-		return nil
-	}
-	if qP.N != kP.N {
-		// Non-uniform projection dims (e.g. GQA) — can't use a single groupSize.
 		return nil
 	}
 
 	// Bias must be all-or-nothing.
-	hasBias := qP.BiasName != "" && kP.BiasName != "" && vP.BiasName != ""
-	noBias := qP.BiasName == "" && kP.BiasName == "" && vP.BiasName == ""
-	if !hasBias && !noBias {
+	allHaveBias := qP.BiasName != "" && kP.BiasName != "" && vP.BiasName != ""
+	noneHasBias := qP.BiasName == "" && kP.BiasName == "" && vP.BiasName == ""
+	if !allHaveBias && !noneHasBias {
 		return nil
 	}
 
-	// Merge internal outputs from all 3 groups, plus their root outputs become internal.
 	mergedInternalOutputs := make(map[string]bool)
 	for _, e := range entries {
 		for name := range e.internalOutputs {
@@ -189,23 +240,40 @@ func tryMergeQuantizedQKV(entries []*quantizedDenseCandidate) *quantizedQKVDense
 		}
 	}
 
-	externalInputs := []string{
-		qP.FloatInputName,
+	// Put AInputName first so DynamicQuantizeLinear populates AScaleName and AZeroPointName on conversion.
+	externalInputs := []string{qP.AInputName}
+	if qP.AScaleName != "" {
+		externalInputs = append(externalInputs, qP.AScaleName)
+	}
+	if qP.AZeroPointName != "" {
+		externalInputs = append(externalInputs, qP.AZeroPointName)
+	}
+	externalInputs = append(externalInputs,
 		qP.BWeightName, kP.BWeightName, vP.BWeightName,
 		qP.BScaleName, kP.BScaleName, vP.BScaleName,
+	)
+	for _, zpName := range []string{qP.BZeroPointName, kP.BZeroPointName, vP.BZeroPointName} {
+		if zpName != "" {
+			externalInputs = append(externalInputs, zpName)
+		}
 	}
-	if hasBias {
+	if allHaveBias {
 		externalInputs = append(externalInputs, qP.BiasName, kP.BiasName, vP.BiasName)
 	}
 
 	qkvParams := &QuantizedQKVDenseParams{
-		FloatInputName: qP.FloatInputName,
+		AInputName:     qP.AInputName,
+		AScaleName:     qP.AScaleName,
+		AZeroPointName: qP.AZeroPointName,
 		WQName:         qP.BWeightName,
 		WKName:         kP.BWeightName,
 		WVName:         vP.BWeightName,
 		ScaleQName:     qP.BScaleName,
 		ScaleKName:     kP.BScaleName,
 		ScaleVName:     vP.BScaleName,
+		ZPQName:        qP.BZeroPointName,
+		ZPKName:        kP.BZeroPointName,
+		ZPVName:        vP.BZeroPointName,
 		QOutputName:    entries[qIdx].outputName,
 		KOutputName:    entries[kIdx].outputName,
 		VOutputName:    entries[vIdx].outputName,
@@ -213,7 +281,7 @@ func tryMergeQuantizedQKV(entries []*quantizedDenseCandidate) *quantizedQKVDense
 		QDim:           qP.N,
 		KVDim:          kP.N,
 	}
-	if hasBias {
+	if allHaveBias {
 		qkvParams.BiasQName = qP.BiasName
 		qkvParams.BiasKName = kP.BiasName
 		qkvParams.BiasVName = vP.BiasName

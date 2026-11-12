@@ -2,6 +2,7 @@ package fusion
 
 import (
 	"math"
+	"slices"
 
 	"github.com/gomlx/compute"
 	"github.com/gomlx/compute-onnx/support/protos"
@@ -14,40 +15,63 @@ import (
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
 )
 
-// broadcastQuantScale converts a weight scale node (scalar or 1D [outputDim]) to the
-// [K, numGroups] shape expected by nn.QuantizedDense, and returns the corresponding blockSize.
-//   - Scalar scale: blockSize=outputDim, scale=[K, 1]  (one group covering all output features)
-//   - Per-channel [outputDim] scale: blockSize=1, scale=[K, outputDim]  (one group per feature)
-func broadcastQuantScale(scale *Node, K, outputDim int) (fusedScale *Node, blockSize int) {
-	s := ConvertDType(scale, dtypes.Float32)
-	if s.Rank() == 1 && s.Shape().Dimensions[0] == outputDim {
-		return ExpandAndBroadcast(s, []int{K, outputDim}, []int{0}), 1
+// prepareActivationQuantParams builds the Scale and ZeroPoint nodes for XQuantization in
+// nn.QuantizedDense from ONNX MatMulInteger / DynamicQuantizeLinear inputs.
+// When aScaleNode is nil (DequantizeLinear variant where the combined scale is folded into bScale),
+// a unit float32 scalar scale (1.0) is used.
+func prepareActivationQuantParams(g *Graph, a, aScaleNode, aZPNode *Node) (xScale, xZP *Node) {
+	if aScaleNode != nil {
+		xScale = ConvertDType(aScaleNode, dtypes.Float32)
+	} else {
+		xScale = ScalarOne(g, dtypes.Float32)
 	}
-	return ExpandAndBroadcast(s, []int{K, 1}, []int{0, 1}), outputDim
+	if aZPNode == nil {
+		return xScale, nil
+	}
+	xZP = aZPNode
+	// ONNX MatMulInteger allows a 1D per-row a_zero_point of shape [M] aligning with axis a.Rank()-2.
+	// FusedQuantizedDense represents per-row activation parameters as [batch..., 1].
+	if !xZP.IsScalar() && xZP.Shape().Size() != 1 && xZP.Rank() == 1 && a.Rank() >= 2 {
+		ones := slices.Repeat([]int{1}, a.Rank())
+		ones[a.Rank()-2] = xZP.Shape().Dimensions[0]
+		zpReshaped := Reshape(xZP, ones...)
+
+		targetSpecs := append(slices.Clone(DimensionSpecsFor(a)[:a.Rank()-1]), StaticDim(1))
+		xZP = DynamicBroadcastToDims(zpReshaped, targetSpecs...)
+		xScale = DynamicBroadcastToDims(ExpandLeftToRank(xScale, a.Rank()), targetSpecs...)
+	}
+	return xScale, xZP
 }
 
 // QuantizedDenseParams holds parameters for fused DynamicQuantizeLinear + MatMulInteger
-// chains, emitted as nn.QuantizedDense which takes the original float32 input and
-// int8 weights and handles quantization internally.
+// (or MatMulInteger + DequantizeLinear) chains, emitted as nn.QuantizedDense with
+// pre-quantized XQuantization and WeightQuantization so DynamicQuantizeLinear stays in the
+// graph (computed once and shared across consumers) while integer matmul + scale + bias +
+// optional GELU execute in a single fused kernel.
 type QuantizedDenseParams struct {
-	// FloatInputName is the original float32 input to DynamicQuantizeLinear.
-	// nn.QuantizedDense takes this directly (it handles quantization internally).
-	FloatInputName string
-
-	// BWeightName is the constant int8 weight [K, N].
-	BWeightName string
-
-	// BScaleName is the constant weight scale: either scalar (per-tensor) or 1D [N] (per-channel).
-	BScaleName string
-
-	// AInputName is the quantized A input name from MatMulInteger.
-	// Set when no DynamicQuantizeLinear is present (DequantizeLinear variant).
-	// When set, FloatInputName is empty.
+	// AInputName is the quantized uint8/int8 input A to MatMulInteger
+	// (e.g. output[0] of DynamicQuantizeLinear).
 	AInputName string
 
-	// AZeroPointName is the A zero point from MatMulInteger (input[2]).
-	// Only used with AInputName. Empty if absent.
+	// AScaleName is the activation scale (e.g. output[1] of DynamicQuantizeLinear).
+	// Empty in the DequantizeLinear variant where the combined scale is in BScaleName.
+	AScaleName string
+
+	// AZeroPointName is the optional activation zero point from MatMulInteger (input[2]).
 	AZeroPointName string
+
+	// BWeightName is the constant int8/uint8 weight [K, N].
+	BWeightName string
+
+	// BDType is the ONNX TensorProto DataType of BWeightName (INT8 or UINT8).
+	BDType int32
+
+	// BScaleName is the constant weight scale: scalar ([] / [1]) or 1D [N] (per-channel).
+	BScaleName string
+
+	// BZeroPointName is the optional constant weight zero point from MatMulInteger (input[3]),
+	// omitted when absent or all zeros.
+	BZeroPointName string
 
 	// BiasName is the optional bias constant, "" if absent.
 	BiasName string
@@ -77,46 +101,45 @@ func (c *quantizedDenseCandidate) ExternalInputs() []string         { return c.e
 func (c *quantizedDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs map[string]*Node) {
 	p := c.params
 
-	var floatInput *Node
-	if p.FloatInputName != "" {
-		// DynamicQuantizeLinear-based variant: float input comes directly from DynamicQuantizeLinear's original input.
-		floatInput = convertedOutputs[p.FloatInputName]
-	} else {
-		// DequantizeLinear variant: construct float from quantized A.
-		a := convertedOutputs[p.AInputName]
-		floatInput = ConvertDType(a, dtypes.Float32)
-		if p.AZeroPointName != "" {
-			aZP := convertedOutputs[p.AZeroPointName]
-			aZPFloat := ConvertDType(aZP, dtypes.Float32)
-			if !aZPFloat.IsScalar() && aZPFloat.Rank() == 1 && floatInput.Rank() > 1 {
-				newShape := floatInput.Shape().Clone()
-				for axis := range newShape.Dimensions {
-					if axis != floatInput.Rank()-2 {
-						newShape.Dimensions[axis] = 1
-					}
-				}
-				aZPFloat = Reshape(aZPFloat, newShape.Dimensions...)
-			}
-			floatInput = Sub(floatInput, aZPFloat)
+	a := convertedOutputs[p.AInputName]
+	var aScaleNode, aZPNode *Node
+	if p.AScaleName != "" {
+		aScaleNode = convertedOutputs[p.AScaleName]
+	}
+	if p.AZeroPointName != "" {
+		aZPNode = convertedOutputs[p.AZeroPointName]
+	}
+	xScale, xZP := prepareActivationQuantParams(g, a, aScaleNode, aZPNode)
+
+	b := convertedOutputs[p.BWeightName]
+	bScale := ConvertDType(convertedOutputs[p.BScaleName], dtypes.Float32)
+
+	var bZP *Node
+	if p.BZeroPointName != "" {
+		bZP = convertedOutputs[p.BZeroPointName]
+		// Ensure per-channel [N] bZP is paired with a [N] bScale when bScale was scalar.
+		if bZP.Shape().Size() > 1 && bScale.Shape().Size() == 1 {
+			bScale = BroadcastToDims(Reshape(bScale, 1), p.N)
 		}
 	}
 
-	b := convertedOutputs[p.BWeightName]
-	bScale := convertedOutputs[p.BScaleName]
-
-	// Build weight scales: nn.QuantizedDense expects [K, numGroups] where numGroups = ceil(N/blockSize).
-	fusedScales, blockSize := broadcastQuantScale(bScale, p.K, p.N)
-
 	var bias *Node
 	if p.BiasName != "" {
-		bias = convertedOutputs[p.BiasName]
+		bias = ConvertDType(convertedOutputs[p.BiasName], dtypes.Float32)
 	}
 
-	quant := &Quantization{
-		Scheme:    compute.QuantLinear,
-		Scale:     fusedScales,
-		BlockAxis: 1,
-		BlockSize: blockSize,
+	cfg := QuantizedDenseConfig{
+		WeightQuantization: &Quantization{
+			Scheme:    compute.QuantLinear,
+			Scale:     bScale,
+			ZeroPoint: bZP,
+		},
+		XQuantization: &Quantization{
+			Scheme:    compute.QuantLinear,
+			Scale:     xScale,
+			ZeroPoint: xZP,
+		},
+		WeightLayout: compute.DenseLayoutInputOutputs,
 	}
 
 	var result *Node
@@ -125,20 +148,16 @@ func (c *quantizedDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOutput
 		if c.m != nil && c.m.ForceApproximateGeluEnabled() {
 			actType = activation.TypeGeluApprox
 		}
-		result = nn.QuantizedDense(floatInput, b, quant, bias, actType)
+		result = nn.QuantizedDense(a, b, bias, cfg, actType)
 	} else {
-		result = nn.QuantizedDense(floatInput, b, quant, bias)
+		result = nn.QuantizedDense(a, b, bias, cfg)
 	}
 
 	convertedOutputs[c.outputName] = result
 }
 
 func init() {
-	// TODO: Re-enable detectQuantizedDenseCandidates once compute.FusedOps.FusedQuantizedDense
-	// supports quantized integer input activations (e.g. uint8/int8 x with inputQuantization
-	// and int32 accumulation) to match ONNX DynamicQuantizeLinear + MatMulInteger semantics
-	// without bypassing DynamicQuantizeLinear. See ../FusedQuantizedDense_TODO.md.
-	_ = detectQuantizedDenseCandidates
+	onnxgomlx.RegisterFusionDetector(detectQuantizedDenseCandidates)
 }
 
 // detectQuantizedDenseCandidates scans the ONNX graph for:
@@ -150,7 +169,7 @@ func init() {
 //	Mul(float_result, combined_scale) → output
 //	  optionally followed by Add(bias) and/or decomposed GELU
 //
-// and returns FusionCandidates for each match.
+// (as well as the MatMulInteger → DequantizeLinear variant) and returns FusionCandidates for each match.
 func detectQuantizedDenseCandidates(m *onnxgomlx.Model) []onnxgomlx.FusionCandidate {
 	var candidates []onnxgomlx.FusionCandidate
 	for _, node := range m.Proto.Graph.Node {
@@ -164,9 +183,38 @@ func detectQuantizedDenseCandidates(m *onnxgomlx.Model) []onnxgomlx.FusionCandid
 	return candidates
 }
 
-// tryMatchQuantizedDense attempts to match the full DynamicQuantizeLinear → MatMulInteger →
-// Cast → Mul(combined_scale) chain, tracing backward through DynamicQuantizeLinear to find the original float
-// input and extracting the constant weight scale from the scale combiner.
+// validateWeightZeroPoint checks matMulInputs[3] (b_zero_point):
+//   - If absent or a zero initializer, returns ("", true) so zero-point subtraction is skipped.
+//   - If a constant scalar ([] or [1]) or 1D [N] int8/uint8 tensor, returns (name, true).
+//   - Otherwise returns ("", false).
+func validateWeightZeroPoint(m *onnxgomlx.Model, matMulInputs []string, N int) (string, bool) {
+	if len(matMulInputs) <= 3 || matMulInputs[3] == "" {
+		return "", true
+	}
+	bZPName := matMulInputs[3]
+	if m.IsZeroInitializer(bZPName) {
+		return "", true
+	}
+	bZPTP, ok := m.VariableNameToValue[bZPName]
+	if !ok || bZPTP == nil {
+		return "", false
+	}
+	if bZPTP.DataType != int32(protos.TensorProto_INT8) && bZPTP.DataType != int32(protos.TensorProto_UINT8) {
+		return "", false
+	}
+	switch {
+	case len(bZPTP.Dims) == 0:
+		return bZPName, true
+	case len(bZPTP.Dims) == 1 && (bZPTP.Dims[0] == 1 || bZPTP.Dims[0] == int64(N)):
+		return bZPName, true
+	default:
+		return "", false
+	}
+}
+
+// tryMatchQuantizedDense attempts to match the DynamicQuantizeLinear → MatMulInteger →
+// Cast → Mul(combined_scale) chain while keeping DynamicQuantizeLinear in the graph so its
+// quantized uint8 activations, scale, and zero point are preserved and shared across consumers.
 func tryMatchQuantizedDense(m *onnxgomlx.Model, matMulNode *protos.NodeProto) *quantizedDenseCandidate {
 	consumers := m.Consumers
 	matMulInputs := matMulNode.Input
@@ -174,35 +222,40 @@ func tryMatchQuantizedDense(m *onnxgomlx.Model, matMulNode *protos.NodeProto) *q
 		return nil
 	}
 
-	aName := matMulInputs[0] // uint8 output of DynamicQuantizeLinear
-	bName := matMulInputs[1] // constant int8 weight
+	aName := matMulInputs[0] // quantized output of DynamicQuantizeLinear
+	bName := matMulInputs[1] // constant int8/uint8 weight
 
-	// B (weight) must be a constant 2D int8 tensor.
+	// B (weight) must be a constant 2D int8 or uint8 tensor.
 	if !m.IsConstant(bName) {
 		return nil
 	}
 	bTP, bFound := m.VariableNameToValue[bName]
-	if !bFound || bTP == nil || len(bTP.Dims) != 2 || bTP.DataType != int32(protos.TensorProto_INT8) {
+	if !bFound || bTP == nil || len(bTP.Dims) != 2 {
+		return nil
+	}
+	if bTP.DataType != int32(protos.TensorProto_INT8) && bTP.DataType != int32(protos.TensorProto_UINT8) {
 		return nil
 	}
 	K := int(bTP.Dims[0])
 	N := int(bTP.Dims[1])
 
-	// bZeroPoint must be absent or a zero initializer.
-	if len(matMulInputs) > 3 && matMulInputs[3] != "" {
-		if !m.IsZeroInitializer(matMulInputs[3]) {
-			return nil
-		}
+	bZeroPointName, bZPOK := validateWeightZeroPoint(m, matMulInputs, N)
+	if !bZPOK {
+		return nil
 	}
 
-	// A input must come from DynamicQuantizeLinear.
+	// Check if A comes from DynamicQuantizeLinear.
 	dynamicQuantizeNode, ok := m.NodeOutputToNode[aName]
 	if !ok || dynamicQuantizeNode.OpType != "DynamicQuantizeLinear" || len(dynamicQuantizeNode.Input) == 0 || len(dynamicQuantizeNode.Output) < 2 {
 		// DynamicQuantizeLinear not found — try DequantizeLinear variant instead.
-		return tryMatchQuantizedDenseDequantLinear(m, matMulNode, bName, K, N)
+		return tryMatchQuantizedDenseDequantLinear(m, matMulNode, bName, bTP.DataType, bZeroPointName, K, N)
 	}
-	floatInputName := dynamicQuantizeNode.Input[0] // original float32 input
-	aScaleName := dynamicQuantizeNode.Output[1]    // dynamic per-tensor scale
+	aScaleName := dynamicQuantizeNode.Output[1] // dynamic per-tensor scale
+
+	var aZeroPointName string
+	if len(matMulInputs) > 2 && matMulInputs[2] != "" {
+		aZeroPointName = matMulInputs[2]
+	}
 
 	// Follow forward: MatMulInteger → sole consumer Cast → sole consumer Mul(combined_scale).
 	matMulOut := matMulNode.Output[0]
@@ -251,7 +304,8 @@ func tryMatchQuantizedDense(m *onnxgomlx.Model, matMulNode *protos.NodeProto) *q
 	resultMulOut := resultMulNode.Output[0]
 
 	// Collect internal nodes/outputs for the base pattern.
-	// Note: DynamicQuantizeLinear is NOT internal — it may be shared across multiple MatMulIntegers.
+	// DynamicQuantizeLinear is NOT internal: it stays in the graph so quantized x, x_scale, and x_zp
+	// are computed once and can be shared across multiple projections (e.g. Q, K, V).
 	internalNodes := map[*protos.NodeProto]bool{
 		matMulNode:    true,
 		castNode:      true,
@@ -297,16 +351,26 @@ func tryMatchQuantizedDense(m *onnxgomlx.Model, matMulNode *protos.NodeProto) *q
 		return nil
 	}
 
-	// External inputs: the original float, int8 weights, and B's per-tensor scale.
-	externalInputs := []string{floatInputName, bName, bScaleName}
+	// Put aName (DynamicQuantizeLinear output[0]) first so converting it populates aScaleName and aZeroPointName too.
+	externalInputs := []string{aName, aScaleName, bName, bScaleName}
+	if aZeroPointName != "" {
+		externalInputs = append(externalInputs, aZeroPointName)
+	}
+	if bZeroPointName != "" {
+		externalInputs = append(externalInputs, bZeroPointName)
+	}
 	if biasName != "" {
 		externalInputs = append(externalInputs, biasName)
 	}
 
 	params := &QuantizedDenseParams{
-		FloatInputName: floatInputName,
+		AInputName:     aName,
+		AScaleName:     aScaleName,
+		AZeroPointName: aZeroPointName,
 		BWeightName:    bName,
+		BDType:         bTP.DataType,
 		BScaleName:     bScaleName,
+		BZeroPointName: bZeroPointName,
 		BiasName:       biasName,
 		K:              K,
 		N:              N,
@@ -324,12 +388,19 @@ func tryMatchQuantizedDense(m *onnxgomlx.Model, matMulNode *protos.NodeProto) *q
 
 // tryMatchQuantizedDenseDequantLinear attempts to match the alternative pattern:
 //
-//	MatMulInteger(A, int8_B, a_zp?, b_zp=0) → int32
+//	MatMulInteger(A, int8_B, a_zp?, b_zp?) → int32
 //	  sole consumer → DequantizeLinear(int32_out, scalar_scale, no_zp) → float output
 //
 // This variant is emitted by some ONNX exporters instead of the DynamicQuantizeLinear-based
-// Cast+Mul(a_scale*B_scale) chain. Both are semantically equivalent.
-func tryMatchQuantizedDenseDequantLinear(m *onnxgomlx.Model, matMulNode *protos.NodeProto, bName string, K, N int) *quantizedDenseCandidate {
+// Cast+Mul(a_scale*B_scale) chain.
+func tryMatchQuantizedDenseDequantLinear(
+	m *onnxgomlx.Model,
+	matMulNode *protos.NodeProto,
+	bName string,
+	bDType int32,
+	bZeroPointName string,
+	K, N int,
+) *quantizedDenseCandidate {
 	consumers := m.Consumers
 	matMulOut := matMulNode.Output[0]
 	matMulInputs := matMulNode.Input
@@ -354,7 +425,6 @@ func tryMatchQuantizedDenseDequantLinear(m *onnxgomlx.Model, matMulNode *protos.
 	if !scaleFound || scaleTP == nil {
 		return nil
 	}
-	// Scalar: either no dims, or all dims are 1.
 	isScalar := true
 	for _, d := range scaleTP.Dims {
 		if d != 1 {
@@ -375,7 +445,6 @@ func tryMatchQuantizedDenseDequantLinear(m *onnxgomlx.Model, matMulNode *protos.
 		aZeroPointName = matMulInputs[2]
 	}
 
-	// Internal nodes: MatMulInteger and DequantizeLinear.
 	internalNodes := map[*protos.NodeProto]bool{
 		matMulNode:  true,
 		dequantNode: true,
@@ -412,15 +481,16 @@ func tryMatchQuantizedDenseDequantLinear(m *onnxgomlx.Model, matMulNode *protos.
 		currentOut = geluFinalOut
 	}
 
-	// Check no internal outputs leak to external consumers.
 	if onnxgraph.HasExternalConsumers(internalOutputs, consumers, internalNodes) {
 		return nil
 	}
 
-	// External inputs: quantized A, int8 weights, combined scale, and optionally a_zp.
 	externalInputs := []string{aInputName, bName, scaleName}
 	if aZeroPointName != "" {
 		externalInputs = append(externalInputs, aZeroPointName)
+	}
+	if bZeroPointName != "" {
+		externalInputs = append(externalInputs, bZeroPointName)
 	}
 	if biasName != "" {
 		externalInputs = append(externalInputs, biasName)
@@ -430,7 +500,9 @@ func tryMatchQuantizedDenseDequantLinear(m *onnxgomlx.Model, matMulNode *protos.
 		AInputName:     aInputName,
 		AZeroPointName: aZeroPointName,
 		BWeightName:    bName,
+		BDType:         bDType,
 		BScaleName:     scaleName,
+		BZeroPointName: bZeroPointName,
 		BiasName:       biasName,
 		K:              K,
 		N:              N,
@@ -509,11 +581,6 @@ func tryMatchDecomposedGELU(m *onnxgomlx.Model, consumers map[string][]*protos.N
 	erfNode := onnxgraph.SoleConsumer(consumers, divOut)
 	if erfNode == nil || erfNode.OpType != "Erf" || len(erfNode.Output) == 0 {
 		return
-	}
-	divOutAsSet := map[string]bool{divOut: true}
-	if onnxgraph.HasExternalConsumers(divOutAsSet, consumers, map[*protos.NodeProto]bool{divNode: true}) {
-		// The divOut must only be consumed by erfNode.
-		// Wait, SoleConsumer already checked this.
 	}
 
 	erfOut := erfNode.Output[0]

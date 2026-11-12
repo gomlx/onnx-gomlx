@@ -1,3 +1,7 @@
+# 2026/11/12
+
+- Reworked `QuantizedDense` and `QuantizedQKVDense` fusions (`internal/onnxgomlx/fusion/quantized_dense.go` and `quantized_qkv.go`) to keep `DynamicQuantizeLinear` in the graph (so quantized activations, scale, and zero point are computed once and shared across consumers) and emit `nn.QuantizedDense` with `QuantizedDenseConfig` (`XQuantization` and `WeightQuantization`, including support for non-zero weight zero points and GQA `QDim != KVDim`), re-enabling both fusion detectors with exact `DynamicQuantizeLinear` + `MatMulInteger` numerical parity.
+
 # 2026/09/12
 
 - Enabled `attention.QKVProjection` fusion in ONNX graph conversion for dynamic shapes, delegating directly to `FusedAttentionQKVProjection` instead of falling back to separate `MatMul`, `Slice`, and `Add` nodes.
