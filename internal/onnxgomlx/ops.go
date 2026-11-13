@@ -2401,8 +2401,8 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 	// Compute combined scale: (a_scale * b_scale) / y_scale
 	combinedScale := Div(Mul(aScale, bScale), yScale)
 
-	// Apply scale
-	scaledResult := Mul(matmulFloat, combinedScale)
+	// Round before adding the output zero point, as required by ONNX.
+	scaledResult := Round(Mul(matmulFloat, combinedScale))
 
 	// Add output zero point and convert back to quantized type
 	var outputDType dtypes.DType
@@ -2413,9 +2413,6 @@ func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZe
 	} else {
 		outputDType = a.DType()
 	}
-
-	// Round and clip to valid quantized range
-	scaledResult = Round(scaledResult)
 
 	// Determine clipping range based on output dtype
 	var minVal, maxVal *Node
