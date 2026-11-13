@@ -2255,7 +2255,9 @@ func onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint *Node) *Node {
 		aZeroPointWorking := ConvertDType(aZeroPoint, dtypes.Int32)
 		// Handle scalar vs per-axis zero points
 		// ONNX spec: a_zero_point aligns with the second-to-last dimension (M) of A
-		if !aZeroPointWorking.IsScalar() {
+		if aZeroPointWorking.Shape().Size() == 1 {
+			aZeroPointWorking = Reshape(aZeroPointWorking)
+		} else if !aZeroPointWorking.IsScalar() {
 			if aZeroPointWorking.Rank() == 1 {
 				// Reshape to broadcast correctly: for matrix [M, K], reshape [M] to [M, 1]
 				// For higher rank tensors [..., M, K], reshape to [..., M, 1]
@@ -2279,7 +2281,9 @@ func onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint *Node) *Node {
 		bZeroPointWorking := ConvertDType(bZeroPoint, dtypes.Int32)
 		// Handle scalar vs per-axis zero points
 		// ONNX spec: b_zero_point aligns with the last dimension (N) of B
-		if !bZeroPointWorking.IsScalar() {
+		if bZeroPointWorking.Shape().Size() == 1 {
+			bZeroPointWorking = Reshape(bZeroPointWorking)
+		} else if !bZeroPointWorking.IsScalar() {
 			if bZeroPointWorking.Rank() == 1 {
 				// Reshape to broadcast correctly: for matrix [K, N], reshape [N] to [1, N]
 				// For higher rank tensors [..., K, N], reshape to [..., 1, N]
@@ -2375,24 +2379,30 @@ func convertQLinearMatMul(_ *protos.NodeProto, inputs []*Node) *Node {
 func onnxQLinearMatMul(a, aScale, aZeroPoint, b, bScale, bZeroPoint, yScale, yZeroPoint *Node) *Node {
 	g := a.Graph()
 
-	// Convert quantized inputs to int32 for arithmetic
-	aInt32 := ConvertDType(a, dtypes.Int32)
-	bInt32 := ConvertDType(b, dtypes.Int32)
+	// Reuse MatMulInteger's int32 accumulation and zero-point broadcasting.
+	matmulResult := onnxMatMulInteger(a, b, aZeroPoint, bZeroPoint)
 
-	// Subtract zero points if provided
-	if aZeroPoint != nil {
-		aZeroPointInt32 := ConvertDType(aZeroPoint, dtypes.Int32)
-		aInt32 = Sub(aInt32, aZeroPointInt32)
+	// ONNX scales are scalar or per row/column. A one-element tensor is scalar.
+	if aScale.Shape().Size() == 1 {
+		aScale = Reshape(aScale)
+	} else if aScale.Rank() == 1 {
+		aScale = ExpandAxes(aScale, -1)
 	}
-
-	if bZeroPoint != nil {
-		bZeroPointInt32 := ConvertDType(bZeroPoint, dtypes.Int32)
-		bInt32 = Sub(bInt32, bZeroPointInt32)
+	if bScale.Shape().Size() == 1 {
+		bScale = Reshape(bScale)
 	}
-
-	// Perform integer matrix multiplication in int32
-	// Result is int32: (A - a_zp) @ (B - b_zp)
-	matmulResult := MatMul(aInt32, bInt32)
+	if !aScale.IsScalar() {
+		aScale = ExpandLeftToRank(aScale, matmulResult.Rank())
+	}
+	if !bScale.IsScalar() {
+		bScale = ExpandLeftToRank(bScale, matmulResult.Rank())
+	}
+	if yScale.Shape().Size() == 1 {
+		yScale = Reshape(yScale)
+	}
+	if yZeroPoint != nil && yZeroPoint.Shape().Size() == 1 {
+		yZeroPoint = Reshape(yZeroPoint)
+	}
 
 	// Convert to float for scaling: result * (a_scale * b_scale / y_scale)
 	scaleDType := aScale.DType()
