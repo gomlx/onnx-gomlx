@@ -8,9 +8,6 @@ import (
 	"github.com/pkg/errors"
 )
 
-// UnnamedDynamicDimension is a placeholder name for an unnamed dynamic dimension, that doesn't necessarily match any other (in inputs/outputs).
-const UnnamedDynamicDimension = "?"
-
 // makeShapeFromProto converts from a tensor proto type to a shapes.Shape.
 func makeShapeFromProto(proto *protos.TypeProto_Tensor) (shape shapes.Shape, err error) {
 	dtype, err := dtypeForONNX(protos.TensorProto_DataType(proto.GetElemType()))
@@ -26,11 +23,11 @@ func makeShapeFromProto(proto *protos.TypeProto_Tensor) (shape shapes.Shape, err
 		if dim, ok := dProto.GetValue().(*protos.TensorShapeProto_Dimension_DimValue); ok {
 			names[ii] = strconv.Itoa(int(dim.DimValue))
 			dimensions[ii] = int(dim.DimValue)
-		} else if dimParam, ok := dProto.GetValue().(*protos.TensorShapeProto_Dimension_DimParam); ok {
+		} else if dimParam, ok := dProto.GetValue().(*protos.TensorShapeProto_Dimension_DimParam); ok && dimParam.DimParam != "" {
 			names[ii] = dimParam.DimParam
 			dimensions[ii] = -1
 		} else {
-			names[ii] = UnnamedDynamicDimension // Un-named dynamic dimension.
+			names[ii] = shapes.UniqueAxisName("#onnx") // Un-named dynamic dimension.
 			dimensions[ii] = -1
 		}
 	}
@@ -68,7 +65,7 @@ func (m *Model) ValidateInputs(inputsShapes ...shapes.Shape) error {
 				}
 			} else {
 				dimName := wantShape.AxisName(axis)
-				if dimName != "" && dimName != UnnamedDynamicDimension {
+				if dimName != "" {
 					var found bool
 					wantDim, found = dimValues[dimName]
 					if !found {
