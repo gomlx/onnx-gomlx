@@ -1,3 +1,7 @@
+# 2026/11/14
+
+- Replaced `UnnamedDynamicDimension` (`shapes.AnonymousAxis`) with `shapes.UniqueAxisName("#onnx")` in `internal/onnxgomlx/dynamicshape.go` so unnamed ONNX dynamic dimensions receive globally unique `#onnx_<n>` axis names that preserve self-identity across downstream graph operations.
+
 # 2026/11/12
 
 - Reworked `QuantizedDense` and `QuantizedQKVDense` fusions (`internal/onnxgomlx/fusion/quantized_dense.go` and `quantized_qkv.go`) to keep `DynamicQuantizeLinear` in the graph (so quantized activations, scale, and zero point are computed once and shared across consumers) and emit `nn.QuantizedDense` with `QuantizedDenseConfig` (`XQuantization` and `WeightQuantization`, including support for non-zero weight zero points and GQA `QDim != KVDim`), re-enabling both fusion detectors with exact `DynamicQuantizeLinear` + `MatMulInteger` numerical parity.
