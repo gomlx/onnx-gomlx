@@ -3,12 +3,13 @@ package fusion
 import (
 	"fmt"
 
+	"github.com/gomlx/compute-onnx/support/protos"
+	"github.com/gomlx/compute/shapes"
 	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/ml/layers/attention"
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
-	"github.com/gomlx/compute-onnx/support/protos"
 )
 
 // QKVDenseParams holds parameters for fused QKV projection.
@@ -40,6 +41,17 @@ func (c *qkvDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs map[
 
 	x := convertedOutputs[p.SharedInputName]
 	wQKV := convertedOutputs[p.WQKVName]
+
+	// The static ONNX projection weights fix the contracting width even when
+	// shape inference leaves the input's trailing dimension dynamic.
+	if x.Rank() > 0 && wQKV.Rank() == 2 && x.Shape().Dim(x.Rank()-1) == shapes.DynamicDim {
+		inFeatures := wQKV.Shape().Dim(0)
+		if inFeatures > 0 {
+			specs := DimensionSpecsFor(x)
+			specs[len(specs)-1] = StaticDim(inFeatures)
+			x = DynamicReshape(x, specs...)
+		}
+	}
 
 	var biasQ, biasK, biasV *Node
 	if p.BiasQName != "" {

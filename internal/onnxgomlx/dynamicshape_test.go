@@ -69,4 +69,17 @@ func TestValidateInputs(t *testing.T) {
 	require.NoError(t, mUnnamed.ValidateInputs(
 		shapes.Make(dtypes.Float32, 2, 7),
 		shapes.Make(dtypes.Float32, 5, 3)))
+
+	// Static zero-sized dimension must be strictly validated, while dynamic (-1) traced inputs are accepted:
+	mZero := &Model{
+		InputsNames: []string{"z"},
+		InputsShapes: []shapes.Shape{
+			shapes.Make(dtypes.Float32, 0, 4),
+		},
+	}
+	require.NoError(t, mZero.ValidateInputs(shapes.Make(dtypes.Float32, 0, 4)))
+	require.Error(t, mZero.ValidateInputs(shapes.Make(dtypes.Float32, 2, 4)))
+	require.NoError(t, m.ValidateInputs(
+		shapes.MakeDynamic(dtypes.Float32, []int{-1, -1}, []string{"b", "f"}),
+		shapes.MakeDynamic(dtypes.Int32, []int{-1, 3}, []string{"b", ""})))
 }

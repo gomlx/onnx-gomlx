@@ -7,6 +7,7 @@ import (
 	"github.com/gomlx/compute"
 	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/dtypes"
+	"github.com/gomlx/compute/shapes"
 	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/ml/layers/activation"
 	"github.com/gomlx/gomlx/ml/model"
@@ -102,6 +103,11 @@ func (c *quantizedDenseCandidate) Emit(_ *model.Scope, g *Graph, convertedOutput
 	p := c.params
 
 	a := convertedOutputs[p.AInputName]
+	if a.Rank() > 0 && p.K > 0 && a.Shape().Dim(a.Rank()-1) == shapes.DynamicDim {
+		specs := DimensionSpecsFor(a)
+		specs[len(specs)-1] = StaticDim(p.K)
+		a = DynamicReshape(a, specs...)
+	}
 	var aScaleNode, aZPNode *Node
 	if p.AScaleName != "" {
 		aScaleNode = convertedOutputs[p.AScaleName]

@@ -1,12 +1,14 @@
+// Copyright 2023-2026 The GoMLX Authors. SPDX-License-Identifier: Apache-2.0
+
 package onnxgomlx
 
 import (
 	"fmt"
 	"strings"
 
+	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/dtypes/bfloat16"
 	"github.com/gomlx/compute/dtypes/float16"
-	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/core/tensors"
@@ -103,19 +105,47 @@ func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.
 	// Recurse into the inputs of the node that generated the `name` output.
 	node := m.NodeOutputToNode[name]
 	if node == nil {
-		exceptions.Panicf("nonConstantDepedencies given an unknown node output name %q", name)
-		return nil, nil, nil
+		// External/outer-scope or unregistered runtime input.
+		nonConstInputs = append(nonConstInputs, name)
+		return nonConstInputs, variables, contextNodes
 	}
 	if opRequiresContext(node.OpType) {
 		contextNodes = append(contextNodes, node)
 	}
 	if node.OpType == "Shape" || node.OpType == "Size" {
-		// Shape and Size ops return static values after converting to GoMLX, independent of inputs.
-		// So we don't recurse into their inputs.
+		if len(node.Input) > 0 && node.Input[0] != "" {
+			if inShape := m.InferShapeForName(node.Input[0]); inShape.Dimensions != nil {
+				hasDynamic := false
+				if node.OpType == "Size" {
+					hasDynamic = inShape.IsDynamic()
+				} else {
+					rank := len(inShape.Dimensions)
+					start := GetIntAttrOr(node, "start", 0)
+					end := GetIntAttrOr(node, "end", rank)
+					if start < 0 {
+						start += rank
+					}
+					if end < 0 {
+						end += rank
+					}
+					start = min(max(start, 0), rank)
+					end = min(max(end, start), rank)
+					for _, d := range inShape.Dimensions[start:end] {
+						if d < 0 {
+							hasDynamic = true
+							break
+						}
+					}
+				}
+				if hasDynamic {
+					nonConstInputs = append(nonConstInputs, node.Input[0])
+				}
+			}
+		}
 		return nonConstInputs, variables, contextNodes
 	}
 	for _, input := range node.Input {
-		if visitedNodes.Has(input) {
+		if input == "" || visitedNodes.Has(input) {
 			continue
 		}
 		nonConstInputs, variables, contextNodes = m.recursiveNonConstantDependencies(input, visitedNodes, nonConstInputs, variables, contextNodes)
@@ -255,9 +285,52 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 		exceptions.Panicf("attempting to materialize expression with operation %q, which is not supported for materialization: %s", onnxNode.OpType, onnxNode)
 	}
 
+	if onnxNode.OpType == "Shape" || onnxNode.OpType == "Size" {
+		if len(onnxNode.Input) == 0 || onnxNode.Input[0] == "" {
+			exceptions.Panicf("%s missing input", onnxNode.OpType)
+		}
+		inputName := onnxNode.Input[0]
+		inShape := m.InferShapeForName(inputName)
+		if origIn, ok := originalConvertedOutput[inputName]; ok {
+			inShape = origIn.Shape()
+		}
+		if inShape.Dimensions == nil {
+			exceptions.Panicf("%s(%q) has unknown shape", onnxNode.OpType, inputName)
+		}
+		if onnxNode.OpType == "Size" {
+			if inShape.IsDynamic() {
+				exceptions.Panicf("%s depends on runtime dimensions of %q (%s)", onnxNode.Name, inputName, inShape)
+			}
+			constConvertedOutputs[nodeOutputName] = Const(g, int64(inShape.Size()))
+			return
+		}
+		rank := len(inShape.Dimensions)
+		start := GetIntAttrOr(onnxNode, "start", 0)
+		end := GetIntAttrOr(onnxNode, "end", rank)
+		if start < 0 {
+			start += rank
+		}
+		if end < 0 {
+			end += rank
+		}
+		start = min(max(start, 0), rank)
+		end = min(max(end, start), rank)
+		dims := make([]int64, end-start)
+		for i, d := range inShape.Dimensions[start:end] {
+			if d < 0 {
+				exceptions.Panicf("%s depends on runtime dimensions of %q (%s)", onnxNode.Name, inputName, inShape)
+			}
+			dims[i] = int64(d)
+		}
+		constConvertedOutputs[nodeOutputName] = Const(g, tensors.FromFlatDataAndDimensions(dims, len(dims)))
+		return
+	}
+
 	// Recursively converts the inputs of the onnxNode:
 	for _, inputName := range onnxNode.Input {
-		m.recursiveMaterializeConstantExpression(inputName, g, constConvertedOutputs, originalConvertedOutput)
+		if inputName != "" {
+			m.recursiveMaterializeConstantExpression(inputName, g, constConvertedOutputs, originalConvertedOutput)
+		}
 	}
 
 	// And now convert the node itself.

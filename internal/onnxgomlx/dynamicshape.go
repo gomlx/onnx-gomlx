@@ -1,10 +1,12 @@
+// Copyright 2023-2026 The GoMLX Authors. SPDX-License-Identifier: Apache-2.0
+
 package onnxgomlx
 
 import (
 	"strconv"
 
-	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/compute-onnx/support/protos"
+	"github.com/gomlx/compute/shapes"
 	"github.com/pkg/errors"
 )
 
@@ -58,22 +60,21 @@ func (m *Model) ValidateInputs(inputsShapes ...shapes.Shape) error {
 		}
 		for axis, wantDim := range wantShape.Dimensions {
 			gotDim := givenShape.Dim(axis)
-			if wantDim > 0 {
-				if wantDim != gotDim {
+			if wantDim >= 0 {
+				if gotDim != shapes.DynamicDim && wantDim != gotDim {
 					return errors.Errorf("model input #%d (%q) has invalid shape: want %s, got %s",
 						idx, name, wantShape, givenShape)
 				}
 			} else {
 				dimName := wantShape.AxisName(axis)
-				if dimName != "" {
-					var found bool
-					wantDim, found = dimValues[dimName]
-					if !found {
+				if dimName != "" && !shapes.IsGeneratedAxisName(dimName) {
+					prevDim, found := dimValues[dimName]
+					if !found || prevDim == shapes.DynamicDim {
 						// Define dynamic shape based on input.
 						dimValues[dimName] = gotDim
-					} else if wantDim != gotDim {
+					} else if gotDim != shapes.DynamicDim && prevDim != gotDim {
 						return errors.Errorf("model input #%d (%q) shaped %s got unmatching invalid shape %s for axis %q (wanted dim %d)",
-							idx, name, wantShape, givenShape, dimName, wantDim)
+							idx, name, wantShape, givenShape, dimName, prevDim)
 					}
 				}
 			}

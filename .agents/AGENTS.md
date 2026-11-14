@@ -92,12 +92,13 @@ Backends that do not support dynamic shapes (like static XLA PJRT) will pad inpu
 
 ## 2. Architecture & Codebase Layout
 
-- **`onnx/`**: Public API package. Provides `ReadFile`, `Parse`, and the user-facing `Model` type wrapper.
+- **`onnx/`**: Public API package (`Model` interface) and **`onnx/parser/`** (`Parse`, `ParseFile`, `ParseFromReader`).
 - **`internal/onnxgomlx/`**: Core conversion engine.
-  - **`model.go`**: Manages model state, graph translation lifecycle, and input/output node mappings.
-  - **`ops.go`**: Operator converter dispatch table (`m.converters[opType]`) and individual operator converters (`convertMatMul`, `convertConv`, `convertWhere`, `convertExpand`, etc.).
-  - **`materialize.go`**: Constant subexpression evaluation engine. Evaluates ONNX nodes that compute tensor parameters (shapes, slices, broadcasting dimensions) at graph building time.
-  - **`fusion/`**: Fused operation matchers (`sdpa.go`, `qkvdense.go`, `dense.go`). Detects multi-op subgraphs and emits GoMLX fused operations.
+  - **`model.go` & `graph.go`**: Model state, graph translation lifecycle, and operator dispatch (`convertNode`).
+  - **`ops.go` & `ops_*.go`**: Operator converters (`ops_reshape.go`, `ops_slice.go`, `ops_pad.go`, `ops_pool.go`, `ops_scatter.go`, `ops_conv_integer.go`, `ops_conv_transpose.go`, `ops_grid_sample.go`, `ops_matmul_nbits.go`, `ops_norm_onehot.go`, `ops_random.go`, `ops_tree_ensemble.go`, `ops_einsum.go`, `ops_runtime_broadcast.go`, etc.).
+  - **`dynamicshape.go` & `shapes.go`**: Symbolic/unnamed dynamic axis tracking (`shapes.UniqueAxisName("#onnx")`) and intermediate ONNX shape inference.
+  - **`materialize.go`**: Constant subexpression evaluation engine. Evaluates ONNX nodes that compute tensor parameters (shapes, slices, broadcasting dimensions) at graph building time, while letting dynamic dependencies fall back to runtime graph ops.
+  - **`fusion/`**: Fused operation matchers (`sdpa.go`, `qkvdense.go`, `dense_gelu.go`, `quantized_dense.go`, `quantized_qkv.go`). Detects multi-op subgraphs and emits GoMLX `nn.` / `attention.` fused operations.
 - **`internal/onnxgraph/`**: Topological ordering, dependency tracking, and graph representation of ONNX protobuf nodes.
 - **`internal/benchmarks/`**: Parity tests, benchmarks vs. ONNX Runtime, and integration tests across backends.
 
@@ -108,19 +109,17 @@ Backends that do not support dynamic shapes (like static XLA PJRT) will pad inpu
 ### 3.1 Implementing New Operator Converters
 
 When adding a new ONNX operator:
-1. Define the converter method in `internal/onnxgomlx/ops.go`:
+1. Implement the converter in a focused `internal/onnxgomlx/ops_<category>.go` file (keeping per-op files under ~200 lines) or in `ops.go` for small helpers:
    ```go
-   func (m *Model) convertMyOp(node *protos.NodeProto, inputs []*graph.Node) *graph.Node
+   func convertMyOp(node *protos.NodeProto, inputs []*graph.Node) *graph.Node
    ```
-2. Register it in `init()` or `registerDefaultConverters()`:
-   ```go
-   m.converters["MyOp"] = (*Model).convertMyOp
-   ```
-3. **Pay close attention to broadcasting rules**:
-   - ONNX follows NumPy-style right-aligned multidirectional broadcasting.
-   - GoMLX nodes expect explicit shapes or use `graph.BroadcastInDim` / `graph.BroadcastToDims` for broadcast adjustments.
+   Prefer delegating to GoMLX `nn.` / `attention.` / `activation.` layers (e.g., `nn.QuantizedDense`, `nn.LayerNorm`, `graph.Softmax`, `graph.TopK`) so hardware-accelerated fused kernels are used automatically when supported.
+2. Wire the case into `convertNode` in `internal/onnxgomlx/graph.go` (and `inferShapeForNameDepth` in `shapes.go` when downstream `Shape` materialization benefits from knowing output rank/dims).
+3. **Pay close attention to broadcasting & dynamic axes**:
+   - ONNX follows NumPy-style right-aligned multidirectional broadcasting, including runtime size-1 expansion across distinct dynamic axes.
+   - Use `runtimeBroadcast` / `broadcastWithSpecs` / `runtimeExpand` (`ops_runtime_broadcast.go`) so static and already-aligned dynamic shapes take a zero-overhead fast path while distinct dynamic axes broadcast and validate compatibility at runtime.
 4. **Extracting node attributes**:
-   Use helper functions in `internal/onnxgomlx/` to read attributes from `node.Attribute` (e.g. `getAttrInt`, `getAttrFloat`, `getAttrStrings`, `getAttrTensor`).
+   Use helper functions in `internal/onnxgomlx/` to read attributes from `node.Attribute` (e.g. `GetIntAttrOr`, `GetIntsAttrOr`, `GetFloatAttrOr`, `GetStringAttrOr`, `GetStringsAttrOr`).
 
 ---
 

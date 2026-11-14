@@ -142,7 +142,7 @@ func (m *Model) inferShapeForNameDepth(name string, depth int) shapes.Shape {
 		}
 		return shapes.Shape{DType: dt, Dimensions: outDims}
 
-	case "Neg", "Abs", "Exp", "Log", "Sqrt", "Erf", "Relu", "LeakyRelu", "Elu", "Celu", "Selu",
+	case "Neg", "Abs", "Exp", "Log", "Sqrt", "Erf", "Relu", "LeakyRelu", "Elu", "Celu", "Selu", "InstanceNormalization",
 		"Sigmoid", "HardSigmoid", "Tanh", "Softplus", "Softsign", "Not", "Floor", "Ceil", "Round",
 		"Sign", "Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Sinh", "Cosh", "Asinh", "Acosh", "Atanh",
 		"Reciprocal", "Identity", "Clip", "Gelu", "Softmax", "LogSoftmax":
@@ -156,6 +156,105 @@ func (m *Model) inferShapeForNameDepth(name string, depth int) shapes.Shape {
 		outDims := make([]int, len(inShape.Dimensions))
 		copy(outDims, inShape.Dimensions)
 		return shapes.Shape{DType: inShape.DType, Dimensions: outDims}
+
+	case "RandomNormalLike":
+		if len(node.Input) == 0 {
+			return shapes.Shape{}
+		}
+		inShape := m.inferShapeForNameDepth(node.Input[0], depth+1)
+		if inShape.Dimensions == nil {
+			return shapes.Shape{}
+		}
+		outDims := make([]int, len(inShape.Dimensions))
+		copy(outDims, inShape.Dimensions)
+		dt := GetDTypeAttrOr(node, "dtype", inShape.DType)
+		return shapes.Shape{DType: dt, Dimensions: outDims}
+
+	case "NonZero":
+		if len(node.Input) == 0 {
+			return shapes.Shape{}
+		}
+		inShape := m.inferShapeForNameDepth(node.Input[0], depth+1)
+		if inShape.Dimensions == nil {
+			return shapes.Shape{}
+		}
+		return shapes.Shape{DType: dtypes.Int64, Dimensions: []int{len(inShape.Dimensions), shapes.DynamicDim}}
+
+	case "MatMulNBits":
+		if len(node.Input) == 0 {
+			return shapes.Shape{}
+		}
+		aShape := m.inferShapeForNameDepth(node.Input[0], depth+1)
+		n := GetIntAttrOr(node, "N", 0)
+		if aShape.Dimensions == nil || len(aShape.Dimensions) == 0 || n <= 0 {
+			return shapes.Shape{}
+		}
+		outDims := make([]int, len(aShape.Dimensions))
+		copy(outDims, aShape.Dimensions)
+		outDims[len(outDims)-1] = n
+		return shapes.Shape{DType: aShape.DType, Dimensions: outDims}
+
+	case "OneHot":
+		if len(node.Input) < 3 {
+			return shapes.Shape{}
+		}
+		indShape := m.inferShapeForNameDepth(node.Input[0], depth+1)
+		valShape := m.inferShapeForNameDepth(node.Input[2], depth+1)
+		if indShape.Dimensions == nil {
+			return shapes.Shape{}
+		}
+		depthVal := shapes.DynamicDim
+		if depthInts := m.extractScalarOrInts(node.Input[1]); len(depthInts) == 1 && depthInts[0] > 0 {
+			depthVal = depthInts[0]
+		}
+		outRank := len(indShape.Dimensions) + 1
+		axis := GetIntAttrOr(node, "axis", -1)
+		if axis < 0 {
+			axis += outRank
+		}
+		if axis < 0 || axis >= outRank {
+			return shapes.Shape{}
+		}
+		outDims := make([]int, 0, outRank)
+		for i := range outRank {
+			if i == axis {
+				outDims = append(outDims, depthVal)
+			}
+			if i < len(indShape.Dimensions) {
+				outDims = append(outDims, indShape.Dimensions[i])
+			}
+		}
+		return shapes.Shape{DType: valShape.DType, Dimensions: outDims}
+
+	case "GridSample":
+		if len(node.Input) < 2 {
+			return shapes.Shape{}
+		}
+		xShape := m.inferShapeForNameDepth(node.Input[0], depth+1)
+		gridShape := m.inferShapeForNameDepth(node.Input[1], depth+1)
+		if len(xShape.Dimensions) != 4 || len(gridShape.Dimensions) != 4 {
+			return shapes.Shape{}
+		}
+		return shapes.Shape{
+			DType:      xShape.DType,
+			Dimensions: []int{xShape.Dimensions[0], xShape.Dimensions[1], gridShape.Dimensions[1], gridShape.Dimensions[2]},
+		}
+
+	case "TreeEnsembleClassifier":
+		if len(node.Input) == 0 {
+			return shapes.Shape{}
+		}
+		xShape := m.inferShapeForNameDepth(node.Input[0], depth+1)
+		if len(xShape.Dimensions) != 2 {
+			return shapes.Shape{}
+		}
+		if len(node.Output) > 1 && name == node.Output[1] {
+			if labels := GetIntsAttrOr(node, "classlabels_int64s", nil); len(labels) > 0 {
+				return shapes.Shape{DType: dtypes.Float32, Dimensions: []int{xShape.Dimensions[0], len(labels)}}
+			}
+			return shapes.Shape{}
+		}
+		return shapes.Shape{DType: dtypes.Int64, Dimensions: []int{xShape.Dimensions[0]}}
 
 	case "Add", "Sub", "Mul", "Div", "Mod", "Pow", "BitShift", "BitwiseAnd", "BitwiseOr", "BitwiseXor",
 		"Equal", "Less", "LessOrEqual", "Greater", "GreaterOrEqual", "And", "Or", "Xor",
@@ -302,11 +401,14 @@ func (m *Model) extractUnsqueezeAxes(node *protos.NodeProto) []int {
 	if len(node.Input) < 2 {
 		return nil
 	}
-	axesName := node.Input[1]
-	if tp, ok := m.VariableNameToValue[axesName]; ok {
+	return m.extractScalarOrInts(node.Input[1])
+}
+
+func (m *Model) extractScalarOrInts(inputName string) []int {
+	if tp, ok := m.VariableNameToValue[inputName]; ok {
 		return tensorProtoToInts(tp)
 	}
-	if cNode, ok := m.NodeOutputToNode[axesName]; ok && cNode.OpType == "Constant" {
+	if cNode, ok := m.NodeOutputToNode[inputName]; ok && cNode.OpType == "Constant" {
 		for _, attr := range cNode.Attribute {
 			if attr.Name == "value" && attr.T != nil {
 				return tensorProtoToInts(attr.T)
@@ -396,4 +498,3 @@ func (m *Model) isScalarOrBroadcast1ConstantDepth(name string, depth int) bool {
 	}
 	return false
 }
-

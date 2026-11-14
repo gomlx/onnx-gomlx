@@ -35,6 +35,12 @@ func convertScatterND(_ *Model, _ map[string]*Node, node *protos.NodeProto, inpu
 		exceptions.Panicf("ScatterND: updates has wrong rank")
 	}
 
+	// An empty index tensor performs no updates.
+	for _, dim := range indices.Shape().Dimensions {
+		if dim == 0 {
+			return Identity(data)
+		}
+	}
 	indices = normalizeNDIndices(data, indices)
 	operand := Identity(data)
 	var output *Node
@@ -61,6 +67,12 @@ func convertScatterND(_ *Model, _ map[string]*Node, node *protos.NodeProto, inpu
 
 // normalizeNDIndices converts ONNX negative coordinate tuples for GatherND and ScatterND.
 func normalizeNDIndices(data, indices *Node) *Node {
+	// Empty indices contain no coordinates that need negative-index normalization.
+	for _, dim := range indices.Shape().Dimensions {
+		if dim == 0 {
+			return indices
+		}
+	}
 	// Each negative coordinate is relative to the end of its data axis.
 	// Broadcast the axis sizes over the leading dimensions of indices.
 	indexDepth := indices.Shape().Dimensions[indices.Rank()-1]
@@ -69,6 +81,6 @@ func normalizeNDIndices(data, indices *Node) *Node {
 		axisSizes[axis] = ConvertDType(DimensionSize(data, axis), indices.DType())
 	}
 	isNegative := LessThan(indices, ScalarZero(indices.Graph(), indices.DType()))
-	sizes := BroadcastLike(Stack(axisSizes, 0), indices)
+	sizes := ExpandLeftToRank(Stack(axisSizes, 0), indices.Rank())
 	return Where(isNegative, Add(indices, sizes), indices)
 }

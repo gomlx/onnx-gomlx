@@ -5,6 +5,7 @@ import (
 
 	"github.com/gomlx/compute"
 	"github.com/gomlx/compute-onnx/support/protos"
+	"github.com/gomlx/compute/shapes"
 	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/ml/layers/activation"
 	"github.com/gomlx/gomlx/ml/model"
@@ -41,6 +42,17 @@ func (c *denseActivationCandidate) Emit(_ *model.Scope, g *Graph, convertedOutpu
 
 	x := convertedOutputs[p.XInputName]
 	weight := convertedOutputs[p.WeightName]
+
+	// ONNX MatMul with a static weight fixes the contracting width even when
+	// shape inference left the input's trailing dimension dynamic.
+	if x.Rank() > 0 && weight.Rank() >= 2 && x.Shape().Dim(x.Rank()-1) == shapes.DynamicDim {
+		inFeatures := weight.Shape().Dim(0) // DenseLayoutInputOutputs
+		if inFeatures > 0 {
+			specs := DimensionSpecsFor(x)
+			specs[len(specs)-1] = StaticDim(inFeatures)
+			x = DynamicReshape(x, specs...)
+		}
+	}
 
 	var bias *Node
 	if p.BiasName != "" {

@@ -8,6 +8,7 @@ import (
 	. "github.com/gomlx/gomlx/core/graph"
 	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/pkg/errors"
+	"math"
 )
 
 // isIotaTensor checks if an integer tensor contains sequential integers (0, 1, 2, ...)
@@ -143,17 +144,20 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 
 	// optional steps param
 	var inputSteps []int
+	var stepsNode *Node
 	if len(inputs) > 4 && inputs[4] != nil {
-		stepsT, err := m.materializeConstantExpression(node.Input[4], convertedOutputs)
-		if err != nil {
-			panic(errors.WithMessagef(err, "while converting 'steps' for node %s", NodeToString(node)))
+		stepsNode = inputs[4]
+		if stepsT, err := m.materializeConstantExpression(node.Input[4], convertedOutputs); err == nil {
+			inputSteps = tensorToInts(stepsT)
 		}
-		inputSteps = tensorToInts(stepsT)
 	} else {
 		inputSteps = make([]int, len(inputAxes))
 		for i := range inputSteps {
 			inputSteps[i] = 1
 		}
+	}
+	if inputSteps == nil {
+		return runtimeSlice(operand, inputs[1], inputs[2], stepsNode, inputAxes, nil)
 	}
 
 	// Check if this is a dynamic slice (e.g. slicing an iota table by dynamic seq_len):
@@ -216,12 +220,12 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 			}
 			return res
 		}
-		panic(errors.WithMessagef(errEnds, "while converting 'ends' for node %s", NodeToString(node)))
+		return runtimeSlice(operand, inputs[1], inputs[2], stepsNode, inputAxes, inputSteps)
 	}
 
 	startsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 	if err != nil {
-		panic(errors.WithMessagef(err, "while converting 'starts' for node %s", NodeToString(node)))
+		return runtimeSlice(operand, inputs[1], inputs[2], stepsNode, inputAxes, inputSteps)
 	}
 	inputStarts := tensorToInts(startsT)
 	inputEnds := tensorToInts(endsT)
@@ -271,6 +275,13 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		step := inputSteps[i]
 		dimSize := operand.Shape().Dim(axis)
 
+		if dimSize < 0 {
+			if start == 0 && end >= math.MaxInt32 && step == 1 {
+				effectiveStarts[axis], effectiveEnds[axis], effectiveSteps[axis] = 0, -1, 1
+				continue
+			}
+			return runtimeSlice(operand, inputs[1], inputs[2], stepsNode, inputAxes, inputSteps)
+		}
 		// Validate step is not zero
 		if step == 0 {
 			panic(errors.Errorf("step cannot be 0 for axis %d in node %s", axis, NodeToString(node)))
@@ -311,6 +322,10 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 	emptySlice := false
 	outputDims := make([]int, rank)
 	for i := range rank {
+		if operand.Shape().Dim(i) < 0 && effectiveStarts[i] == 0 && effectiveEnds[i] == -1 {
+			outputDims[i] = -1
+			continue
+		}
 		start := effectiveStarts[i]
 		end := effectiveEnds[i]
 		step := effectiveSteps[i]
@@ -331,6 +346,17 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 		}
 	}
 	if emptySlice {
+		if operand.Shape().IsDynamic() {
+			outSpecs := make([]DimensionSpec, rank)
+			for i, d := range outputDims {
+				if d < 0 {
+					outSpecs[i] = DimensionSpecFor(operand, i)
+				} else {
+					outSpecs[i] = StaticDim(d)
+				}
+			}
+			return DynamicBroadcastInDim(ScalarZero(operand.Graph(), operand.DType()), nil, outSpecs...)
+		}
 		return Zeros(operand.Graph(), shapes.Make(operand.DType(), outputDims...))
 	}
 
@@ -353,8 +379,65 @@ func convertSlice(m *Model, convertedOutputs map[string]*Node, node *protos.Node
 
 	specs := make([]SliceAxisSpec, rank)
 	for i := range rank {
-		specs[i] = AxisRange(effectiveStarts[i], effectiveEnds[i]).Stride(effectiveSteps[i])
+		if operand.Shape().Dim(i) < 0 {
+			specs[i] = AxisRange()
+		} else {
+			specs[i] = AxisRange(effectiveStarts[i], effectiveEnds[i]).Stride(effectiveSteps[i])
+		}
 	}
 
 	return Slice(operand, specs...)
+}
+
+// runtimeSlice implements runtime slice bounds (and optional runtime steps) with a range of gather indices.
+func runtimeSlice(operand, starts, ends, stepsNode *Node, axes, steps []int) *Node {
+	for i, axis := range axes {
+		axis = MustAdjustAxis(axis, operand)
+		size := DimensionSize(operand, axis)
+		g := size.Graph()
+		dt := size.DType()
+		start := ConvertDType(Reshape(Slice(starts, AxisRange(i, i+1))), dt)
+		end := ConvertDType(Reshape(Slice(ends, AxisRange(i, i+1))), dt)
+		zero := ScalarZero(g, dt)
+		start = Where(LessThan(start, zero), Add(start, size), start)
+		end = Where(LessThan(end, zero), Add(end, size), end)
+
+		var length, stepNode *Node
+		if steps != nil {
+			step := steps[i]
+			if step == 0 {
+				exceptions.Panicf("Slice: step cannot be zero")
+			}
+			stepNode = Scalar(g, dt, step)
+			if step > 0 {
+				start = Min(Max(start, zero), size)
+				end = Min(Max(end, zero), size)
+				length = Div(AddScalar(Max(Sub(end, start), zero), step-1), stepNode)
+			} else {
+				last := AddScalar(size, -1)
+				start = Min(MaxScalar(start, -1), last)
+				end = Min(MaxScalar(end, -1), last)
+				length = Div(AddScalar(Max(Sub(start, end), zero), -step-1), Scalar(g, dt, -step))
+			}
+		} else {
+			stepNode = ConvertDType(Reshape(Slice(stepsNode, AxisRange(i, i+1))), dt)
+			isPos := GreaterThan(stepNode, zero)
+			posStart := Min(Max(start, zero), size)
+			posEnd := Min(Max(end, zero), size)
+			posLen := Div(Add(Max(Sub(posEnd, posStart), zero), AddScalar(stepNode, -1)), stepNode)
+
+			last := AddScalar(size, -1)
+			negStep := Neg(stepNode)
+			negStart := Min(MaxScalar(start, -1), last)
+			negEnd := Min(MaxScalar(end, -1), last)
+			negLen := Div(Add(Max(Sub(negStart, negEnd), zero), AddScalar(negStep, -1)), negStep)
+
+			start = Where(isPos, posStart, negStart)
+			length = Where(isPos, posLen, negLen)
+		}
+		indices := DynamicIota(g, dt, 0, NamedDynamicDim(shapes.UniqueAxisName("#onnx_slice"), length))
+		indices = Add(Mul(indices, stepNode), start)
+		operand = onnxGather(operand, indices, axis)
+	}
+	return operand
 }

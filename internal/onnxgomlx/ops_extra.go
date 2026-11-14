@@ -1,3 +1,5 @@
+// Copyright 2023-2026 The GoMLX Authors. SPDX-License-Identifier: Apache-2.0
+
 package onnxgomlx
 
 // This file implements ONNX operators that were missing from onnx-gomlx v0.5.14:
@@ -54,6 +56,9 @@ func onnxIsInf(x *Node, detectPositive, detectNegative bool) *Node {
 	g := x.Graph()
 	if !x.DType().IsFloat() || (!detectPositive && !detectNegative) {
 		// All false.
+		if x.Shape().IsDynamic() {
+			return DynamicBroadcastInDim(Const(g, false), nil, DimensionSpecsFor(x)...)
+		}
 		return BroadcastToShape(Const(g, false), shapes.Make(dtypes.Bool, x.Shape().Dimensions...))
 	}
 	// Infinite is neither finite nor NaN.
@@ -109,12 +114,8 @@ func convertScatterElements(node *protos.NodeProto, inputs []*Node) *Node {
 // the given indices (on scatterAxis) with Iota (on all other axes), and then a GoMLX scatter op is used.
 func onnxScatterElements(data, indices, updates *Node, scatterAxis int, reduction string) *Node {
 	rank := data.Rank()
-	if indices.Rank() != rank {
-		exceptions.Panicf("ScatterElements(data=%s, indices=%s, updates=%s): data and indices must have the same rank",
-			data.Shape(), indices.Shape(), updates.Shape())
-	}
-	if !slices.Equal(indices.Shape().Dimensions, updates.Shape().Dimensions) {
-		exceptions.Panicf("ScatterElements(data=%s, indices=%s, updates=%s): indices and updates must have the same dimensions",
+	if indices.Rank() != rank || updates.Rank() != rank {
+		exceptions.Panicf("ScatterElements(data=%s, indices=%s, updates=%s): data, indices, and updates must have the same rank",
 			data.Shape(), indices.Shape(), updates.Shape())
 	}
 	if !indices.DType().IsInt() {
@@ -123,13 +124,19 @@ func onnxScatterElements(data, indices, updates *Node, scatterAxis int, reductio
 	if data.DType() != updates.DType() {
 		exceptions.Panicf("ScatterElements: data (%s) and updates (%s) must have the same dtype", data.Shape(), updates.Shape())
 	}
-	for axis, dim := range indices.Shape().Dimensions {
-		if axis != scatterAxis && dim > data.Shape().Dim(axis) {
+	for axis, iDim := range indices.Shape().Dimensions {
+		uDim := updates.Shape().Dim(axis)
+		if iDim >= 0 && uDim >= 0 && iDim != uDim {
+			exceptions.Panicf("ScatterElements(data=%s, indices=%s, updates=%s): indices and updates must have the same dimensions",
+				data.Shape(), indices.Shape(), updates.Shape())
+		}
+		dDim := data.Shape().Dim(axis)
+		if axis != scatterAxis && iDim >= 0 && dDim >= 0 && iDim > dDim {
 			exceptions.Panicf("ScatterElements(data=%s, indices=%s, axis=%d): indices dimension on axis #%d is larger than data's",
 				data.Shape(), indices.Shape(), scatterAxis, axis)
 		}
 	}
-	if indices.Shape().Size() == 0 {
+	if slices.Contains(indices.Shape().Dimensions, 0) || slices.Contains(updates.Shape().Dimensions, 0) {
 		// Nothing to scatter.
 		return Identity(data)
 	}
@@ -142,28 +149,46 @@ func onnxScatterElements(data, indices, updates *Node, scatterAxis int, reductio
 	}
 
 	// Normalize negative indices: ONNX allows -1 for last element, -2 for second-to-last, etc.
-	normalizedIndices := normalizeNegativeIndices(indices, data.Shape().Dim(scatterAxis))
+	normalizedIndices := normalizeNegativeIndicesForAxis(data, indices, scatterAxis)
 	if reduction == "mul" {
 		return onnxScatterElementsMul(data, normalizedIndices, updates, scatterAxis)
 	}
 
-	// fullIndices is shaped [indicesSize, rank]: the full coordinates in data for each element of indices.
-	indicesSize := indices.Shape().Size()
 	g := data.Graph()
-	iotaShape := shapes.Make(indices.DType(), indices.Shape().Dimensions...)
-	fullIndicesParts := make([]*Node, 0, rank)
-	for axis := range rank {
-		var part *Node
-		if axis == scatterAxis {
-			part = normalizedIndices
-		} else {
-			// On all other axes, the coordinates are the same in indices/updates and output.
-			part = Iota(g, iotaShape, axis)
+	var fullIndices, flatUpdates *Node
+	if !indices.Shape().IsDynamic() && !updates.Shape().IsDynamic() {
+		// fullIndices is shaped [indicesSize, rank]: the full coordinates in data for each element of indices.
+		indicesSize := indices.Shape().Size()
+		iotaShape := shapes.Make(indices.DType(), indices.Shape().Dimensions...)
+		fullIndicesParts := make([]*Node, 0, rank)
+		for axis := range rank {
+			var part *Node
+			if axis == scatterAxis {
+				part = normalizedIndices
+			} else {
+				// On all other axes, the coordinates are the same in indices/updates and output.
+				part = Iota(g, iotaShape, axis)
+			}
+			fullIndicesParts = append(fullIndicesParts, Reshape(part, indicesSize, 1))
 		}
-		fullIndicesParts = append(fullIndicesParts, Reshape(part, indicesSize, 1))
+		fullIndices = Concatenate(fullIndicesParts, -1)
+		flatUpdates = Reshape(updates, indicesSize)
+	} else {
+		specs := DimensionSpecsFor(indices)
+		parts := make([]*Node, rank)
+		for axis := range rank {
+			if axis == scatterAxis {
+				parts[axis] = DynamicReshape(normalizedIndices, specs...)
+			} else {
+				parts[axis] = DynamicIota(g, indices.DType(), axis, specs...)
+			}
+		}
+		coordGrid := Stack(parts, -1)
+		flatCount := ReduceMultiply(DynamicShape(indices))
+		flatSpec := NamedDynamicDim(shapes.UniqueAxisName("#onnx_scatter_elem"), flatCount)
+		fullIndices = DynamicReshape(coordGrid, flatSpec, StaticDim(rank))
+		flatUpdates = DynamicReshape(updates, flatSpec)
 	}
-	fullIndices := Concatenate(fullIndicesParts, -1)
-	flatUpdates := Reshape(updates, indicesSize)
 
 	switch reduction {
 	case "none", "":
