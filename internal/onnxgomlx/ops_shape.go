@@ -23,6 +23,11 @@ func convertShape(node *protos.NodeProto, inputs []*Node) *Node {
 	start = min(max(start, 0), shape.Rank())
 	end = min(max(end, start), shape.Rank())
 
+	for _, dim := range shape.Dimensions[start:end] {
+		if dim < 0 {
+			return Slice(DynamicShape(inputs[0]), AxisRange(start, end))
+		}
+	}
 	dims := sliceMap(shape.Dimensions[start:end], func(dim int) int64 { return int64(dim) })
 	g := inputs[0].Graph()
 	value := tensors.FromFlatDataAndDimensions(dims, len(dims))

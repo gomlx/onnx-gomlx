@@ -494,6 +494,8 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 		result = activation.GeluApproximate(inputs[0])
 	case "LeakyRelu":
 		result = m.convertLeakyRelu(node, inputs)
+	case "Elu":
+		result = m.convertElu(node, inputs)
 	case "Selu":
 		result = m.convertSelu(node, inputs)
 	case "HardSigmoid":
@@ -551,7 +553,7 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 	case "MatMul":
 		result = m.convertMatMul(inputs[0], inputs[1])
 	case "Einsum":
-		result = convertEinsum(node, inputs)
+		result = m.convertEinsum(node, inputs)
 
 	// Ops with special behavior:
 	case "Clip":
@@ -582,6 +584,8 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 		result = m.convertConcat(node, inputs)
 	case "Softmax":
 		result = convertSoftmax(m, node, inputs)
+	case "LogSoftmax":
+		result = convertLogSoftmax(m, node, inputs)
 	case "Cast":
 		result = convertCast(node, inputs)
 	case "Transpose":
@@ -598,6 +602,12 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 		result = convertMatMulInteger(node, inputs)
 	case "QLinearMatMul":
 		result = convertQLinearMatMul(node, inputs)
+	case "MatMulNBits":
+		result = m.convertMatMulNBits(node, inputs)
+	case "ConvInteger":
+		result = convertConvInteger(node, inputs)
+	case "RandomNormalLike":
+		result = convertRandomNormalLike(scope, node, inputs)
 
 	// Ops that require constant sub-expression materialization:
 	// they take dynamic (graph) values in ONNX but only take static values in XLA
@@ -621,6 +631,10 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 		result = convertReduceProd(m, convertedOutputs, node, inputs)
 	case "ReduceL2":
 		result = convertReduceL2(m, convertedOutputs, node, inputs)
+	case "ReduceLogSumExp":
+		result = convertReduceLogSumExp(m, convertedOutputs, node, inputs)
+	case "OneHot":
+		result = convertOneHot(m, convertedOutputs, node, inputs)
 	case "NonZero":
 		result = convertNonZero(m, convertedOutputs, node, inputs)
 	case "ConstantOfShape":
@@ -641,6 +655,8 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 		result = convertLSTM(m, convertedOutputs, node, inputs)
 	case "Conv":
 		result = convertConv(m, convertedOutputs, node, inputs)
+	case "ConvTranspose":
+		result = convertConvTranspose(node, inputs)
 	case "AveragePool":
 		result = convertAveragePool(m, convertedOutputs, node, inputs)
 	case "MaxPool":
@@ -649,8 +665,12 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 		result = convertGlobalAveragePool(m, convertedOutputs, node, inputs)
 	case "Resize":
 		result = convertResize(m, convertedOutputs, node, inputs)
+	case "GridSample":
+		result = convertGridSample(node, inputs)
 	case "BatchNormalization":
 		result = convertBatchNormalization(m, convertedOutputs, node, inputs)
+	case "InstanceNormalization":
+		result = convertInstanceNormalization(node, inputs)
 	case "LayerNormalization":
 		result = convertLayerNormalization(m, convertedOutputs, node, inputs)
 	case "SimplifiedLayerNormalization":
@@ -675,6 +695,8 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 		result = convertTrilu(m, convertedOutputs, node, inputs)
 	case "ScatterND":
 		result = convertScatterND(m, convertedOutputs, node, inputs)
+	case "TreeEnsembleClassifier":
+		result = convertTreeEnsembleClassifier(node, inputs, convertedOutputs)
 
 	// Control flow ops:
 	case "If":

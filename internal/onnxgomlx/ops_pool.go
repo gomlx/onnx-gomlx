@@ -75,9 +75,6 @@ func convertMaxPool(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs
 		exceptions.Panicf("MaxPool: support for attribute 'ceil_mode' is not yet implemented")
 	}
 	dilations := GetIntsAttrOr(node, "dilations", nil)
-	if dilations != nil {
-		exceptions.Panicf("MaxPool: support for attribute 'dilations' is not yet implemented")
-	}
 	storageOrder := GetIntAttrOr(node, "storage_order", 0)
 	if storageOrder != 0 {
 		exceptions.Panicf("MaxPool: support for attribute 'storage_order' is not yet implemented")
@@ -107,6 +104,9 @@ func convertMaxPool(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs
 	if strides != nil {
 		pool = pool.StridePerAxis(strides...)
 	}
+	if dilations != nil {
+		pool = pool.WindowDilationPerAxis(dilations...)
+	}
 	if paddings != nil {
 		pool = pool.PaddingPerDim(paddings)
 	}
@@ -121,6 +121,13 @@ func convertMaxPool(_ *Model, _ map[string]*Node, node *protos.NodeProto, inputs
 func convertGlobalAveragePool(_ *Model, _ map[string]*Node, _ *protos.NodeProto, inputs []*Node) *Node {
 	x := inputs[0]
 	spatialDims := x.Rank() - 2
+	if x.Shape().IsDynamic() {
+		spatialAxes := make([]int, spatialDims)
+		for i := range spatialAxes {
+			spatialAxes[i] = i + 2
+		}
+		return ReduceAndKeep(x, ReduceMean, spatialAxes...)
+	}
 	window := make([]int, spatialDims)
 	for i := range window {
 		window[i] = x.Shape().Dim(i + 2)

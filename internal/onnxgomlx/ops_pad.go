@@ -15,6 +15,22 @@ import (
 func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
 	mode := GetStringAttrOr(node, "mode", "constant")
 	padsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
+	if err != nil && mode == "constant" && (len(inputs) <= 3 || inputs[3] == nil) {
+		x := inputs[0]
+		fill := ScalarZero(x.Graph(), x.DType())
+		if len(inputs) > 2 && inputs[2] != nil {
+			fill = Reshape(inputs[2])
+		}
+		if inputs[1].Rank() != 1 || inputs[1].Shape().Dim(0) != 2*x.Rank() {
+			exceptions.Panicf("Pad: invalid runtime pads %s for input %s", inputs[1].Shape(), x.Shape())
+		}
+		configs := make([]DynamicPadAxisSpec, x.Rank())
+		for i := range configs {
+			configs[i].StartNode = Reshape(Slice(inputs[1], AxisRange(i, i+1)))
+			configs[i].EndNode = Reshape(Slice(inputs[1], AxisRange(i+x.Rank(), i+x.Rank()+1)))
+		}
+		return DynamicPad(x, fill, configs...)
+	}
 	if err != nil {
 		panic(errors.WithMessagef(err, "while converting 'pads' for node %s", NodeToString(node)))
 	}
@@ -71,7 +87,14 @@ func convertPad(m *Model, convertedOutputs map[string]*Node, node *protos.NodePr
 		for i := range rank {
 			paddings[i] = compute.PadAxis{Start: pads[i], End: pads[i+rank]}
 		}
-		return Pad(x, constantValueNode, paddings...)
+		if x.Shape().IsDynamic() {
+			configs := make([]DynamicPadAxisSpec, rank)
+			for i, p := range paddings {
+				configs[i] = DynamicPadAxis(p.Start, p.End, 0)
+			}
+			return DynamicPad(x, Reshape(constantValueNode), configs...)
+		}
+		return Pad(x, Reshape(constantValueNode), paddings...)
 
 	case "reflect":
 		return convertPadReflect(x, pads, rank)

@@ -5,11 +5,11 @@ go 1.27
 require (
 	github.com/chewxy/math32 v1.11.1
 	github.com/daulet/tokenizers v1.27.0
-	github.com/gomlx/compute v0.1.29-0.20261114120800-bee4d40d4f8d
-	github.com/gomlx/compute-onnx v0.1.29-0.20261114121152-6972db68d645
+	github.com/gomlx/compute v0.1.29-0.20261114140711-3fba7a6bd761
+	github.com/gomlx/compute-onnx v0.1.29-0.20261114141204-6d4b6ae57f95
 	github.com/gomlx/exceptions v0.0.3
 	github.com/gomlx/go-huggingface v0.4.33-0.20261114122508-0da7792b6a8c
-	github.com/gomlx/gomlx v0.28.35-0.20261114122345-54eb79e543e2
+	github.com/gomlx/gomlx v0.28.35-0.20261114141610-a248169224b1
 	github.com/janpfeifer/go-benchmarks v0.1.1
 	github.com/janpfeifer/must v0.2.0
 	github.com/parquet-go/parquet-go v0.29.0

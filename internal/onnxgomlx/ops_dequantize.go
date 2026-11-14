@@ -40,17 +40,22 @@ func onnxDequantizeLinear(x, scale, xZeroPoint *Node, targetAxis int, outputDTyp
 			exceptions.Panicf("DequantizeLinear: scale must be a scalar or 1D, got %s instead", scale.Shape())
 		}
 		targetAxis = MustAdjustAxis(targetAxis, x)
-		newScaleShape := x.Shape().Clone()
-		for axis := range newScaleShape.Dimensions {
-			if axis != targetAxis {
-				newScaleShape.Dimensions[axis] = 1
-			} else if newScaleShape.Dimensions[axis] != scale.Shape().Dimensions[0] {
-				exceptions.Panicf("DequantizeLinear: scale must have same dimension as the input axis %d (input shape=%s), got %s instead", targetAxis, x.Shape(), scale.Shape())
-			}
+		scaleLen := scale.Shape().Dim(0)
+		if xDim := x.Shape().Dim(targetAxis); xDim >= 0 && xDim != scaleLen {
+			exceptions.Panicf("DequantizeLinear: scale must have same dimension as the input axis %d (input shape=%s), got %s instead", targetAxis, x.Shape(), scale.Shape())
+		} else if xDim < 0 && scaleLen >= 0 {
+			specs := DimensionSpecsFor(x)
+			specs[targetAxis] = StaticDim(scaleLen)
+			x = DynamicReshape(x, specs...)
 		}
-		scale = Reshape(scale, newScaleShape.Dimensions...)
+		scaleDims := make([]int, x.Rank())
+		for axis := range scaleDims {
+			scaleDims[axis] = 1
+		}
+		scaleDims[targetAxis] = scaleLen
+		scale = Reshape(scale, scaleDims...)
 		if xZeroPoint != nil && !xZeroPoint.IsScalar() {
-			xZeroPoint = Reshape(xZeroPoint, newScaleShape.Dimensions...)
+			xZeroPoint = Reshape(xZeroPoint, scaleDims...)
 		}
 	}
 	if xZeroPoint != nil {

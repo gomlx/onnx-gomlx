@@ -1,5 +1,9 @@
 # 2026/11/14
 
+- Expanded ONNX operator coverage and dynamic-shape execution (reworking and integrating PR #118):
+  - **New ONNX operators**: `Elu`, `LogSoftmax` (opset `< 13` and `>= 13`), `ReduceLogSumExp`, `OneHot`, `RandomNormalLike` (static and dynamic shapes via `RNGBitGenerator`), `ConvInteger` (exact `Int32` `Convolve` with scalar/per-channel zero points), `ConvTranspose` (1D/2D/3D, groups, strides, dilations, `output_padding`, `output_shape`), `GridSample` (bilinear/nearest, `zeros`/`border`/`reflection`, `align_corners`), `InstanceNormalization` (via `nn.LayerNorm` / `FusedLayerNorm`), `MatMulNBits` (2/4/8-bit block quantization via `nn.QuantizedDense` / `FusedQuantizedDense`), and ONNX-ML `TreeEnsembleClassifier` (multiclass and compact binary with `NONE`/`SOFTMAX`/`LOGISTIC` and `NaN` routing).
+  - **Extended existing operators**: runtime `NonZero` (`graph.NonZero` with `[rank, count]` transposed layout, plus `Float16`/`BFloat16` constant materialization), `MaxPool` spatial `dilations`, `Einsum` ellipsis (`...`) and singleton broadcasting, and `ArgMax`/`ArgMin` `select_last_index`.
+  - **Dynamic-shape execution**: runtime multidirectional broadcasting (`runtimeBroadcast` / `runtimeExpand`) for binary ops, `Where`, `Expand`, `ConstantOfShape`, and batched `MatMul`; runtime `Reshape`, `Slice` (including runtime `starts`/`ends`/`steps`), `Range`, `Pad`, `Flatten`, `Shape`, `Size`, `GlobalAveragePool`, `Gather`, `GatherElements`, `ScatterElements`, `ScatterND`, `Concat`, `QuantizeLinear`, `DequantizeLinear`, and fused `Dense`/`QKVDense`/`QuantizedDense`/`SDPA` axis alignment.
 - Replaced `UnnamedDynamicDimension` (`shapes.AnonymousAxis`) with `shapes.UniqueAxisName("#onnx")` in `internal/onnxgomlx/dynamicshape.go` so unnamed ONNX dynamic dimensions receive globally unique `#onnx_<n>` axis names that preserve self-identity across downstream graph operations.
 
 # 2026/11/12

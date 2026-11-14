@@ -20,13 +20,13 @@ package fusion
 // Grouped Query Attention (GQA) is supported when NumHeads != NumKVHeads.
 
 import (
+	"github.com/gomlx/compute-onnx/support/protos"
+	"github.com/gomlx/compute/shapes"
 	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/ml/layers/attention"
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
-
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
-	"github.com/gomlx/compute-onnx/support/protos"
 )
 
 // SDPAParams holds parameters for fused scaled dot-product attention.
@@ -90,6 +90,8 @@ func (c *sdpaCandidate) Emit(scope *model.Scope, g *Graph, convertedOutputs map[
 	q := convertedOutputs[p.QInputName]
 	k := convertedOutputs[p.KInputName]
 	v := convertedOutputs[p.VInputName]
+	alignedBatch := alignSDPADynamicAxes(0, q, k, v)
+	q, k, v = alignedBatch[0], alignedBatch[1], alignedBatch[2]
 
 	// When K is in [batch, kvLen, numKVHeads, headDim] (e.g. from Snowflake-style models),
 	// transpose to [batch, numKVHeads, kvLen, headDim] as expected by attention.Core.
@@ -110,11 +112,88 @@ func (c *sdpaCandidate) Emit(scope *model.Scope, g *Graph, convertedOutputs map[
 		}
 	}
 
+	alignedHead := alignSDPADynamicAxes(q.Rank()-1, q, k)
+	q, k = alignedHead[0], alignedHead[1]
+	seqAxis := layout.SeqAxis()
+	alignedKVSeq := alignSDPADynamicAxes(seqAxis, k, v)
+	k, v = alignedKVSeq[0], alignedKVSeq[1]
+
+	if mask != nil && mask.Rank() > 0 {
+		if q.Rank() > 0 && mask.Shape().Dim(0) == shapes.DynamicDim && q.Shape().Dim(0) == shapes.DynamicDim {
+			mask = renameDynamicAxis(mask, 0, q.Shape().AxisName(0))
+		}
+		switch mask.Rank() {
+		case 2: // [batch, kv_seq]
+			if mask.Shape().Dim(1) == shapes.DynamicDim && k.Shape().Dim(seqAxis) == shapes.DynamicDim {
+				mask = renameDynamicAxis(mask, 1, k.Shape().AxisName(seqAxis))
+			}
+		case 3: // [batch, q_seq, kv_seq]
+			if mask.Shape().Dim(1) == shapes.DynamicDim && q.Shape().Dim(seqAxis) == shapes.DynamicDim {
+				mask = renameDynamicAxis(mask, 1, q.Shape().AxisName(seqAxis))
+			}
+			if mask.Shape().Dim(2) == shapes.DynamicDim && k.Shape().Dim(seqAxis) == shapes.DynamicDim {
+				mask = renameDynamicAxis(mask, 2, k.Shape().AxisName(seqAxis))
+			}
+		case 4: // [batch, heads, q_seq, kv_seq] (BHSD) or [batch, q_seq, heads, kv_seq] (BSHD)
+			queryMaskAxis := 2
+			if layout == attention.LayoutBSHD {
+				queryMaskAxis = 1
+			}
+			if mask.Shape().Dim(queryMaskAxis) == shapes.DynamicDim && q.Shape().Dim(seqAxis) == shapes.DynamicDim {
+				mask = renameDynamicAxis(mask, queryMaskAxis, q.Shape().AxisName(seqAxis))
+			}
+			if mask.Shape().Dim(3) == shapes.DynamicDim && k.Shape().Dim(seqAxis) == shapes.DynamicDim {
+				mask = renameDynamicAxis(mask, 3, k.Shape().AxisName(seqAxis))
+			}
+		}
+	}
+
 	output, _ := attention.Core(q, k, v, layout, attention.CoreOptions{
 		Scale:         scale,
 		AttentionMask: mask,
 	})
 	convertedOutputs[c.outputName] = output
+}
+
+func alignSDPADynamicAxes(axis int, nodes ...*Node) []*Node {
+	sharedName := ""
+	needAlign := false
+	for _, n := range nodes {
+		if n == nil || axis < 0 || axis >= n.Rank() || n.Shape().Dim(axis) != shapes.DynamicDim {
+			continue
+		}
+		name := n.Shape().AxisName(axis)
+		if sharedName == "" {
+			sharedName = name
+		} else if name != sharedName {
+			needAlign = true
+		}
+	}
+	if !needAlign {
+		return nodes
+	}
+	targetName := shapes.UniqueAxisName("#sdpa_axis")
+	for _, n := range nodes {
+		if n != nil && axis >= 0 && axis < n.Rank() && n.Shape().Dim(axis) == shapes.DynamicDim {
+			if name := n.Shape().AxisName(axis); name != "" && !shapes.IsGeneratedAxisName(name) {
+				targetName = name
+				break
+			}
+		}
+	}
+	for i, n := range nodes {
+		nodes[i] = renameDynamicAxis(n, axis, targetName)
+	}
+	return nodes
+}
+
+func renameDynamicAxis(node *Node, axis int, name string) *Node {
+	if node == nil || name == "" || axis < 0 || axis >= node.Rank() || node.Shape().Dim(axis) != shapes.DynamicDim || node.Shape().AxisName(axis) == name {
+		return node
+	}
+	specs := DimensionSpecsFor(node)
+	specs[axis] = NamedDynamicDim(name, DimensionSize(node, axis))
+	return DynamicReshape(node, specs...)
 }
 
 func init() {

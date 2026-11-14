@@ -55,31 +55,42 @@ func onnxQuantizeLinear(x, yScale, yZeroPoint *Node, targetAxis int, outputDType
 		if yScale.Rank() != 1 {
 			exceptions.Panicf("QuantizeLinear: y_scale must be a scalar or 1D, got %s instead", yScale.Shape())
 		}
-		newScaleShape := x.Shape().Clone()
-		for axis := range newScaleShape.Dimensions {
-			if axis != targetAxis {
-				newScaleShape.Dimensions[axis] = 1
-			} else if newScaleShape.Dimensions[axis] != yScale.Shape().Dimensions[0] {
-				exceptions.Panicf("QuantizeLinear: y_scale must have same dimension as the input axis %d (input shape=%s), got %s instead", targetAxis, x.Shape(), yScale.Shape())
-			}
+		scaleLen := yScale.Shape().Dim(0)
+		if xDim := x.Shape().Dim(targetAxis); xDim >= 0 && xDim != scaleLen {
+			exceptions.Panicf("QuantizeLinear: y_scale must have same dimension as the input axis %d (input shape=%s), got %s instead", targetAxis, x.Shape(), yScale.Shape())
+		} else if xDim < 0 && scaleLen >= 0 {
+			specs := DimensionSpecsFor(x)
+			specs[targetAxis] = StaticDim(scaleLen)
+			x = DynamicReshape(x, specs...)
 		}
-		yScale = Reshape(yScale, newScaleShape.Dimensions...)
+		scaleDims := make([]int, x.Rank())
+		for axis := range scaleDims {
+			scaleDims[axis] = 1
+		}
+		scaleDims[targetAxis] = scaleLen
+		yScale = Reshape(yScale, scaleDims...)
 	}
 
 	// Similarly reshape zero point if provided
 	if yZeroPoint != nil && !yZeroPoint.IsScalar() {
+		targetAxis = MustAdjustAxis(targetAxis, x)
 		if yZeroPoint.Rank() != 1 {
 			exceptions.Panicf("QuantizeLinear: y_zero_point must be a scalar or 1D, got %s instead", yZeroPoint.Shape())
 		}
-		newZeroPointShape := x.Shape().Clone()
-		for axis := range newZeroPointShape.Dimensions {
-			if axis != targetAxis {
-				newZeroPointShape.Dimensions[axis] = 1
-			} else if newZeroPointShape.Dimensions[axis] != yZeroPoint.Shape().Dimensions[0] {
-				exceptions.Panicf("QuantizeLinear: y_zero_point must have same dimension as the input axis %d (input shape=%s), got %s instead", targetAxis, x.Shape(), yZeroPoint.Shape())
-			}
+		zpLen := yZeroPoint.Shape().Dim(0)
+		if xDim := x.Shape().Dim(targetAxis); xDim >= 0 && xDim != zpLen {
+			exceptions.Panicf("QuantizeLinear: y_zero_point must have same dimension as the input axis %d (input shape=%s), got %s instead", targetAxis, x.Shape(), yZeroPoint.Shape())
+		} else if xDim < 0 && zpLen >= 0 {
+			specs := DimensionSpecsFor(x)
+			specs[targetAxis] = StaticDim(zpLen)
+			x = DynamicReshape(x, specs...)
 		}
-		yZeroPoint = Reshape(yZeroPoint, newZeroPointShape.Dimensions...)
+		zpDims := make([]int, x.Rank())
+		for axis := range zpDims {
+			zpDims[axis] = 1
+		}
+		zpDims[targetAxis] = zpLen
+		yZeroPoint = Reshape(yZeroPoint, zpDims...)
 	}
 
 	// Convert input to scale's dtype for division
