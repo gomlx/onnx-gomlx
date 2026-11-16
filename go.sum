@@ -50,6 +50,8 @@ github.com/gomlx/compute v0.1.31-0.20261116110734-3dbd791c8940 h1:P4tZaA5TyE9aI/
 github.com/gomlx/compute v0.1.31-0.20261116110734-3dbd791c8940/go.mod h1:fzjvKz/KXBeY6mrgnDovo5wNKG/hs77A32MGLXyMp08=
 github.com/gomlx/compute-onnx v0.1.30 h1:LHrG/ojnR1deF5YW6blD8Der/EEYF5fsx2aZToD/CfQ=
 github.com/gomlx/compute-onnx v0.1.30/go.mod h1:4HRRXNS7QRf3ueA/h9sMr/Z+d4izrFT8DGMi+K/wmnY=
+github.com/gomlx/compute-onnx v0.1.31-0.20261116150322-1776b79032dd h1:wviKtJxcHWaUth4MI48M5jihpQrDJUcEkgWXwQYFXe4=
+github.com/gomlx/compute-onnx v0.1.31-0.20261116150322-1776b79032dd/go.mod h1:4HRRXNS7QRf3ueA/h9sMr/Z+d4izrFT8DGMi+K/wmnY=
 github.com/gomlx/exceptions v0.0.3 h1:HKnTgEjj4jlmhr8zVFkTP9qmV1ey7ypYYosQ8GzXWuM=
 github.com/gomlx/exceptions v0.0.3/go.mod h1:uHL0TQwJ0xaV2/snJOJV6hSE4yRmhhfymuYgNredGxU=
 github.com/gomlx/go-darwinml v0.1.7 h1:h6hDBlCKOHAmTOAoMMkxM815DhjlT0kDwWPXNyrpeVc=
