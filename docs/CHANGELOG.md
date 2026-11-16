@@ -1,3 +1,12 @@
+# 2026/11/16
+
+- Aligned dynamic broadcasting and shape-preserving helpers with `gomlx/compute#83` and `gomlx/gomlx#495`:
+  - Simplified `broadcastWithSpecs` (`internal/onnxgomlx/ops_runtime_broadcast.go`) to call `graph.DynamicBroadcastInDim` directly (removing the intermediate `DynamicReshape` axis-renaming workaround) with a zero-op fast path when shapes and axis names already match.
+  - Updated `runtimeBroadcast` to narrow axes paired with any non-unit static dimension (`0` or `> 1`) to `StaticDim` (validating runtime `1`-or-match compatibility) and to preserve shared dynamic axis names on unaffected axes.
+  - Updated `convertMod` and `convertSkipSimplifiedLayerNormalization` to use `runtimeBroadcast`, removed dead `onnxBroadcastToCommonShape`, and extended `reshapeTargetStaticDims` / `runtimeExpand` / `runtimeConstantOfShape` to preserve statically known dimensions from `Shape` and `Concat` shape expressions.
+  - Bumped `github.com/gomlx/compute`, `github.com/gomlx/go-xla`, and `github.com/gomlx/gomlx` dependencies.
+- Added GitHub Actions CI test workflows (`.github/workflows/`) for `Linux/amd64`, `Linux/arm64`, `Darwin/arm64`, and `Windows/amd64` (standard and `GOEXPERIMENT=simd`).
+
 # 2026/11/14
 
 - Expanded ONNX operator coverage and dynamic-shape execution (reworking and integrating PR #118):

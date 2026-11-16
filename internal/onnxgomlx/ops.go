@@ -48,43 +48,6 @@ func onnxImplicitExpansion(operands []*Node) []*Node {
 	})
 }
 
-// onnxBroadcastToCommonShape implements the full ONNX multidirectional broadcasting rule.
-// It first expands operands to the same rank (by prepending 1-dimensional axes), then
-// broadcasts all operands to a common shape where each dimension is the maximum across
-// all operands.
-//
-// This implements the ONNX broadcasting semantics as described in:
-// https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
-func onnxBroadcastToCommonShape(operands []*Node) []*Node {
-	// Step 1: Expand to common rank
-	operands = onnxImplicitExpansion(operands)
-
-	// Step 2: Find the maximum dimension for each axis
-	ranks := sliceMap(operands, func(n *Node) int { return n.Rank() })
-	maxRank := slices.Max(ranks)
-	maxDims := make([]int, maxRank)
-	for axis := range maxRank {
-		allDims := sliceMap(operands, func(n *Node) int {
-			if n.IsScalar() {
-				return 1
-			}
-			return n.Shape().Dim(axis)
-		})
-		maxDims[axis] = slices.Max(allDims)
-	}
-
-	// Step 3: Broadcast each operand to the common shape
-	result := make([]*Node, len(operands))
-	for ii, operand := range operands {
-		if !operand.IsScalar() && !slices.Equal(operand.Shape().Dimensions, maxDims) {
-			result[ii] = BroadcastToDims(operand, maxDims...)
-		} else {
-			result[ii] = operand
-		}
-	}
-	return result
-}
-
 // checkOrPromoteDTypes checks that two operands have the same dtype -- panics if not.
 //
 // Optionally, if dtype promotion is enabled, it converts two nodes to a common dtype
@@ -1392,18 +1355,20 @@ func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *p
 		exceptions.Panicf("input (shape) must be integer, got %s for node %s", dimsN.DType(), NodeToString(node))
 	}
 	if dimsN.Shape().IsDynamic() {
-		return runtimeExpand(valueN, dimsN)
+		return runtimeConstantOfShape(valueN, dimsN, nil, nil)
 	}
 	if dimsN.Shape().Size() == 0 {
 		return valueN
 	}
 	dimsT, err := m.materializeConstantExpression(node.Input[0], convertedOutputs)
 	if err != nil {
-		return runtimeExpand(valueN, dimsN)
+		knownDims, isKnown := reshapeTargetStaticDims(m, convertedOutputs, node.Input[0], dimsN.Shape().Dim(0))
+		return runtimeConstantOfShape(valueN, dimsN, knownDims, isKnown)
 	}
 	dims := tensorToInts(dimsT)
 	if slices.ContainsFunc(dims, func(d int) bool { return d < 0 }) {
-		return runtimeExpand(valueN, dimsN)
+		knownDims, isKnown := reshapeTargetStaticDims(m, convertedOutputs, node.Input[0], dimsN.Shape().Dim(0))
+		return runtimeConstantOfShape(valueN, dimsN, knownDims, isKnown)
 	}
 	return BroadcastToDims(valueN, dims...)
 }
@@ -1419,17 +1384,19 @@ func convertExpand(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 		exceptions.Panicf("input (shape) must be integer, got %s for node %s", dimsN.DType(), NodeToString(node))
 	}
 	if dimsN.Shape().IsDynamic() {
-		return runtimeExpand(operand, dimsN)
+		return runtimeExpand(operand, dimsN, nil, nil)
 	}
 	var dims []int // Default is a scalar.
 	if dimsN.Shape().Size() > 0 {
 		dimsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 		if err != nil {
-			return runtimeExpand(operand, dimsN)
+			knownDims, isKnown := reshapeTargetStaticDims(m, convertedOutputs, node.Input[1], dimsN.Shape().Dim(0))
+			return runtimeExpand(operand, dimsN, knownDims, isKnown)
 		}
 		dims = tensorToInts(dimsT)
 		if slices.ContainsFunc(dims, func(d int) bool { return d < 0 }) {
-			return runtimeExpand(operand, dimsN)
+			knownDims, isKnown := reshapeTargetStaticDims(m, convertedOutputs, node.Input[1], dimsN.Shape().Dim(0))
+			return runtimeExpand(operand, dimsN, knownDims, isKnown)
 		}
 	}
 
@@ -2060,10 +2027,10 @@ func convertSkipSimplifiedLayerNormalization(m *Model, convertedOutputs map[stri
 	if len(inputs) < 3 {
 		exceptions.Panicf("SkipSimplifiedLayerNormalization: expected at least 3 inputs (input, skip, gamma), got %d", len(inputs))
 	}
-	operands := onnxImplicitExpansion([]*Node{inputs[0], inputs[1]})
+	operands := runtimeBroadcast([]*Node{inputs[0], inputs[1]})
 	sum := Add(operands[0], operands[1])
 	if len(inputs) > 3 && inputs[3] != nil {
-		operands = onnxImplicitExpansion([]*Node{sum, inputs[3]})
+		operands = runtimeBroadcast([]*Node{sum, inputs[3]})
 		sum = Add(operands[0], operands[1])
 	}
 	if len(node.Output) >= 4 && node.Output[3] != "" {

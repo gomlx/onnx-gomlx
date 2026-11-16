@@ -1,0 +1,47 @@
+name: "Linux/amd64"
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  deployments: read
+  issues: read
+  discussions: read
+  packages: read
+  pages: read
+  pull-requests: read
+  repository-projects: read
+  security-events: read
+  statuses: read
+
+# Triggers the workflow on push or pull request events for the "main" branch.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  linux-amd64-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.27.4"
+
+      - name: Test
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Excludes internal/benchmarks, which requires the external C/Rust libtokenizers library and downloads models.
+        run: |
+          go test -p 1 -short $(go list ./... | grep -v "internal/benchmarks")
+
+      - name: Test with SIMD
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOEXPERIMENT: simd
+        run: |
+          go test -p 1 -short $(go list ./... | grep -v "internal/benchmarks")

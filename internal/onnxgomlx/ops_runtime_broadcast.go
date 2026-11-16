@@ -70,12 +70,20 @@ func runtimeBroadcast(operands []*Node) []*Node {
 	specs := make([]DimensionSpec, rank)
 	for axis := range specs {
 		staticSize := 1
-		allStatic := true
 		hasZeroStatic := false
+		var firstDynOp *Node
+		sharedDynName := ""
+		hasDistinctDynNames := false
 		for _, operand := range expanded {
 			dim := operand.Shape().Dim(axis)
 			if dim < 0 {
-				allStatic = false
+				name := operand.Shape().AxisName(axis)
+				if firstDynOp == nil {
+					firstDynOp = operand
+					sharedDynName = name
+				} else if name != sharedDynName {
+					hasDistinctDynNames = true
+				}
 			} else if dim == 0 {
 				if staticSize != 1 && staticSize != 0 {
 					exceptions.Panicf("ONNX broadcast: incompatible dimensions %d and 0 at axis %d", staticSize, axis)
@@ -88,14 +96,29 @@ func runtimeBroadcast(operands []*Node) []*Node {
 				exceptions.Panicf("ONNX broadcast: incompatible dimensions %d and %d at axis %d", staticSize, dim, axis)
 			}
 		}
-		if allStatic && staticSize >= 0 {
+		// If all operands are static, or if any operand has a non-unit static dimension (0 or > 1),
+		// the broadcast output dimension is statically fixed to staticSize (matching DynamicBroadcastInDim's
+		// static narrowing rule while validating dynamic operands for runtime 1-or-match compatibility).
+		if firstDynOp == nil || hasZeroStatic || staticSize != 1 {
 			specs[axis] = StaticDim(staticSize)
 			continue
 		}
-		size := DimensionSize(expanded[0], axis)
-		for _, operand := range expanded[1:] {
+		// If all dynamic operands share the same named axis (and static operands are all 1), preserve that axis name.
+		if !hasDistinctDynNames && sharedDynName != "" {
+			specs[axis] = DimensionSpecFor(firstDynOp, axis)
+			continue
+		}
+		var size *Node
+		for _, operand := range expanded {
+			if operand.Shape().Dim(axis) >= 0 {
+				continue // Static dimension is 1 here and never overrides another operand's size.
+			}
 			other := DimensionSize(operand, axis)
-			size = Where(Equal(size, Scalar(size.Graph(), size.DType(), 1)), other, size)
+			if size == nil {
+				size = other
+			} else {
+				size = Where(Equal(size, ScalarOne(size.Graph(), size.DType())), other, size)
+			}
 		}
 		specs[axis] = NamedDynamicDim(shapes.UniqueAxisName("#onnx_bcast"), size)
 	}
@@ -107,26 +130,30 @@ func runtimeBroadcast(operands []*Node) []*Node {
 
 func broadcastWithSpecs(operand *Node, specs []DimensionSpec) *Node {
 	operand = ExpandLeftToRank(operand, len(specs))
-	// Rename dynamic input axes to match target specs while preserving runtime sizes;
-	// DynamicBroadcastInDim then expands size-1 axes and validates runtime size compatibility.
-	inputSpecs := make([]DimensionSpec, operand.Rank())
-	axes := make([]int, operand.Rank())
-	for axis := range inputSpecs {
-		axes[axis] = axis
+	alreadyMatches := true
+	for axis, spec := range specs {
 		dim := operand.Shape().Dim(axis)
-		if dim >= 0 {
-			inputSpecs[axis] = StaticDim(dim)
-		} else if specs[axis].IsStatic() {
-			inputSpecs[axis] = NamedDynamicDim(shapes.UniqueAxisName("#onnx_bcast_in"), DimensionSize(operand, axis))
-		} else {
-			inputSpecs[axis] = NamedDynamicDim(specs[axis].AxisName(), DimensionSize(operand, axis))
+		if spec.IsStatic() {
+			if dim != spec.Static() {
+				alreadyMatches = false
+				break
+			}
+		} else if dim != shapes.DynamicDim || operand.Shape().AxisName(axis) != spec.AxisName() || spec.AxisName() == "" {
+			alreadyMatches = false
+			break
 		}
 	}
-	operand = DynamicReshape(operand, inputSpecs...)
+	if alreadyMatches {
+		return operand
+	}
+	axes := make([]int, operand.Rank())
+	for axis := range axes {
+		axes[axis] = axis
+	}
 	return DynamicBroadcastInDim(operand, axes, specs...)
 }
 
-func runtimeExpand(operand, shape *Node) *Node {
+func runtimeExpand(operand, shape *Node, knownDims []int, isKnown []bool) *Node {
 	if shape.Rank() != 1 || shape.Shape().Dim(0) < 0 {
 		exceptions.Panicf("Expand: target shape rank must be statically known, got %s", shape.Shape())
 	}
@@ -139,12 +166,48 @@ func runtimeExpand(operand, shape *Node) *Node {
 	specs := make([]DimensionSpec, rank)
 	offset := rank - shapeRank
 	for axis := range specs {
-		size := DimensionSize(operand, axis)
-		if axis >= offset {
-			target := ConvertDType(Reshape(Slice(shape, AxisRange(axis-offset, axis-offset+1))), dtypes.Int64)
-			size = Where(Equal(target, Scalar(target.Graph(), target.DType(), 1)), size, target)
+		if axis < offset {
+			specs[axis] = DimensionSpecFor(operand, axis)
+			continue
 		}
+		shapeIdx := axis - offset
+		if shapeIdx < len(isKnown) && isKnown[shapeIdx] && knownDims[shapeIdx] >= 0 {
+			tDim := knownDims[shapeIdx]
+			if tDim == 1 {
+				specs[axis] = DimensionSpecFor(operand, axis)
+			} else {
+				inDim := operand.Shape().Dim(axis)
+				if inDim >= 0 && inDim != 1 && inDim != tDim {
+					exceptions.Panicf("Expand: incompatible dimensions %d and %d at axis %d", inDim, tDim, axis)
+				}
+				specs[axis] = StaticDim(tDim)
+			}
+			continue
+		}
+		size := DimensionSize(operand, axis)
+		target := ConvertDType(Reshape(Slice(shape, AxisRange(shapeIdx, shapeIdx+1))), dtypes.Int64)
+		size = Where(Equal(target, ScalarOne(target.Graph(), target.DType())), size, target)
 		specs[axis] = NamedDynamicDim(shapes.UniqueAxisName("#onnx_expand"), size)
 	}
 	return broadcastWithSpecs(operand, specs)
+}
+
+func runtimeConstantOfShape(valueN, shape *Node, knownDims []int, isKnown []bool) *Node {
+	if shape.Rank() != 1 || shape.Shape().Dim(0) < 0 {
+		exceptions.Panicf("ConstantOfShape: target shape rank must be statically known, got %s", shape.Shape())
+	}
+	rank := shape.Shape().Dim(0)
+	if rank == 0 {
+		return valueN
+	}
+	specs := make([]DimensionSpec, rank)
+	for axis := range specs {
+		if axis < len(isKnown) && isKnown[axis] && knownDims[axis] >= 0 {
+			specs[axis] = StaticDim(knownDims[axis])
+			continue
+		}
+		target := ConvertDType(Reshape(Slice(shape, AxisRange(axis, axis+1))), dtypes.Int64)
+		specs[axis] = NamedDynamicDim(shapes.UniqueAxisName("#onnx_const_of_shape"), target)
+	}
+	return DynamicBroadcastInDim(valueN, nil, specs...)
 }

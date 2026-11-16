@@ -2,6 +2,11 @@
 
 [![GoDev](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/gomlx/onnx-gomlx?tab=doc)
 [![Slack](https://img.shields.io/badge/Slack-GoMLX-purple.svg?logo=slack)](https://app.slack.com/client/T029RQSE6/C08TX33BX6U)
+<br/>
+[![Linux/amd64 Tests](https://github.com/gomlx/onnx-gomlx/actions/workflows/linux_amd64_tests.yaml/badge.svg)](https://github.com/gomlx/onnx-gomlx/actions/workflows/linux_amd64_tests.yaml)
+[![Linux/arm64 Tests](https://github.com/gomlx/onnx-gomlx/actions/workflows/linux_arm64_tests.yaml/badge.svg)](https://github.com/gomlx/onnx-gomlx/actions/workflows/linux_arm64_tests.yaml)
+[![Darwin/arm64 Tests](https://github.com/gomlx/onnx-gomlx/actions/workflows/darwin_tests.yaml/badge.svg)](https://github.com/gomlx/onnx-gomlx/actions/workflows/darwin_tests.yaml)
+[![Windows/amd64 Tests](https://github.com/gomlx/onnx-gomlx/actions/workflows/windows_amd64_tests.yaml/badge.svg)](https://github.com/gomlx/onnx-gomlx/actions/workflows/windows_amd64_tests.yaml)
 
 ## 📖 Overview
 ONNX-GoMLX converts [ONNX models](https://onnx.ai/) (`.onnx` suffix) to 
