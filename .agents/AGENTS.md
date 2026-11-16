@@ -95,7 +95,7 @@ Backends that do not support dynamic shapes (like static XLA PJRT) will pad inpu
 - **`onnx/`**: Public API package (`Model` interface) and **`onnx/parser/`** (`Parse`, `ParseFile`, `ParseFromReader`).
 - **`internal/onnxgomlx/`**: Core conversion engine.
   - **`model.go` & `graph.go`**: Model state, graph translation lifecycle, and operator dispatch (`convertNode`).
-  - **`ops.go` & `ops_*.go`**: Operator converters (`ops_reshape.go`, `ops_slice.go`, `ops_pad.go`, `ops_pool.go`, `ops_scatter.go`, `ops_conv_integer.go`, `ops_conv_transpose.go`, `ops_grid_sample.go`, `ops_matmul_nbits.go`, `ops_norm_onehot.go`, `ops_random.go`, `ops_tree_ensemble.go`, `ops_einsum.go`, `ops_runtime_broadcast.go`, etc.).
+  - **`ops.go` & `ops_*.go`**: Operator converters (`ops_reshape.go`, `ops_slice.go`, `ops_pad.go`, `ops_pool.go`, `ops_scatter.go`, `ops_conv_integer.go`, `ops_conv_transpose.go`, `ops_grid_sample.go`, `ops_matmul_nbits.go`, `ops_norm_onehot.go`, `ops_random.go`, `ops_tree_ensemble.go`, `ops_einsum.go`, `ops_runtime_broadcast.go`, `ops_gather_block_quantized.go`, etc.).
   - **`dynamicshape.go` & `shapes.go`**: Symbolic/unnamed dynamic axis tracking (`shapes.UniqueAxisName("#onnx")`) and intermediate ONNX shape inference.
   - **`materialize.go`**: Constant subexpression evaluation engine. Evaluates ONNX nodes that compute tensor parameters (shapes, slices, broadcasting dimensions) at graph building time, while letting dynamic dependencies fall back to runtime graph ops.
   - **`fusion/`**: Fused operation matchers (`sdpa.go`, `qkvdense.go`, `dense_gelu.go`, `quantized_dense.go`, `quantized_qkv.go`). Detects multi-op subgraphs and emits GoMLX `nn.` / `attention.` fused operations.

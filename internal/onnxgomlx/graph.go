@@ -570,6 +570,8 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 		result = convertConstant(m, node, g)
 	case "Gather":
 		result = convertGather(node, inputs)
+	case "GatherBlockQuantized":
+		result = convertGatherBlockQuantized(node, inputs)
 	case "GatherElements":
 		result = convertGatherElements(node, inputs)
 	case "GatherND":

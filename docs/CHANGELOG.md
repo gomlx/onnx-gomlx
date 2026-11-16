@@ -1,3 +1,7 @@
+# 2026/11/16
+
+- Added ONNX Runtime `com.microsoft::GatherBlockQuantized` conversion for 2/4/8-bit block-quantized embedding tables, with shape inference.
+
 # 2026/11/14
 
 - Expanded ONNX operator coverage and dynamic-shape execution (reworking and integrating PR #118):
