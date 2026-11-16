@@ -235,7 +235,8 @@ func (m *Model) convertSelu(node *protos.NodeProto, inputs []*Node) *Node {
 	alpha := float64(GetFloatAttrOr(node, "alpha", float32(activation.SeluAlpha)))
 	gamma := float64(GetFloatAttrOr(node, "gamma", float32(activation.SeluScale)))
 	x := m.onnxImplicitFloatPromotion(inputs[0])
-	if math.Abs(alpha-activation.SeluAlpha) < 1e-4 && math.Abs(gamma-activation.SeluScale) < 1e-4 {
+	// ONNX attributes are float32; nearby values are still distinct parameters.
+	if alpha == float64(float32(activation.SeluAlpha)) && gamma == float64(float32(activation.SeluScale)) {
 		return activation.Selu(x)
 	}
 	xWhere := Where(GreaterThan(x, ScalarZero(x.Graph(), x.DType())),

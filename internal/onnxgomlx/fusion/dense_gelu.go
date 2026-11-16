@@ -343,20 +343,20 @@ func denseActivationType(node *protos.NodeProto) activation.Type {
 	case "HardSigmoid":
 		alpha := onnxgomlx.GetFloatAttrOr(node, "alpha", 0.2)
 		beta := onnxgomlx.GetFloatAttrOr(node, "beta", 0.5)
-		if math.Abs(float64(alpha)-0.2) < 1e-4 && math.Abs(float64(beta)-0.5) < 1e-4 {
+		if alpha == float32(0.2) && beta == float32(0.5) {
 			return activation.TypeHardSigmoid
 		}
 		return activation.TypeNone
 	case "LeakyRelu":
 		alpha := onnxgomlx.GetFloatAttrOr(node, "alpha", 0.01)
-		if math.Abs(float64(alpha)-0.3) < 1e-4 {
+		if alpha == float32(0.3) {
 			return activation.TypeLeakyRelu
 		}
 		return activation.TypeNone
 	case "Selu":
 		alpha := float64(onnxgomlx.GetFloatAttrOr(node, "alpha", float32(activation.SeluAlpha)))
 		gamma := float64(onnxgomlx.GetFloatAttrOr(node, "gamma", float32(activation.SeluScale)))
-		if math.Abs(alpha-activation.SeluAlpha) < 1e-4 && math.Abs(gamma-activation.SeluScale) < 1e-4 {
+		if alpha == float64(float32(activation.SeluAlpha)) && gamma == float64(float32(activation.SeluScale)) {
 			return activation.TypeSelu
 		}
 		return activation.TypeNone
