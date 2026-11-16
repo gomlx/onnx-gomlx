@@ -1,0 +1,59 @@
+name: "Windows/amd64"
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  deployments: read
+  issues: read
+  discussions: read
+  packages: read
+  pages: read
+  pull-requests: read
+  repository-projects: read
+  security-events: read
+  statuses: read
+
+# Triggers the workflow on push or pull request events for the "main" branch.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  windows-amd64-tests:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.27.4"
+
+      - name: Install PJRT plugin
+        run: |
+          export CPU_VERSION="latest"
+          env GH_TOKEN=$GH_TOKEN go run github.com/gomlx/go-xla/cmd/pjrt_installer@latest -plugin cpu -version "${CPU_VERSION}" -path '~\AppData\Local\go-xla'
+          echo "Contents for go-xla:"
+          ls -la "${HOME}/AppData/Local/go-xla"
+          echo "-----------"
+          echo
+
+      - name: Test
+        # Excludes internal/benchmarks, which requires the external C/Rust libtokenizers library and downloads models.
+        run: |
+          go test -p 1 -short $(go list ./... | grep -v "internal/benchmarks")
+
+      - name: Test with SIMD
+        env:
+          GOEXPERIMENT: simd
+        run: |
+          go test -p 1 -short $(go list ./... | grep -v "internal/benchmarks")

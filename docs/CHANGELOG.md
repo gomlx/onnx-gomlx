@@ -5,6 +5,7 @@
   - Updated `runtimeBroadcast` to narrow axes paired with any non-unit static dimension (`0` or `> 1`) to `StaticDim` (validating runtime `1`-or-match compatibility) and to preserve shared dynamic axis names on unaffected axes.
   - Updated `convertMod` and `convertSkipSimplifiedLayerNormalization` to use `runtimeBroadcast`, removed dead `onnxBroadcastToCommonShape`, and extended `reshapeTargetStaticDims` / `runtimeExpand` / `runtimeConstantOfShape` to preserve statically known dimensions from `Shape` and `Concat` shape expressions.
   - Bumped `github.com/gomlx/compute`, `github.com/gomlx/go-xla`, and `github.com/gomlx/gomlx` dependencies.
+- Added GitHub Actions CI test workflows (`.github/workflows/`) for `Linux/amd64`, `Linux/arm64`, `Darwin/arm64`, and `Windows/amd64` (standard and `GOEXPERIMENT=simd`).
 
 # 2026/11/14
 
