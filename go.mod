@@ -6,7 +6,7 @@ require (
 	github.com/chewxy/math32 v1.11.1
 	github.com/daulet/tokenizers v1.27.0
 	github.com/gomlx/compute v0.1.31-0.20261116110734-3dbd791c8940
-	github.com/gomlx/compute-onnx v0.1.30
+	github.com/gomlx/compute-onnx v0.1.31-0.20261116150322-1776b79032dd
 	github.com/gomlx/exceptions v0.0.3
 	github.com/gomlx/go-huggingface v0.4.35
 	github.com/gomlx/gomlx v0.28.37-0.20261116121942-5e38cf2918e1
