@@ -147,7 +147,8 @@ func resizeWithCoordinates(x *Node, sizes []int, scales []float64, mode, coordin
 		if scales != nil {
 			scale = scales[axis]
 		}
-		if inSize == outSize {
+		// Equal sizes can result from rounding a non-unit scale; coordinates still change.
+		if inSize == outSize && scale == 1 {
 			continue
 		}
 		lower := make([]int64, outSize)
