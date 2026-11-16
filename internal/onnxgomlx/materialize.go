@@ -76,13 +76,17 @@ func TensorToScalarFloat64(t *tensors.Tensor) float64 {
 
 // nonConstantDependencies returns the non-constant dependencies: inputs or variables.
 func (m *Model) nonConstantDependencies(nodeOutputName string) (inputs, variables []string, contextNodes []*protos.NodeProto) {
+	return m.nonConstantDependenciesWithOutputs(nodeOutputName, nil)
+}
+
+func (m *Model) nonConstantDependenciesWithOutputs(nodeOutputName string, convertedOutputs map[string]*Node) (inputs, variables []string, contextNodes []*protos.NodeProto) {
 	visitedNodes := sets.Make[string]()
-	return m.recursiveNonConstantDependencies(nodeOutputName, visitedNodes, inputs, variables, contextNodes)
+	return m.recursiveNonConstantDependencies(nodeOutputName, visitedNodes, convertedOutputs, inputs, variables, contextNodes)
 }
 
 // recursiveNonConstantDependencies is the recursive implementation of nonConstantDependencies.
 // Use nonConstantDependencies.
-func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.Set[string],
+func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.Set[string], convertedOutputs map[string]*Node,
 	nonConstInputs, variables []string, contextNodes []*protos.NodeProto) ([]string, []string, []*protos.NodeProto) {
 	visitedNodes.Insert(name)
 	if _, found := m.VariableNameToValue[name]; found {
@@ -114,7 +118,11 @@ func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.
 	}
 	if node.OpType == "Shape" || node.OpType == "Size" {
 		if len(node.Input) > 0 && node.Input[0] != "" {
-			if inShape := m.InferShapeForName(node.Input[0]); inShape.Dimensions != nil {
+			inShape := m.InferShapeForName(node.Input[0])
+			if convertedInput, ok := convertedOutputs[node.Input[0]]; ok {
+				inShape = convertedInput.Shape()
+			}
+			if inShape.Dimensions != nil {
 				hasDynamic := false
 				if node.OpType == "Size" {
 					hasDynamic = inShape.IsDynamic()
@@ -148,7 +156,7 @@ func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.
 		if input == "" || visitedNodes.Has(input) {
 			continue
 		}
-		nonConstInputs, variables, contextNodes = m.recursiveNonConstantDependencies(input, visitedNodes, nonConstInputs, variables, contextNodes)
+		nonConstInputs, variables, contextNodes = m.recursiveNonConstantDependencies(input, visitedNodes, convertedOutputs, nonConstInputs, variables, contextNodes)
 	}
 	return nonConstInputs, variables, contextNodes
 }
@@ -206,7 +214,7 @@ func (m *Model) materializeConstantExpression(nodeOutputName string, convertedOu
 	}
 
 	// See if it is possible: if the subgraph that generated the node is a constant expression.
-	nonConstInputs, nonConstVariables, contextNodes := m.nonConstantDependencies(nodeOutputName)
+	nonConstInputs, nonConstVariables, contextNodes := m.nonConstantDependenciesWithOutputs(nodeOutputName, convertedOutputs)
 	if len(nonConstInputs) > 0 || len(nonConstVariables) > 0 || len(contextNodes) > 0 {
 		// Add shape info for variables.
 		varDesc := make([]string, 0, len(nonConstVariables))
