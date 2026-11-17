@@ -28,13 +28,13 @@ func convertRandomNormalLike(scope *model.Scope, node *protos.NodeProto, inputs 
 	var values *Node
 	if seed := GetNodeAttr(node, "seed", false); seed != nil {
 		assertNodeAttrType(node, seed, protos.AttributeProto_FLOAT)
-		rngState := RNGStateFromSeedForGraph(x.Graph(), int64(seed.F))
-		_, values = RandomNormal(rngState, shape)
+		rngState := RNGStateFromSeedForGraph(x.Graph(), RNGDefault, int64(seed.F))
+		_, values = RandomNormal(RNGDefault, rngState, shape)
 	} else if scope != nil {
 		values = scope.RandomNormal(x.Graph(), shape)
 	} else {
-		rngState := RNGStateForGraph(x.Graph())
-		_, values = RandomNormal(rngState, shape)
+		rngState := RNGStateForGraph(x.Graph(), RNGDefault)
+		_, values = RandomNormal(RNGDefault, rngState, shape)
 	}
 
 	mean := GetFloatAttrOr(node, "mean", 0)
