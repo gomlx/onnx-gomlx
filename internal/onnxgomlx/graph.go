@@ -574,7 +574,7 @@ func (m *Model) convertNode(scope *model.Scope, g *Graph, node *protos.NodeProto
 	case "Constant":
 		result = convertConstant(m, node, g)
 	case "Gather":
-		result = convertGather(node, inputs)
+		result = convertGather(m, convertedOutputs, node, inputs)
 	case "GatherElements":
 		result = convertGatherElements(node, inputs)
 	case "GatherND":

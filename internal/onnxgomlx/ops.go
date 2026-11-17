@@ -10,9 +10,6 @@ import (
 	"github.com/gomlx/compute"
 	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/dtypes"
-	"github.com/gomlx/compute/dtypes/bfloat16"
-	"github.com/gomlx/compute/dtypes/float16"
-	"github.com/gomlx/compute/dtypes/gotype"
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph"
@@ -428,11 +425,21 @@ func convertConstant(m *Model, node *protos.NodeProto, g *Graph) *Node {
 	return Const(g, tensor)
 }
 
-// convertGather converts a ONNX node to a GoMLX node.
+// convertGather converts an ONNX Gather node to a GoMLX node.
+// When gathering statically known dimensions from a Shape(x) node via constant indices,
+// it folds directly to a GoMLX Constant node even if other axes of x are dynamic.
+//
+// convertedOutputs maps ONNX value names (graph inputs, variables, and node outputs)
+// to their converted GoMLX *[Node]. It is seeded with the graph inputs and populated
+// as nodes are converted.
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Gather.html
-func convertGather(node *protos.NodeProto, inputs []*Node) *Node {
+func convertGather(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	if _, constT, hasDynamic, handled := m.inspectGatherFromShape(node, convertedOutputs); handled && !hasDynamic && constT != nil {
+		defer constT.FinalizeAll()
+		return ConstTensor(inputs[0].Graph(), constT)
+	}
 	axis := GetIntAttrOr(node, "axis", 0)
 	gatherAxis := MustAdjustAxis(axis, inputs[0])
 	if gatherAxis >= inputs[0].Rank() || gatherAxis < 0 {
@@ -1201,126 +1208,6 @@ func convertReduce(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 		return reduceFn(operand, axes...)
 	} else {
 		return ReduceAndKeep(operand, reduceFn, axes...)
-	}
-}
-
-// convertNonZero converts an ONNX NonZero node to a GoMLX node.
-//
-// NonZero returns the indices of elements that are non-zero with shape [rank, numNonZero].
-// Constant expressions are folded at graph-build time so downstream constant-shape subgraphs
-// remain materializable; runtime inputs delegate to GoMLX's NonZero operator.
-//
-// See ONNX documentation in:
-// https://onnx.ai/onnx/operators/onnx__NonZero.html
-func convertNonZero(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
-	g := inputs[0].Graph()
-	if m.IsConstantExpression(node.Input[0]) {
-		if inputT, err := m.materializeConstantExpression(node.Input[0], convertedOutputs); err == nil {
-			return Const(g, computeNonZero(inputT))
-		}
-	}
-	return NonZero(inputs[0], &NonZeroConfig{Transpose: true})
-}
-
-// computeNonZero computes the indices of non-zero elements in a tensor.
-// Returns a tensor of shape (rank, numNonZero) where each column is an index tuple.
-func computeNonZero(t *tensors.Tensor) *tensors.Tensor {
-	shape := t.Shape()
-	rank := shape.Rank()
-
-	// Get a boolean mask of non-zero elements using flat data access.
-	var isNonZero []bool
-	t.ConstFlatData(func(flatAny any) {
-		isNonZero = nonZeroMaskAny(flatAny)
-	})
-
-	// Collect indices of non-zero elements using Shape.Iter().
-	var indices [][]int64
-	for flatIdx, elemIndices := range shape.Iter() {
-		if isNonZero[flatIdx] {
-			// Copy the indices since elemIndices is reused.
-			idx := make([]int64, rank)
-			for i, v := range elemIndices {
-				idx[i] = int64(v)
-			}
-			indices = append(indices, idx)
-		}
-	}
-
-	numNonZero := len(indices)
-
-	// Create output tensor of shape (rank, numNonZero)
-	// Each row contains the indices for one dimension.
-	if numNonZero == 0 {
-		// Return empty tensor of shape (rank, 0)
-		return tensors.FromShape(shapes.Make(dtypes.Int64, rank, 0))
-	}
-
-	// Transpose: from (numNonZero, rank) to (rank, numNonZero)
-	output := make([][]int64, rank)
-	for d := range rank {
-		output[d] = make([]int64, numNonZero)
-		for i := range numNonZero {
-			output[d][i] = indices[i][d]
-		}
-	}
-
-	return tensors.FromValue(output)
-}
-
-// nonZeroMask returns a boolean slice indicating which elements are non-zero.
-func nonZeroMask[T gotype.Supported](values []T) []bool {
-	res := make([]bool, len(values))
-	var zero T
-	for i, v := range values {
-		res[i] = v != zero
-	}
-	return res
-}
-
-// nonZeroMaskAny converts a flat slice of any supported type to a boolean mask.
-func nonZeroMaskAny(valuesAny any) []bool {
-	switch values := valuesAny.(type) {
-	case []bool:
-		// For bool, true is non-zero.
-		res := make([]bool, len(values))
-		copy(res, values)
-		return res
-	case []float32:
-		return nonZeroMask(values)
-	case []float64:
-		return nonZeroMask(values)
-	case []int8:
-		return nonZeroMask(values)
-	case []int16:
-		return nonZeroMask(values)
-	case []int32:
-		return nonZeroMask(values)
-	case []int64:
-		return nonZeroMask(values)
-	case []uint8:
-		return nonZeroMask(values)
-	case []uint16:
-		return nonZeroMask(values)
-	case []uint32:
-		return nonZeroMask(values)
-	case []uint64:
-		return nonZeroMask(values)
-	case []float16.Float16:
-		res := make([]bool, len(values))
-		for i, v := range values {
-			res[i] = v.Float32() != 0
-		}
-		return res
-	case []bfloat16.BFloat16:
-		res := make([]bool, len(values))
-		for i, v := range values {
-			res[i] = v.Float32() != 0
-		}
-		return res
-	default:
-		exceptions.Panicf("nonZeroMaskAny: unsupported type %T", valuesAny)
-		return nil
 	}
 }
 
