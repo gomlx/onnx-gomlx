@@ -273,9 +273,13 @@ func (m *Model) inferShapeForNameDepth(name string, depth int) shapes.Shape {
 		if len(xShape.Dimensions) != 4 || len(gridShape.Dimensions) != 4 {
 			return shapes.Shape{}
 		}
+		batchDim := xShape.Dimensions[0]
+		if batchDim < 0 && gridShape.Dimensions[0] >= 0 {
+			batchDim = gridShape.Dimensions[0]
+		}
 		return shapes.Shape{
 			DType:      xShape.DType,
-			Dimensions: []int{xShape.Dimensions[0], xShape.Dimensions[1], gridShape.Dimensions[1], gridShape.Dimensions[2]},
+			Dimensions: []int{batchDim, xShape.Dimensions[1], gridShape.Dimensions[1], gridShape.Dimensions[2]},
 		}
 
 	case "TreeEnsembleClassifier":

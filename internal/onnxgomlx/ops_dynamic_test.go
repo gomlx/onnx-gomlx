@@ -296,3 +296,87 @@ func TestDynamicGatherScatterExpandNonZeroRandom(t *testing.T) {
 	require.Equal(t, [][]float32{{7, 7, 7}, {7, 7, 7}}, expOuts[0].Value())
 	require.Equal(t, [][]float32{{0, 0, 0}, {0, 0, 0}}, expOuts[1].Value())
 }
+
+func TestDynamicGridSampleBatchAlignment(t *testing.T) {
+	backend, err := gobackend.New("")
+	require.NoError(t, err)
+	defer backend.Finalize()
+	m := createTestModelWithDTypePromoConfig(false, false)
+
+	// Static X batch (N=2) with dynamic grid batch (via Reshape with -1) and dynamic grid spatial dims.
+	staticXDynGridExec := MustNewExec(backend, func(x, flatGrid, gridShape *Node) *Node {
+		g := x.Graph()
+		grid := convertReshape(m, map[string]*Node{}, &protos.NodeProto{
+			OpType: "Reshape", Input: []string{"flat", "shape"}, Output: []string{"grid"},
+		}, []*Node{flatGrid, gridShape})
+		return convertTestNode(m, g, &protos.NodeProto{
+			OpType: "GridSample", Input: []string{"x", "grid"}, Output: []string{"y"},
+			Attribute: []*protos.AttributeProto{intAttr("align_corners", 1)},
+		}, map[string]*Node{"x": x, "grid": grid})[0]
+	}).WithDynamicAxes([]string{"", "", "", ""}, []string{"flat_n", ""}, []string{""})
+	defer staticXDynGridExec.Finalize()
+
+	xStatic := [][][][]float32{
+		{{{0, 2}, {4, 6}}},
+		{{{10, 12}, {14, 16}}},
+	}
+	flatGrid := [][]float32{{0, 0}, {-1, 1}, {-1, -1}, {1, 1}}
+	got1 := staticXDynGridExec.MustExec1(xStatic, flatGrid, []int64{-1, 1, 2, 2})
+	defer got1.FinalizeAll()
+	require.Equal(t, [][][][]float32{
+		{{{3, 4}}},
+		{{{10, 16}}},
+	}, got1.Value())
+
+	// Runtime mismatch on inferred grid batch (3 vs static X batch 2) must fail.
+	err = exceptions.TryCatch[error](func() {
+		bad := staticXDynGridExec.MustExec1(
+			xStatic,
+			[][]float32{{0, 0}, {0, 0}, {0, 0}},
+			[]int64{-1, 1, 1, 2},
+		)
+		defer bad.FinalizeAll()
+	})
+	require.Error(t, err)
+
+	// Dynamic X batch with static grid batch (N=2).
+	dynXStaticGridExec := MustNewExec(backend, func(x, grid *Node) *Node {
+		return convertTestNode(m, x.Graph(), &protos.NodeProto{
+			OpType: "GridSample", Input: []string{"x", "grid"}, Output: []string{"y"},
+			Attribute: []*protos.AttributeProto{intAttr("align_corners", 1)},
+		}, map[string]*Node{"x": x, "grid": grid})[0]
+	}).WithDynamicAxes([]string{"batch", "", "", ""}, []string{"", "", "", ""})
+	defer dynXStaticGridExec.Finalize()
+
+	got2 := dynXStaticGridExec.MustExec1(xStatic, [][][][]float32{
+		{{{0, 0}, {-1, 1}}},
+		{{{-1, -1}, {1, 1}}},
+	})
+	defer got2.FinalizeAll()
+	require.Equal(t, [][][][]float32{
+		{{{3, 4}}},
+		{{{10, 16}}},
+	}, got2.Value())
+
+	// Both dynamic with distinct axis names: matching runtime batch works, mismatching fails.
+	bothDynExec := MustNewExec(backend, func(x, grid *Node) *Node {
+		return convertTestNode(m, x.Graph(), &protos.NodeProto{
+			OpType: "GridSample", Input: []string{"x", "grid"}, Output: []string{"y"},
+			Attribute: []*protos.AttributeProto{intAttr("align_corners", 1)},
+		}, map[string]*Node{"x": x, "grid": grid})[0]
+	}).WithDynamicAxes([]string{"bx", "", "", ""}, []string{"bg", "oh", "ow", ""})
+	defer bothDynExec.Finalize()
+
+	got3 := bothDynExec.MustExec1(xStatic, [][][][]float32{
+		{{{0, 0}}},
+		{{{1, 1}}},
+	})
+	defer got3.FinalizeAll()
+	require.Equal(t, [][][][]float32{{{{3}}}, {{{16}}}}, got3.Value())
+
+	err = exceptions.TryCatch[error](func() {
+		bad := bothDynExec.MustExec1(xStatic, [][][][]float32{{{{0, 0}}}})
+		defer bad.FinalizeAll()
+	})
+	require.Error(t, err)
+}
