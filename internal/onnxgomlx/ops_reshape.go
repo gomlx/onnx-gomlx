@@ -81,7 +81,40 @@ func reshapeTargetStaticDims(m *Model, convertedOutputs map[string]*Node, name s
 		}
 	}
 	node, ok := m.NodeOutputToNode[name]
-	if !ok || node.OpType != "Concat" || (GetIntAttrOr(node, "axis", 0) != 0 && GetIntAttrOr(node, "axis", 0) != -1) {
+	if !ok {
+		return dims, known
+	}
+	if node.OpType == "Shape" && len(node.Input) > 0 && node.Input[0] != "" {
+		var inShape shapes.Shape
+		if origIn, ok := convertedOutputs[node.Input[0]]; ok && origIn != nil {
+			inShape = origIn.Shape()
+		} else if m.Proto.Graph != nil {
+			inShape = m.InferShapeForName(node.Input[0])
+		}
+		if inShape.Dimensions != nil {
+			inRank := len(inShape.Dimensions)
+			start := GetIntAttrOr(node, "start", 0)
+			end := GetIntAttrOr(node, "end", inRank)
+			if start < 0 {
+				start += inRank
+			}
+			if end < 0 {
+				end += inRank
+			}
+			start = min(max(start, 0), inRank)
+			end = min(max(end, start), inRank)
+			if end-start == rank {
+				for i, d := range inShape.Dimensions[start:end] {
+					if d >= 0 {
+						dims[i] = d
+						known[i] = true
+					}
+				}
+			}
+		}
+		return dims, known
+	}
+	if node.OpType != "Concat" || (GetIntAttrOr(node, "axis", 0) != 0 && GetIntAttrOr(node, "axis", 0) != -1) {
 		return dims, known
 	}
 

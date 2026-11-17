@@ -116,8 +116,10 @@ When adding a new ONNX operator:
    Prefer delegating to GoMLX `nn.` / `attention.` / `activation.` layers (e.g., `nn.QuantizedDense`, `nn.LayerNorm`, `graph.Softmax`, `graph.TopK`) so hardware-accelerated fused kernels are used automatically when supported.
 2. Wire the case into `convertNode` in `internal/onnxgomlx/graph.go` (and `inferShapeForNameDepth` in `shapes.go` when downstream `Shape` materialization benefits from knowing output rank/dims).
 3. **Pay close attention to broadcasting & dynamic axes**:
-   - ONNX follows NumPy-style right-aligned multidirectional broadcasting, including runtime size-1 expansion across distinct dynamic axes.
-   - Use `runtimeBroadcast` / `broadcastWithSpecs` / `runtimeExpand` (`ops_runtime_broadcast.go`) so static and already-aligned dynamic shapes take a zero-overhead fast path while distinct dynamic axes broadcast and validate compatibility at runtime.
+   - ONNX follows NumPy-style right-aligned multidirectional broadcasting, including runtime size-1 expansion across distinct dynamic axes and `1 -> 0` zero-size broadcasting.
+   - GoMLX binary ops (`Add`, `Mul`, `Where`, etc.) enforce strict compile-time implicit broadcasting (only static `1` or scalars broadcast implicitly; dynamic axes must share the same axis name, and a dynamic axis cannot implicitly broadcast with a non-1 static dimension).
+   - Always route elementwise binary/ternary inputs through `runtimeBroadcast` (and explicit expansions through `broadcastWithSpecs` / `runtimeExpand` / `runtimeConstantOfShape` in `ops_runtime_broadcast.go`), which delegate directly to `graph.DynamicBroadcastInDim` without renaming input axes via `DynamicReshape`, preserve shared dynamic axis names, and narrow any axis paired with a non-1 static dimension (`0` or `> 1`) to `StaticDim` while still validating runtime `1`-or-match compatibility.
+   - For partially dynamic shape tensors (e.g. `Shape(x)` or `Concat(Shape(x)[0], 64)`), use `reshapeTargetStaticDims` (`ops_reshape.go`) to keep statically known dimensions concrete in `Reshape`, `Expand`, and `ConstantOfShape`.
 4. **Extracting node attributes**:
    Use helper functions in `internal/onnxgomlx/` to read attributes from `node.Attribute` (e.g. `GetIntAttrOr`, `GetIntsAttrOr`, `GetFloatAttrOr`, `GetStringAttrOr`, `GetStringsAttrOr`).
 

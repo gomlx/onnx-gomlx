@@ -1,3 +1,5 @@
+// Copyright 2023-2026 The GoMLX Authors. SPDX-License-Identifier: Apache-2.0
+
 package onnxgomlx
 
 import (
@@ -17,9 +19,9 @@ import (
 func (m *Model) convertMod(node *protos.NodeProto, inputs []*Node) *Node {
 	fmod := GetIntAttrOr(node, "fmod", 0)
 
-	operands := onnxImplicitExpansion([]*Node{inputs[0], inputs[1]})
-	lhs, rhs := operands[0], operands[1]
-	lhs, rhs = m.checkOrPromoteDTypes(lhs, rhs)
+	lhs, rhs := m.checkOrPromoteDTypes(inputs[0], inputs[1])
+	operands := runtimeBroadcast([]*Node{lhs, rhs})
+	lhs, rhs = operands[0], operands[1]
 
 	r := Mod(lhs, rhs)
 	if fmod == 1 {

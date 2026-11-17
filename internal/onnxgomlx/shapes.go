@@ -12,12 +12,14 @@ import (
 // Dynamic dimensions are represented as onnx.DynamicDim.
 // Returns a zero-value shapes.Shape (nil Dimensions, InvalidDType) if the name is not found or shape is unknown.
 func (m *Model) ShapeForName(name string) shapes.Shape {
-	graph := m.Proto.Graph
-	sources := [][]*protos.ValueInfoProto{graph.ValueInfo, graph.Input, graph.Output}
-	for _, vis := range sources {
-		for _, vi := range vis {
-			if vi.Name == name {
-				return ShapeFromValueInfo(vi)
+	if m.Proto.Graph != nil {
+		graph := m.Proto.Graph
+		sources := [][]*protos.ValueInfoProto{graph.ValueInfo, graph.Input, graph.Output}
+		for _, vis := range sources {
+			for _, vi := range vis {
+				if vi.Name == name {
+					return ShapeFromValueInfo(vi)
+				}
 			}
 		}
 	}

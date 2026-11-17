@@ -10,9 +10,6 @@ import (
 	"github.com/gomlx/compute"
 	"github.com/gomlx/compute-onnx/support/protos"
 	"github.com/gomlx/compute/dtypes"
-	"github.com/gomlx/compute/dtypes/bfloat16"
-	"github.com/gomlx/compute/dtypes/float16"
-	"github.com/gomlx/compute/dtypes/gotype"
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph"
@@ -46,43 +43,6 @@ func onnxImplicitExpansion(operands []*Node) []*Node {
 		}
 		return ExpandLeftToRank(n, maxRank)
 	})
-}
-
-// onnxBroadcastToCommonShape implements the full ONNX multidirectional broadcasting rule.
-// It first expands operands to the same rank (by prepending 1-dimensional axes), then
-// broadcasts all operands to a common shape where each dimension is the maximum across
-// all operands.
-//
-// This implements the ONNX broadcasting semantics as described in:
-// https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
-func onnxBroadcastToCommonShape(operands []*Node) []*Node {
-	// Step 1: Expand to common rank
-	operands = onnxImplicitExpansion(operands)
-
-	// Step 2: Find the maximum dimension for each axis
-	ranks := sliceMap(operands, func(n *Node) int { return n.Rank() })
-	maxRank := slices.Max(ranks)
-	maxDims := make([]int, maxRank)
-	for axis := range maxRank {
-		allDims := sliceMap(operands, func(n *Node) int {
-			if n.IsScalar() {
-				return 1
-			}
-			return n.Shape().Dim(axis)
-		})
-		maxDims[axis] = slices.Max(allDims)
-	}
-
-	// Step 3: Broadcast each operand to the common shape
-	result := make([]*Node, len(operands))
-	for ii, operand := range operands {
-		if !operand.IsScalar() && !slices.Equal(operand.Shape().Dimensions, maxDims) {
-			result[ii] = BroadcastToDims(operand, maxDims...)
-		} else {
-			result[ii] = operand
-		}
-	}
-	return result
 }
 
 // checkOrPromoteDTypes checks that two operands have the same dtype -- panics if not.
@@ -465,11 +425,21 @@ func convertConstant(m *Model, node *protos.NodeProto, g *Graph) *Node {
 	return Const(g, tensor)
 }
 
-// convertGather converts a ONNX node to a GoMLX node.
+// convertGather converts an ONNX Gather node to a GoMLX node.
+// When gathering statically known dimensions from a Shape(x) node via constant indices,
+// it folds directly to a GoMLX Constant node even if other axes of x are dynamic.
+//
+// convertedOutputs maps ONNX value names (graph inputs, variables, and node outputs)
+// to their converted GoMLX *[Node]. It is seeded with the graph inputs and populated
+// as nodes are converted.
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Gather.html
-func convertGather(node *protos.NodeProto, inputs []*Node) *Node {
+func convertGather(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	if _, constT, hasDynamic, handled := m.inspectGatherFromShape(node, convertedOutputs); handled && !hasDynamic && constT != nil {
+		defer constT.FinalizeAll()
+		return ConstTensor(inputs[0].Graph(), constT)
+	}
 	axis := GetIntAttrOr(node, "axis", 0)
 	gatherAxis := MustAdjustAxis(axis, inputs[0])
 	if gatherAxis >= inputs[0].Rank() || gatherAxis < 0 {
@@ -1241,126 +1211,6 @@ func convertReduce(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 	}
 }
 
-// convertNonZero converts an ONNX NonZero node to a GoMLX node.
-//
-// NonZero returns the indices of elements that are non-zero with shape [rank, numNonZero].
-// Constant expressions are folded at graph-build time so downstream constant-shape subgraphs
-// remain materializable; runtime inputs delegate to GoMLX's NonZero operator.
-//
-// See ONNX documentation in:
-// https://onnx.ai/onnx/operators/onnx__NonZero.html
-func convertNonZero(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
-	g := inputs[0].Graph()
-	if m.IsConstantExpression(node.Input[0]) {
-		if inputT, err := m.materializeConstantExpression(node.Input[0], convertedOutputs); err == nil {
-			return Const(g, computeNonZero(inputT))
-		}
-	}
-	return NonZero(inputs[0], &NonZeroConfig{Transpose: true})
-}
-
-// computeNonZero computes the indices of non-zero elements in a tensor.
-// Returns a tensor of shape (rank, numNonZero) where each column is an index tuple.
-func computeNonZero(t *tensors.Tensor) *tensors.Tensor {
-	shape := t.Shape()
-	rank := shape.Rank()
-
-	// Get a boolean mask of non-zero elements using flat data access.
-	var isNonZero []bool
-	t.ConstFlatData(func(flatAny any) {
-		isNonZero = nonZeroMaskAny(flatAny)
-	})
-
-	// Collect indices of non-zero elements using Shape.Iter().
-	var indices [][]int64
-	for flatIdx, elemIndices := range shape.Iter() {
-		if isNonZero[flatIdx] {
-			// Copy the indices since elemIndices is reused.
-			idx := make([]int64, rank)
-			for i, v := range elemIndices {
-				idx[i] = int64(v)
-			}
-			indices = append(indices, idx)
-		}
-	}
-
-	numNonZero := len(indices)
-
-	// Create output tensor of shape (rank, numNonZero)
-	// Each row contains the indices for one dimension.
-	if numNonZero == 0 {
-		// Return empty tensor of shape (rank, 0)
-		return tensors.FromShape(shapes.Make(dtypes.Int64, rank, 0))
-	}
-
-	// Transpose: from (numNonZero, rank) to (rank, numNonZero)
-	output := make([][]int64, rank)
-	for d := range rank {
-		output[d] = make([]int64, numNonZero)
-		for i := range numNonZero {
-			output[d][i] = indices[i][d]
-		}
-	}
-
-	return tensors.FromValue(output)
-}
-
-// nonZeroMask returns a boolean slice indicating which elements are non-zero.
-func nonZeroMask[T gotype.Supported](values []T) []bool {
-	res := make([]bool, len(values))
-	var zero T
-	for i, v := range values {
-		res[i] = v != zero
-	}
-	return res
-}
-
-// nonZeroMaskAny converts a flat slice of any supported type to a boolean mask.
-func nonZeroMaskAny(valuesAny any) []bool {
-	switch values := valuesAny.(type) {
-	case []bool:
-		// For bool, true is non-zero.
-		res := make([]bool, len(values))
-		copy(res, values)
-		return res
-	case []float32:
-		return nonZeroMask(values)
-	case []float64:
-		return nonZeroMask(values)
-	case []int8:
-		return nonZeroMask(values)
-	case []int16:
-		return nonZeroMask(values)
-	case []int32:
-		return nonZeroMask(values)
-	case []int64:
-		return nonZeroMask(values)
-	case []uint8:
-		return nonZeroMask(values)
-	case []uint16:
-		return nonZeroMask(values)
-	case []uint32:
-		return nonZeroMask(values)
-	case []uint64:
-		return nonZeroMask(values)
-	case []float16.Float16:
-		res := make([]bool, len(values))
-		for i, v := range values {
-			res[i] = v.Float32() != 0
-		}
-		return res
-	case []bfloat16.BFloat16:
-		res := make([]bool, len(values))
-		for i, v := range values {
-			res[i] = v.Float32() != 0
-		}
-		return res
-	default:
-		exceptions.Panicf("nonZeroMaskAny: unsupported type %T", valuesAny)
-		return nil
-	}
-}
-
 // convertConstantOfShape converts a ONNX node to a GoMLX node.
 //
 // See ONNX documentation in:
@@ -1392,18 +1242,20 @@ func convertConstantOfShape(m *Model, convertedOutputs map[string]*Node, node *p
 		exceptions.Panicf("input (shape) must be integer, got %s for node %s", dimsN.DType(), NodeToString(node))
 	}
 	if dimsN.Shape().IsDynamic() {
-		return runtimeExpand(valueN, dimsN)
+		return runtimeConstantOfShape(valueN, dimsN, nil, nil)
 	}
 	if dimsN.Shape().Size() == 0 {
 		return valueN
 	}
 	dimsT, err := m.materializeConstantExpression(node.Input[0], convertedOutputs)
 	if err != nil {
-		return runtimeExpand(valueN, dimsN)
+		knownDims, isKnown := reshapeTargetStaticDims(m, convertedOutputs, node.Input[0], dimsN.Shape().Dim(0))
+		return runtimeConstantOfShape(valueN, dimsN, knownDims, isKnown)
 	}
 	dims := tensorToInts(dimsT)
 	if slices.ContainsFunc(dims, func(d int) bool { return d < 0 }) {
-		return runtimeExpand(valueN, dimsN)
+		knownDims, isKnown := reshapeTargetStaticDims(m, convertedOutputs, node.Input[0], dimsN.Shape().Dim(0))
+		return runtimeConstantOfShape(valueN, dimsN, knownDims, isKnown)
 	}
 	return BroadcastToDims(valueN, dims...)
 }
@@ -1419,17 +1271,19 @@ func convertExpand(m *Model, convertedOutputs map[string]*Node, node *protos.Nod
 		exceptions.Panicf("input (shape) must be integer, got %s for node %s", dimsN.DType(), NodeToString(node))
 	}
 	if dimsN.Shape().IsDynamic() {
-		return runtimeExpand(operand, dimsN)
+		return runtimeExpand(operand, dimsN, nil, nil)
 	}
 	var dims []int // Default is a scalar.
 	if dimsN.Shape().Size() > 0 {
 		dimsT, err := m.materializeConstantExpression(node.Input[1], convertedOutputs)
 		if err != nil {
-			return runtimeExpand(operand, dimsN)
+			knownDims, isKnown := reshapeTargetStaticDims(m, convertedOutputs, node.Input[1], dimsN.Shape().Dim(0))
+			return runtimeExpand(operand, dimsN, knownDims, isKnown)
 		}
 		dims = tensorToInts(dimsT)
 		if slices.ContainsFunc(dims, func(d int) bool { return d < 0 }) {
-			return runtimeExpand(operand, dimsN)
+			knownDims, isKnown := reshapeTargetStaticDims(m, convertedOutputs, node.Input[1], dimsN.Shape().Dim(0))
+			return runtimeExpand(operand, dimsN, knownDims, isKnown)
 		}
 	}
 
@@ -2060,10 +1914,10 @@ func convertSkipSimplifiedLayerNormalization(m *Model, convertedOutputs map[stri
 	if len(inputs) < 3 {
 		exceptions.Panicf("SkipSimplifiedLayerNormalization: expected at least 3 inputs (input, skip, gamma), got %d", len(inputs))
 	}
-	operands := onnxImplicitExpansion([]*Node{inputs[0], inputs[1]})
+	operands := runtimeBroadcast([]*Node{inputs[0], inputs[1]})
 	sum := Add(operands[0], operands[1])
 	if len(inputs) > 3 && inputs[3] != nil {
-		operands = onnxImplicitExpansion([]*Node{sum, inputs[3]})
+		operands = runtimeBroadcast([]*Node{sum, inputs[3]})
 		sum = Add(operands[0], operands[1])
 	}
 	if len(node.Output) >= 4 && node.Output[3] != "" {

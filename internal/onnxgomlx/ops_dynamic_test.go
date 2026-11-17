@@ -12,6 +12,7 @@ import (
 	"github.com/gomlx/compute/shapes"
 	"github.com/gomlx/exceptions"
 	. "github.com/gomlx/gomlx/core/graph"
+	"github.com/gomlx/gomlx/core/tensors"
 	"github.com/gomlx/gomlx/ml/model"
 	"github.com/stretchr/testify/require"
 )
@@ -53,6 +54,63 @@ func TestDynamicRuntimeBroadcastAndMatMul(t *testing.T) {
 	)
 	defer mmGot.FinalizeAll()
 	require.Equal(t, [][][]float32{{{4, 5}, {10, 11}}, {{2, 4}, {8, 10}}}, mmGot.Value())
+
+	// Dynamic axis broadcast against a non-unit static dimension narrows output axis to static 3,
+	// while validating runtime 1-or-match compatibility.
+	var narrowedShape shapes.Shape
+	dynVsStaticExec := MustNewExec(backend, func(a *Node) *Node {
+		b := Const(a.Graph(), [][]float32{{1, 2}, {3, 4}, {5, 6}})
+		node := &protos.NodeProto{OpType: "Add", Input: []string{"a", "b"}, Output: []string{"y"}}
+		out := convertTestNode(m, a.Graph(), node, map[string]*Node{"a": a, "b": b})[0]
+		narrowedShape = out.Shape()
+		return out
+	}).WithDynamicAxes([]string{"a_rows", ""})
+	defer dynVsStaticExec.Finalize()
+
+	dsBroadcast := dynVsStaticExec.MustExec1([][]float32{{10, 20}})
+	defer dsBroadcast.FinalizeAll()
+	require.Equal(t, shapes.Make(dtypes.Float32, 3, 2), narrowedShape)
+	require.Equal(t, [][]float32{{11, 22}, {13, 24}, {15, 26}}, dsBroadcast.Value())
+
+	dsMatch := dynVsStaticExec.MustExec1([][]float32{{10, 20}, {30, 40}, {50, 60}})
+	defer dsMatch.FinalizeAll()
+	require.Equal(t, [][]float32{{11, 22}, {33, 44}, {55, 66}}, dsMatch.Value())
+
+	err = exceptions.TryCatch[error](func() {
+		bad := dynVsStaticExec.MustExec1([][]float32{{10, 20}, {30, 40}})
+		defer bad.FinalizeAll()
+	})
+	require.Error(t, err)
+
+	// Shared dynamic axis ("batch") is preserved on axis 0 when axis 1 performs runtime broadcast against static 3,
+	// including for Mod (fmod=0).
+	var modOutShape shapes.Shape
+	modExec := MustNewExec(backend, func(a, b *Node) *Node {
+		node := &protos.NodeProto{OpType: "Mod", Input: []string{"a", "b"}, Output: []string{"y"}}
+		out := convertTestNode(m, a.Graph(), node, map[string]*Node{"a": a, "b": b})[0]
+		modOutShape = out.Shape()
+		return out
+	}).WithDynamicAxes([]string{"batch", "a_cols"}, []string{"batch", ""})
+	defer modExec.Finalize()
+
+	modGot := modExec.MustExec1([][]int64{{-7}, {8}}, [][]int64{{3, 4, 5}, {3, 4, 5}})
+	defer modGot.FinalizeAll()
+	require.Equal(t, "batch", modOutShape.AxisName(0))
+	require.Equal(t, 3, modOutShape.Dim(1))
+	require.Equal(t, [][]int64{{2, 1, 3}, {2, 0, 3}}, modGot.Value())
+
+	// Runtime 1 -> 0 zero-size broadcasting produces an empty [0, 2] tensor, while 2 vs 0 fails.
+	empty0x2 := tensors.FromFlatDataAndDimensions([]float32{}, 0, 2)
+	defer empty0x2.FinalizeAll()
+	zeroGot := addExec.MustExec1([][]float32{{10, 20}}, empty0x2)
+	defer zeroGot.FinalizeAll()
+	require.Equal(t, shapes.Make(dtypes.Float32, 0, 2), zeroGot.Shape())
+
+	err = exceptions.TryCatch[error](func() {
+		bad := addExec.MustExec1([][]float32{{10, 20}, {30, 40}}, empty0x2)
+		defer bad.FinalizeAll()
+	})
+	require.Error(t, err)
 }
 
 func TestDynamicReshapeSliceRangePadFlattenSize(t *testing.T) {
@@ -210,4 +268,31 @@ func TestDynamicGatherScatterExpandNonZeroRandom(t *testing.T) {
 	for v := range store.IterVariables() {
 		require.True(t, strings.Contains(v.Name(), "rngState"), "unexpected variable: %s", v.Name())
 	}
+
+	// Expand and ConstantOfShape against Shape(ref) where ref is ["batch", 3] preserve static axis 1 == 3.
+	var expShape, cosShape shapes.Shape
+	expCosExec := MustNewExec(backend, func(x, ref *Node) (*Node, *Node) {
+		shapeNode := &protos.NodeProto{OpType: "Shape", Input: []string{"ref"}, Output: []string{"sh"}}
+		expNode := &protos.NodeProto{OpType: "Expand", Input: []string{"x", "sh"}, Output: []string{"exp"}}
+		cosNode := &protos.NodeProto{OpType: "ConstantOfShape", Input: []string{"sh"}, Output: []string{"cos"}}
+		mShape := createTestModelWithDTypePromoConfig(false, false)
+		mShape.NodeOutputToNode = map[string]*protos.NodeProto{"sh": shapeNode}
+		outputs := map[string]*Node{"x": x, "ref": ref}
+		outputs["sh"] = convertShape(shapeNode, []*Node{ref})
+		outputs["exp"] = convertExpand(mShape, outputs, expNode, []*Node{x, outputs["sh"]})
+		outputs["cos"] = convertConstantOfShape(mShape, outputs, cosNode, []*Node{outputs["sh"]})
+		expShape = outputs["exp"].Shape()
+		cosShape = outputs["cos"].Shape()
+		return outputs["exp"], outputs["cos"]
+	}).WithDynamicAxes([]string{"", ""}, []string{"batch", ""})
+	defer expCosExec.Finalize()
+
+	expOuts := expCosExec.MustExec([][]float32{{7}}, [][]float32{{0, 0, 0}, {0, 0, 0}})
+	for _, o := range expOuts {
+		defer o.FinalizeAll()
+	}
+	require.Equal(t, 3, expShape.Dim(1))
+	require.Equal(t, 3, cosShape.Dim(1))
+	require.Equal(t, [][]float32{{7, 7, 7}, {7, 7, 7}}, expOuts[0].Value())
+	require.Equal(t, [][]float32{{0, 0, 0}, {0, 0, 0}}, expOuts[1].Value())
 }

@@ -8,7 +8,7 @@ require (
 	github.com/gomlx/compute v0.1.31-0.20261117092918-cc5241a459d5
 	github.com/gomlx/compute-onnx v0.1.31-0.20261117072214-c05a54da5738
 	github.com/gomlx/exceptions v0.0.3
-	github.com/gomlx/go-huggingface v0.4.35
+	github.com/gomlx/go-huggingface v0.4.38-0.20261117042109-22d70260493c
 	github.com/gomlx/gomlx v0.28.37-0.20261117093823-457e89cc1826
 	github.com/janpfeifer/go-benchmarks v0.1.1
 	github.com/janpfeifer/must v0.2.0
@@ -37,7 +37,6 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/twpayne/go-geom v1.6.1 // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
-	golang.org/x/image v0.43.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.40.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

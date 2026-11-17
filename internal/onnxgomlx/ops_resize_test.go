@@ -31,7 +31,7 @@ func TestResizeCoordinateSemantics(t *testing.T) {
 		{name: "pytorch singleton nearest", mode: "nearest", coordinate: "pytorch_half_pixel", nearest: "floor", data: []float32{0, 10, 20, 30}, size: 1, want: []float32{0}},
 		{name: "half pixel singleton", mode: "linear", coordinate: "half_pixel", data: []float32{0, 10, 20, 30}, size: 1, want: []float32{15}},
 		{name: "fractional scale", mode: "linear", coordinate: "half_pixel", data: []float32{0, 10, 20}, scales: []float32{1.7}, want: []float32{0, 3.823529, 9.705882, 15.588235, 20}},
-		{name: "scale preserves output size", mode: "linear", coordinate: "half_pixel", data: []float32{0, 10, 20}, scales: []float32{1.1}, want: []float32{0, 10, 20}},
+		{name: "scale preserves output size", mode: "linear", coordinate: "half_pixel", data: []float32{0, 10, 20}, scales: []float32{1.1}, want: []float32{0, 8.636364, 17.727272}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
