@@ -34,11 +34,28 @@ func convertGridSample(node *protos.NodeProto, inputs []*Node) *Node {
 	}
 
 	grid = ConvertDType(grid, x.DType())
-	// Align batch axis name if both x and grid have dynamic batch dimensions with distinct names.
-	if x.Shape().Dim(0) == shapes.DynamicDim && grid.Shape().Dim(0) == shapes.DynamicDim &&
-		x.Shape().AxisName(0) != grid.Shape().AxisName(0) {
+	// Align batch dimension between X and grid so downstream batchOffset addition matches both statically and symbolically.
+	gridN := grid.Shape().Dim(0)
+	switch {
+	case n >= 0 && gridN >= 0:
+		if n != gridN {
+			exceptions.Panicf("GridSample: batch dimension mismatch between X (%s) and grid (%s)", x.Shape(), grid.Shape())
+		}
+	case n >= 0 && gridN == shapes.DynamicDim:
 		gSpecs := DimensionSpecsFor(grid)
-		gSpecs[0] = NamedDynamicDim(x.Shape().AxisName(0), DimensionSize(grid, 0))
+		gSpecs[0] = StaticDim(n)
+		grid = DynamicReshape(grid, gSpecs...)
+	case n == shapes.DynamicDim && gridN >= 0:
+		if gridN < 1 {
+			exceptions.Panicf("GridSample: batch dimension must be positive, got X=%s and grid=%s", x.Shape(), grid.Shape())
+		}
+		xSpecs := DimensionSpecsFor(x)
+		xSpecs[0] = StaticDim(gridN)
+		x = DynamicReshape(x, xSpecs...)
+		n = gridN
+	case x.Shape().AxisName(0) != grid.Shape().AxisName(0):
+		gSpecs := DimensionSpecsFor(grid)
+		gSpecs[0] = DimensionSpecFor(x, 0)
 		grid = DynamicReshape(grid, gSpecs...)
 	}
 
