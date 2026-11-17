@@ -1,5 +1,7 @@
 # 2026/11/17
 
+- Added ONNX Runtime `com.microsoft::GatherBlockQuantized` conversion for 2/4/8-bit block-quantized embedding tables via `nn.QuantizedGather` (`internal/onnxgomlx/ops_gather_block_quantized.go`, using `PackedDType` for bit-packed `Uint8` tables) with shape inference (`internal/onnxgomlx/shapes.go`), optional `zero_points`, negative index normalization, non-divisible `block_size`, and `Float16`/`BFloat16`/`Float32` scales.
+- Updated `github.com/gomlx/compute`, `github.com/gomlx/gomlx`, `github.com/gomlx/compute-onnx`, `github.com/gomlx/go-xla`, and `github.com/gomlx/go-darwinml` dependencies in `go.mod`.
 - Fixed constant materialization of `Shape` and `Size` subgraphs for ONNX inputs with symbolic dimensions when `CallGraph` is compiled with concrete GoMLX input shapes (PR #125):
   - Passed `convertedOutputs` into `Model.nonConstantDependencies` (with nil-guards and short-circuiting for already-folded `Constant` nodes with `ConstantValue() != nil`) so static XLA/Go compilations materialize concrete input shapes instead of falling back to dynamic ops or panicking in static-only ops (`Tile`, `Split`, `Pad`, `CumSum`, etc.).
   - Added `InputsAsConstants` handling in `recursiveMaterializeConstantExpression` for constant inputs larger than `MinConstValueSizeToKeep`.
