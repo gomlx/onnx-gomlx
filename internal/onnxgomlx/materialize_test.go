@@ -325,3 +325,121 @@ func TestNonConstantDependenciesNilAndLargeConstInput(t *testing.T) {
 	defer got.FinalizeAll()
 	require.Equal(t, []int{40}, got.Shape().Dimensions)
 }
+
+// TestGatherShapeStaticAxisOnDynamicTensor verifies that Gather(Shape(x), const_idx) materializes
+// as a constant whenever the gathered axes of x are static, even when other axes of x (such as
+// batch and seq) are dynamic both in ONNX metadata and at CallGraph runtime (WithDynamicAxes).
+func TestGatherShapeStaticAxisOnDynamicTensor(t *testing.T) {
+	backend, err := gobackend.New("")
+	require.NoError(t, err)
+	defer backend.Finalize()
+
+	// Input x has shape [batch, seq, 12] (axes 0 and 1 symbolic, axis 2 static = 12).
+	xInfo := &protos.ValueInfoProto{
+		Name: "x",
+		Type: &protos.TypeProto{
+			Value: &protos.TypeProto_TensorType{
+				TensorType: &protos.TypeProto_Tensor{
+					ElemType: int32(protos.TensorProto_FLOAT),
+					Shape: &protos.TensorShapeProto{
+						Dim: []*protos.TensorShapeProto_Dimension{
+							{Value: &protos.TensorShapeProto_Dimension_DimParam{DimParam: "batch"}},
+							{Value: &protos.TensorShapeProto_Dimension_DimParam{DimParam: "seq"}},
+							{Value: &protos.TensorShapeProto_Dimension_DimValue{DimValue: 12}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	m := parseTestGraphProto(t, &protos.GraphProto{
+		Name:  "gather_shape_static_axis",
+		Input: []*protos.ValueInfoProto{xInfo},
+		Output: []*protos.ValueInfoProto{
+			makeSymbolicValueInfo("hidden_scalar", protos.TensorProto_INT64),
+			makeSymbolicValueInfo("rope_idx", protos.TensorProto_INT64, "r"),
+			makeSymbolicValueInfo("reshaped", protos.TensorProto_FLOAT, "batch", "seq", "heads", "head_dim"),
+		},
+		Node: []*protos.NodeProto{
+			{OpType: "Shape", Input: []string{"x"}, Output: []string{"x_shape"}},
+			makeInt64ConstNode("neg1_scalar", []int64{}, []int64{-1}),
+			makeInt64ConstNode("zero_scalar", []int64{}, []int64{0}),
+			makeInt64ConstNode("three_scalar", []int64{}, []int64{3}),
+			makeInt64ConstNode("idx0_1d", []int64{1}, []int64{0}),
+			makeInt64ConstNode("idx1_1d", []int64{1}, []int64{1}),
+			makeInt64ConstNode("idx2_1d", []int64{1}, []int64{2}),
+			makeInt64ConstNode("three_1d", []int64{1}, []int64{3}),
+
+			// Scalar Gather(Shape(x), -1) -> 12 (static even when batch/seq are dynamic).
+			{OpType: "Gather", Input: []string{"x_shape", "neg1_scalar"}, Output: []string{"hidden_scalar"}},
+			// Range(0, Gather(Shape(x), -1), 3) -> static [0, 3, 6, 9].
+			{OpType: "Range", Input: []string{"zero_scalar", "hidden_scalar", "three_scalar"}, Output: []string{"rope_idx"}},
+
+			// Gather dynamic axes [0] and [1], plus derived static heads = Gather(Shape(x), [2]) / 3 = [4].
+			{OpType: "Gather", Input: []string{"x_shape", "idx0_1d"}, Output: []string{"b_1d"}},
+			{OpType: "Gather", Input: []string{"x_shape", "idx1_1d"}, Output: []string{"s_1d"}},
+			{OpType: "Gather", Input: []string{"x_shape", "idx2_1d"}, Output: []string{"h_1d"}},
+			{OpType: "Div", Input: []string{"h_1d", "three_1d"}, Output: []string{"heads_1d"}},
+			{
+				OpType: "Concat", Input: []string{"b_1d", "s_1d", "heads_1d", "three_1d"}, Output: []string{"target_shape"},
+				Attribute: []*protos.AttributeProto{{Name: "axis", Type: protos.AttributeProto_INT, I: 0}},
+			},
+			{OpType: "Reshape", Input: []string{"x", "target_shape"}, Output: []string{"reshaped"}},
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	// Parse-time checks: static axis 2 (-1) is constant; dynamic axes 0 and 1 are NOT constant.
+	require.True(t, m.IsConstantExpression("hidden_scalar"))
+	require.True(t, m.IsConstantExpression("heads_1d"))
+	require.False(t, m.IsConstantExpression("b_1d"))
+	require.False(t, m.IsConstantExpression("s_1d"))
+
+	// Execute with genuinely dynamic batch and seq (WithDynamicAxes):
+	//   - hidden_scalar must fold directly to a GoMLX Constant node (12),
+	//   - rope_idx must have static shape [4],
+	//   - reshaped must preserve static head/head_dim axes [-1, -1, 4, 3].
+	dynExec := MustNewExec(backend, func(x *Node) (*Node, *Node, *Node) {
+		outs := m.CallGraph(nil, x.Graph(), map[string]*Node{"x": x})
+		require.Equal(t, NodeTypeConstant, outs[0].Type())
+		require.False(t, outs[1].Shape().IsDynamic())
+		require.Equal(t, []int{4}, outs[1].Shape().Dimensions)
+		require.Equal(t, []int{-1, -1, 4, 3}, outs[2].Shape().Dimensions)
+		return outs[0], outs[1], outs[2]
+	}).WithDynamicAxes([]string{"batch", "seq", ""})
+	defer dynExec.Finalize()
+
+	makeInput := func(b, s int) [][][]float32 {
+		out := make([][][]float32, b)
+		val := float32(1)
+		for i := range b {
+			out[i] = make([][]float32, s)
+			for j := range s {
+				out[i][j] = make([]float32, 12)
+				for k := range 12 {
+					out[i][j][k] = val
+					val++
+				}
+			}
+		}
+		return out
+	}
+
+	res1 := dynExec.MustExec(makeInput(2, 3))
+	require.Equal(t, int64(12), res1[0].Value())
+	require.Equal(t, []int64{0, 3, 6, 9}, res1[1].Value())
+	require.Equal(t, []int{2, 3, 4, 3}, res1[2].Shape().Dimensions)
+	for _, r := range res1 {
+		r.FinalizeAll()
+	}
+
+	// Second call with different batch and seq runs on the same compiled dynamic graph.
+	res2 := dynExec.MustExec(makeInput(1, 5))
+	require.Equal(t, int64(12), res2[0].Value())
+	require.Equal(t, []int64{0, 3, 6, 9}, res2[1].Value())
+	require.Equal(t, []int{1, 5, 4, 3}, res2[2].Shape().Dimensions)
+	for _, r := range res2 {
+		r.FinalizeAll()
+	}
+}

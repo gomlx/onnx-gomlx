@@ -167,18 +167,7 @@ func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.
 				if node.OpType == "Size" {
 					hasDynamic = inShape.IsDynamic()
 				} else {
-					rank := len(inShape.Dimensions)
-					start := GetIntAttrOr(node, "start", 0)
-					end := GetIntAttrOr(node, "end", rank)
-					if start < 0 {
-						start += rank
-					}
-					if end < 0 {
-						end += rank
-					}
-					start = min(max(start, 0), rank)
-					end = min(max(end, start), rank)
-					for _, d := range inShape.Dimensions[start:end] {
+					for _, d := range shapeSliceDimensions(node, inShape.Dimensions) {
 						if d < 0 {
 							hasDynamic = true
 							break
@@ -191,6 +180,17 @@ func (m *Model) recursiveNonConstantDependencies(name string, visitedNodes sets.
 			}
 		}
 		return nonConstInputs, variables, contextNodes
+	}
+	if node.OpType == "Gather" {
+		if xName, constT, hasDynamic, handled := m.inspectGatherFromShape(node, convertedOutputs); handled {
+			if constT != nil {
+				constT.FinalizeAll()
+			}
+			if hasDynamic {
+				nonConstInputs = append(nonConstInputs, xName)
+			}
+			return nonConstInputs, variables, contextNodes
+		}
 	}
 	for _, input := range node.Input {
 		if input == "" || visitedNodes.Has(input) {
@@ -371,19 +371,9 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 			constConvertedOutputs[nodeOutputName] = Const(g, int64(inShape.Size()))
 			return
 		}
-		rank := len(inShape.Dimensions)
-		start := GetIntAttrOr(onnxNode, "start", 0)
-		end := GetIntAttrOr(onnxNode, "end", rank)
-		if start < 0 {
-			start += rank
-		}
-		if end < 0 {
-			end += rank
-		}
-		start = min(max(start, 0), rank)
-		end = min(max(end, start), rank)
-		dims := make([]int64, end-start)
-		for i, d := range inShape.Dimensions[start:end] {
+		sliceDims := shapeSliceDimensions(onnxNode, inShape.Dimensions)
+		dims := make([]int64, len(sliceDims))
+		for i, d := range sliceDims {
 			if d < 0 {
 				exceptions.Panicf("%s depends on runtime dimensions of %q (%s)", onnxNode.Name, inputName, inShape)
 			}
@@ -391,6 +381,19 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 		}
 		constConvertedOutputs[nodeOutputName] = Const(g, tensors.FromFlatDataAndDimensions(dims, len(dims)))
 		return
+	}
+	if onnxNode.OpType == "Gather" {
+		if xName, constT, hasDynamic, handled := m.inspectGatherFromShape(onnxNode, convertedOutputs); handled {
+			if hasDynamic || constT == nil {
+				if constT != nil {
+					constT.FinalizeAll()
+				}
+				exceptions.Panicf("Gather(%q) depends on runtime dimensions of %q", onnxNode.Name, xName)
+			}
+			defer constT.FinalizeAll()
+			constConvertedOutputs[nodeOutputName] = ConstTensor(g, constT)
+			return
+		}
 	}
 
 	// Recursively converts the inputs of the onnxNode:
@@ -402,4 +405,128 @@ func (m *Model) recursiveMaterializeConstantExpression(nodeOutputName string, g 
 
 	// And now convert the node itself.
 	m.convertNode(nil, g, onnxNode, constConvertedOutputs)
+}
+
+// shapeSliceDimensions returns dims[start:end] according to ONNX Shape's optional start/end attributes.
+func shapeSliceDimensions(shapeNode *protos.NodeProto, dims []int) []int {
+	rank := len(dims)
+	start := GetIntAttrOr(shapeNode, "start", 0)
+	end := GetIntAttrOr(shapeNode, "end", rank)
+	if start < 0 {
+		start += rank
+	}
+	if end < 0 {
+		end += rank
+	}
+	start = min(max(start, 0), rank)
+	end = min(max(end, start), rank)
+	return dims[start:end]
+}
+
+// evalConstantTensor evaluates name to a constant Tensor if its subgraph has no non-constant dependencies.
+//
+// convertedOutputs maps ONNX value names (graph inputs, variables, and node outputs)
+// to their converted GoMLX *[Node], and may be nil when called at Parse time.
+// When owned is true, the caller owns the returned Tensor and should FinalizeAll it when done.
+func (m *Model) evalConstantTensor(name string, convertedOutputs map[string]*Node) (t *tensors.Tensor, owned, ok bool) {
+	if convertedOutputs != nil {
+		if n := convertedOutputs[name]; n != nil && n.Type() == NodeTypeConstant {
+			if cVal := n.ConstantValue(); cVal != nil {
+				return cVal, false, true
+			}
+		}
+	}
+	nonConstInputs, nonConstVars, ctxNodes := m.nonConstantDependencies(name, convertedOutputs)
+	if len(nonConstInputs) > 0 || len(nonConstVars) > 0 || len(ctxNodes) > 0 {
+		return nil, false, false
+	}
+	backend := m.Backend
+	if convertedOutputs != nil {
+		if n := convertedOutputs[name]; n != nil {
+			backend = n.Graph().Backend()
+		}
+	}
+	if backend == nil {
+		return nil, false, false
+	}
+	var res *tensors.Tensor
+	err := exceptions.TryCatch[error](func() {
+		res = MustExecOnce(backend, func(g *Graph) *Node {
+			constOut := make(map[string]*Node)
+			m.recursiveMaterializeConstantExpression(name, g, constOut, convertedOutputs)
+			return constOut[name]
+		})
+	})
+	if err != nil || res == nil {
+		return nil, false, false
+	}
+	return res, true, true
+}
+
+// inspectGatherFromShape checks whether node is a Gather(Shape(x), const_indices) along axis 0/-1.
+//
+// This allows extracting statically known axes (e.g. hidden/head dimensions) as constants even when
+// other axes of x (e.g. batch or sequence length) are dynamic (-1).
+//
+// convertedOutputs maps ONNX value names (graph inputs, variables, and node outputs)
+// to their converted GoMLX *[Node], and may be nil when called at Parse time.
+// If handled is true and hasDynamic is false, constResult (when non-nil) holds the newly allocated
+// Int64 result tensor (which the caller owns and must FinalizeAll).
+func (m *Model) inspectGatherFromShape(node *protos.NodeProto, convertedOutputs map[string]*Node) (xName string, constResult *tensors.Tensor, hasDynamic, handled bool) {
+	if m == nil || node == nil || node.OpType != "Gather" || len(node.Input) < 2 || node.Input[0] == "" || node.Input[1] == "" {
+		return "", nil, false, false
+	}
+	// Shape outputs a 1D tensor, so valid Gather axis is 0 or -1.
+	if axis := GetIntAttrOr(node, "axis", 0); axis != 0 && axis != -1 {
+		return "", nil, false, false
+	}
+	shapeNode := m.NodeOutputToNode[node.Input[0]]
+	if shapeNode == nil || shapeNode.OpType != "Shape" || len(shapeNode.Input) == 0 || shapeNode.Input[0] == "" {
+		return "", nil, false, false
+	}
+	xName = shapeNode.Input[0]
+
+	idxT, owned, ok := m.evalConstantTensor(node.Input[1], convertedOutputs)
+	if !ok {
+		return "", nil, false, false
+	}
+	if owned {
+		defer idxT.FinalizeAll()
+	}
+	if !idxT.DType().IsInt() {
+		return "", nil, false, false
+	}
+
+	inShape := m.InferShapeForName(xName)
+	if convertedOutputs != nil {
+		if convertedIn := convertedOutputs[xName]; convertedIn != nil {
+			inShape = convertedIn.Shape()
+		}
+	}
+	if inShape.Dimensions == nil {
+		// At Parse time (convertedOutputs == nil) when intermediate ValueInfo is missing,
+		// optimistically treat as potentially constant (matching Shape handling) so deferred
+		// consumers such as SDPA scale can materialize once CallGraph provides shapes.
+		if convertedOutputs == nil {
+			return xName, nil, false, true
+		}
+		return "", nil, false, false
+	}
+
+	sliceDims := shapeSliceDimensions(shapeNode, inShape.Dimensions)
+	indices := tensorToInts(idxT)
+	outVals := make([]int64, len(indices))
+	for i, idx := range indices {
+		if idx < 0 {
+			idx += len(sliceDims)
+		}
+		if idx < 0 || idx >= len(sliceDims) {
+			return "", nil, false, false
+		}
+		if sliceDims[idx] < 0 {
+			return xName, nil, true, true
+		}
+		outVals[i] = int64(sliceDims[idx])
+	}
+	return xName, tensors.FromFlatDataAndDimensions(outVals, idxT.Shape().Dimensions...), false, true
 }

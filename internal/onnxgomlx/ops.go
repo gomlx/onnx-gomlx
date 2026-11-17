@@ -425,11 +425,21 @@ func convertConstant(m *Model, node *protos.NodeProto, g *Graph) *Node {
 	return Const(g, tensor)
 }
 
-// convertGather converts a ONNX node to a GoMLX node.
+// convertGather converts an ONNX Gather node to a GoMLX node.
+// When gathering statically known dimensions from a Shape(x) node via constant indices,
+// it folds directly to a GoMLX Constant node even if other axes of x are dynamic.
+//
+// convertedOutputs maps ONNX value names (graph inputs, variables, and node outputs)
+// to their converted GoMLX *[Node]. It is seeded with the graph inputs and populated
+// as nodes are converted.
 //
 // See ONNX documentation in:
 // https://onnx.ai/onnx/operators/onnx__Gather.html
-func convertGather(node *protos.NodeProto, inputs []*Node) *Node {
+func convertGather(m *Model, convertedOutputs map[string]*Node, node *protos.NodeProto, inputs []*Node) *Node {
+	if _, constT, hasDynamic, handled := m.inspectGatherFromShape(node, convertedOutputs); handled && !hasDynamic && constT != nil {
+		defer constT.FinalizeAll()
+		return ConstTensor(inputs[0].Graph(), constT)
+	}
 	axis := GetIntAttrOr(node, "axis", 0)
 	gatherAxis := MustAdjustAxis(axis, inputs[0])
 	if gatherAxis >= inputs[0].Rank() || gatherAxis < 0 {

@@ -4,6 +4,7 @@
   - Passed `convertedOutputs` into `Model.nonConstantDependencies` (with nil-guards and short-circuiting for already-folded `Constant` nodes with `ConstantValue() != nil`) so static XLA/Go compilations materialize concrete input shapes instead of falling back to dynamic ops or panicking in static-only ops (`Tile`, `Split`, `Pad`, `CumSum`, etc.).
   - Added `InputsAsConstants` handling in `recursiveMaterializeConstantExpression` for constant inputs larger than `MinConstValueSizeToKeep`.
   - Extracted `NonZero` into `internal/onnxgomlx/ops_non_zero.go` and updated `convertNonZero` to fold constant expressions using `convertedOutputs` directly.
+  - Added constant folding and materialization for `Gather(Shape(x), const_indices)` whenever all gathered axes of `x` are static, even when other axes of `x` (such as `batch` or `seq`) are dynamic at `Parse` time (e.g. SDPA attention scale `1 / Sqrt(Cast(Gather(Shape(Q), -1)))`) or during `WithDynamicAxes` execution.
 
 # 2026/11/16
 
