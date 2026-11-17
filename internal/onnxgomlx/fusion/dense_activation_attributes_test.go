@@ -17,9 +17,15 @@ func TestDenseActivationPreservesCustomAttributes(t *testing.T) {
 		require.Equal(t, activation.TypeNone, denseActivationType(node), "parameterless activation kind cannot preserve %s %s=%v", test.op, test.attr, test.value)
 	}
 	for _, test := range []struct {
-		op   string
-		kind activation.Type
-	}{{"HardSigmoid", activation.TypeHardSigmoid}, {"Selu", activation.TypeSelu}} {
-		require.Equal(t, test.kind, denseActivationType(&protos.NodeProto{OpType: test.op}))
+		op    string
+		attrs []*protos.AttributeProto
+		kind  activation.Type
+	}{
+		{op: "HardSigmoid", kind: activation.TypeHardSigmoid},
+		{op: "LeakyRelu", attrs: []*protos.AttributeProto{{Name: "alpha", Type: protos.AttributeProto_FLOAT, F: 0.3}}, kind: activation.TypeLeakyRelu},
+		{op: "LeakyRelu", kind: activation.TypeNone},
+		{op: "Selu", kind: activation.TypeSelu},
+	} {
+		require.Equal(t, test.kind, denseActivationType(&protos.NodeProto{OpType: test.op, Attribute: test.attrs}))
 	}
 }

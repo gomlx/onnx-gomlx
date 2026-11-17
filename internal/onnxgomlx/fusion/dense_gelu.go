@@ -354,9 +354,9 @@ func denseActivationType(node *protos.NodeProto) activation.Type {
 		}
 		return activation.TypeNone
 	case "Selu":
-		alpha := float64(onnxgomlx.GetFloatAttrOr(node, "alpha", float32(activation.SeluAlpha)))
-		gamma := float64(onnxgomlx.GetFloatAttrOr(node, "gamma", float32(activation.SeluScale)))
-		if alpha == float64(float32(activation.SeluAlpha)) && gamma == float64(float32(activation.SeluScale)) {
+		alpha := onnxgomlx.GetFloatAttrOr(node, "alpha", float32(activation.SeluAlpha))
+		gamma := onnxgomlx.GetFloatAttrOr(node, "gamma", float32(activation.SeluScale))
+		if alpha == float32(activation.SeluAlpha) && gamma == float32(activation.SeluScale) {
 			return activation.TypeSelu
 		}
 		return activation.TypeNone
