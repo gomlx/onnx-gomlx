@@ -194,6 +194,42 @@ func (m *Model) inferShapeForNameDepth(name string, depth int) shapes.Shape {
 		outDims[len(outDims)-1] = n
 		return shapes.Shape{DType: aShape.DType, Dimensions: outDims}
 
+	case "GatherBlockQuantized":
+		if len(node.Input) < 2 {
+			return shapes.Shape{}
+		}
+		dataShape := m.inferShapeForNameDepth(node.Input[0], depth+1)
+		indShape := m.inferShapeForNameDepth(node.Input[1], depth+1)
+		if len(dataShape.Dimensions) != 2 || indShape.Dimensions == nil {
+			return shapes.Shape{}
+		}
+		bits := GetIntAttrOr(node, "bits", 4)
+		gatherAxis := GetIntAttrOr(node, "gather_axis", 0)
+		quantizeAxis := GetIntAttrOr(node, "quantize_axis", 1)
+		if gatherAxis < 0 {
+			gatherAxis += len(dataShape.Dimensions)
+		}
+		if quantizeAxis < 0 {
+			quantizeAxis += len(dataShape.Dimensions)
+		}
+		if (bits != 2 && bits != 4 && bits != 8) || gatherAxis != 0 || quantizeAxis != 1 {
+			return shapes.Shape{}
+		}
+		hiddenSize := dataShape.Dimensions[1]
+		if hiddenSize > 0 && bits < 8 && dataShape.DType == dtypes.Uint8 {
+			hiddenSize *= 8 / bits
+		}
+		outDType := dtypes.Float32
+		if len(node.Input) > 2 && node.Input[2] != "" {
+			if scaleShape := m.inferShapeForNameDepth(node.Input[2], depth+1); scaleShape.DType != dtypes.InvalidDType {
+				outDType = scaleShape.DType
+			}
+		}
+		outDims := make([]int, len(indShape.Dimensions)+1)
+		copy(outDims, indShape.Dimensions)
+		outDims[len(indShape.Dimensions)] = hiddenSize
+		return shapes.Shape{DType: outDType, Dimensions: outDims}
+
 	case "OneHot":
 		if len(node.Input) < 3 {
 			return shapes.Shape{}
