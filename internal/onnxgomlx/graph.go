@@ -173,10 +173,14 @@ func (m *Model) CallGraph(scope *model.Scope, g *Graph, inputs map[string]*Node,
 }
 
 // recursiveCallGraph recursively creates a GoMLX graph for the target output name.
-// The convertedOutputs are used both as input and as output to store the converted nodes.
+//
+// convertedOutputs is used both as input and output: it maps ONNX value names
+// (graph inputs, variables, and node outputs) to their converted GoMLX *[Node].
+// It is seeded with the graph inputs and populated as nodes are converted.
 //
 // The scope may be nil if no variables are used.
-func (m *Model) recursiveCallGraph(scope *model.Scope, g *Graph, nodeOutputName string, convertedOutputs map[string]*Node) {
+func (m *Model) recursiveCallGraph(scope *model.Scope, g *Graph, nodeOutputName string,
+	convertedOutputs map[string]*Node) {
 	if _, found := convertedOutputs[nodeOutputName]; found {
 		// Already converted.
 		return
@@ -414,8 +418,9 @@ func opRequiresContext(opType string) bool {
 
 // convertNode converts a single ONNX node to a GoMLX node.
 //
-// Previously converted nodes are given in convertedNodes.
-// The converted output(s) are updated into `convertedNodes`.
+// convertedOutputs is used both as input and output: it maps ONNX value names
+// (graph inputs, variables, and node outputs) to their converted GoMLX *[Node].
+// It is seeded with the graph inputs and populated as nodes are converted.
 //
 // It panics (throw exceptions) in case of errors.
 //
