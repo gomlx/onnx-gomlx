@@ -168,13 +168,13 @@ GoMLX and its backends provide hardware-accelerated fused operations:
 #### How Fusion Works
 1. Before node-by-node conversion, `fusion.FindCandidates(model, onnxGraph)` scans the graph for specific patterns (e.g., attention blocks matching `Q @ K.T -> Scale -> Mask/Bias -> Softmax -> @ V`).
 2. Each matched candidate registers the ONNX nodes it subsumes so they are skipped during regular conversion.
-3. The candidate emits the fused GoMLX call (e.g., `attention.Core(q, k, v, ...)`).
+3. The candidate emits the fused GoMLX call (e.g., `attention.Core(q, k, v, ...)` or `nn.FusedScaledDotProductAttention(q, k, v, ...)`).
 
 #### The Fallback Contract (Crucial Rule)
 - **NEVER special-case backend names in `onnx-gomlx`** (e.g., do NOT write `if strings.Contains(backend.Name(), "go") { disableFusion() }`).
-- `onnx-gomlx` must emit the standard GoMLX layer call (`attention.Core`, etc.) uniformly across all backends.
+- `onnx-gomlx` must emit the standard GoMLX layer/`ml/nn` call (`attention.Core`, `nn.FusedScaledDotProductAttention`, `nn.QuantizedDense`, `nn.LayerNorm`, etc.) uniformly across all backends.
 - If a backend does not support a specific configuration of a fused op (e.g. broadcasting masks across sequence length, dynamic dims, unsupported dtypes), the **backend's graph builder** must return `errors.Wrapf(compute.ErrNotImplemented, ...)`.
-- GoMLX's `InternalFusedOpCaller` catches `compute.ErrNotImplemented` and automatically falls back to the decomposed equivalent graph.
+- GoMLX's internal `FusedOpCaller` catches `compute.ErrNotImplemented` and automatically falls back to the decomposed equivalent graph.
 - This ensures full portability and keeps backend-specific capability knowledge inside the backend.
 
 ---

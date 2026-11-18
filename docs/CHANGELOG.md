@@ -1,3 +1,7 @@
+# 2026/11/18
+
+- Updated `convertQuantizedSDPA` (`internal/onnxgomlx/fusion/quantized_sdpa.go`) to call `nn.FusedScaledDotProductAttention` with `nn.FusedSDPAConfig` instead of removed `graph.Internal*` / `graph.Backend*` APIs.
+
 # 2026/11/17
 
 - Updated `RandomNormalLike` (`internal/onnxgomlx/ops_random.go`) to pass `graph.RNGDefault` explicitly to `RNGStateFromSeedForGraph`, `RNGStateForGraph`, and `RandomNormal`, and updated `github.com/gomlx/{gomlx,compute,compute-onnx,go-xla,go-darwinml}` in `go.mod`.
