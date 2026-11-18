@@ -6,10 +6,10 @@ require (
 	github.com/chewxy/math32 v1.11.1
 	github.com/daulet/tokenizers v1.27.0
 	github.com/gomlx/compute v0.1.32-0.20261117172308-8ea52efb6d87
-	github.com/gomlx/compute-onnx v0.1.32-0.20261117174600-4f43750d7862
+	github.com/gomlx/compute-onnx v0.1.32-0.20261117174630-84a5692c8a53
 	github.com/gomlx/exceptions v0.0.3
-	github.com/gomlx/go-huggingface v0.4.39-0.20261117174958-9c6b3397d04c
-	github.com/gomlx/gomlx v0.28.38-0.20261118110246-3f3a5d1c1285
+	github.com/gomlx/go-huggingface v0.4.39-0.20261118113543-728fc53a3971
+	github.com/gomlx/gomlx v0.28.38-0.20261118113415-fbc64c265c55
 	github.com/janpfeifer/go-benchmarks v0.1.1
 	github.com/janpfeifer/must v0.2.0
 	github.com/parquet-go/parquet-go v0.29.0
@@ -27,7 +27,7 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gomlx/go-darwinml v0.1.9-0.20261117173136-500191600bd7 // indirect
-	github.com/gomlx/go-xla v0.4.32-0.20261117174607-5f9479bdc7ac // indirect
+	github.com/gomlx/go-xla v0.4.32-0.20261117174746-4c30e00eba0d // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
