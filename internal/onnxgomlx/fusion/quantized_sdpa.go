@@ -2,11 +2,12 @@ package fusion
 
 import (
 	"github.com/gomlx/compute"
+	"github.com/gomlx/compute-onnx/support/protos"
 	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/ml/model"
+	"github.com/gomlx/gomlx/ml/nn"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgomlx"
 	"github.com/gomlx/onnx-gomlx/internal/onnxgraph"
-	"github.com/gomlx/compute-onnx/support/protos"
 )
 
 // QuantizedSDPAParams holds parameters for fused quantized scaled dot-product attention.
@@ -65,18 +66,13 @@ func (c *quantizedSDPACandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs
 		mask = convertedOutputs[p.MaskInputName]
 	}
 
-	var maskVal compute.Value
-	if mask != nil {
-		maskVal = InternalBackendOutputs(mask)[0]
-	}
-
-	result, _ := BackendFusedScaledDotProductAttention(
+	result := nn.FusedScaledDotProductAttention(
 		q, k, v, compute.AttentionAxesLayoutBHSD,
-		&compute.ScaledDotProductAttentionConfig{
+		&nn.FusedSDPAConfig{
 			QuantizedMatmuls: true,
 			Scale:            p.Scale,
 			Causal:           false,
-			Mask:             maskVal,
+			Mask:             mask,
 		})
 	convertedOutputs[c.outputName] = result
 }
