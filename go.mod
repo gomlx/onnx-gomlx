@@ -9,7 +9,7 @@ require (
 	github.com/gomlx/compute-onnx v0.1.32-0.20261117174600-4f43750d7862
 	github.com/gomlx/exceptions v0.0.3
 	github.com/gomlx/go-huggingface v0.4.39-0.20261117174958-9c6b3397d04c
-	github.com/gomlx/gomlx v0.28.38-0.20261117174759-5cb2ab627d4b
+	github.com/gomlx/gomlx v0.28.38-0.20261118110246-3f3a5d1c1285
 	github.com/janpfeifer/go-benchmarks v0.1.1
 	github.com/janpfeifer/must v0.2.0
 	github.com/parquet-go/parquet-go v0.29.0
