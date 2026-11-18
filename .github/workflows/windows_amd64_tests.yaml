@@ -47,13 +47,14 @@ jobs:
           echo "-----------"
           echo
 
-      - name: Install ONNX Runtime
-        run: |
-          go run github.com/gomlx/compute-onnx/cmd/onnxruntime_installer@latest
-          echo "Contents for onnxruntime:"
-          ls -la "${HOME}/AppData/Local/onnxruntime"
-          echo "-----------"
-          echo
+      # Temporarily disabled while microsoft/onnxruntime is offline on GitHub.
+      # - name: Install ONNX Runtime
+      #   run: |
+      #     go run github.com/gomlx/compute-onnx/cmd/onnxruntime_installer@latest
+      #     echo "Contents for onnxruntime:"
+      #     ls -la "${HOME}/AppData/Local/onnxruntime"
+      #     echo "-----------"
+      #     echo
 
       - name: Test
         # Excludes internal/benchmarks, which requires the external C/Rust libtokenizers library and downloads models.
