@@ -32,8 +32,9 @@ import (
 // SDPAParams holds parameters for fused scaled dot-product attention.
 type SDPAParams struct {
 	QInputName, KInputName, VInputName string
-	MaskInputName                      string  // empty if no mask
-	Scale                              float64 // 1/sqrt(headDim)
+	MaskInputName                      string            // empty if no mask
+	BoolMask                           *sdpaBoolMaskExpr // non-nil when MaskInputName is converted from a sentinel additive mask to a Bool mask
+	Scale                              float64           // 1/sqrt(headDim)
 	QScaleNodeName                     string  // non-empty if Q scale is deferred constant expression
 	KScaleNodeName                     string  // non-empty if K scale is deferred constant expression
 	ScaleNodeName                      string  // non-empty if post-scale is deferred constant expression
@@ -100,7 +101,9 @@ func (c *sdpaCandidate) Emit(scope *model.Scope, g *Graph, convertedOutputs map[
 	}
 
 	var mask *Node
-	if p.MaskInputName != "" {
+	if p.BoolMask != nil {
+		mask = p.BoolMask.emit(g, convertedOutputs)
+	} else if p.MaskInputName != "" {
 		mask = convertedOutputs[p.MaskInputName]
 	}
 
@@ -565,8 +568,15 @@ func sdpaTryMatch(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *sdpaCandidate 
 		}
 	}
 
-	externalInputs := []string{qInputName, kInputName, vInputName}
+	var boolMask *sdpaBoolMaskExpr
 	if maskInputName != "" {
+		boolMask = matchSDPABoolMask(m, maskInputName)
+	}
+
+	externalInputs := []string{qInputName, kInputName, vInputName}
+	if boolMask != nil {
+		boolMask.collectExternalInputs(&externalInputs)
+	} else if maskInputName != "" {
 		externalInputs = append(externalInputs, maskInputName)
 	}
 	if qScaleNodeName != "" {
@@ -589,6 +599,7 @@ func sdpaTryMatch(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *sdpaCandidate 
 			KInputName:       kInputName,
 			VInputName:       vInputName,
 			MaskInputName:    maskInputName,
+			BoolMask:         boolMask,
 			Scale:            scale,
 			QScaleNodeName:   qScaleNodeName,
 			KScaleNodeName:   kScaleNodeName,
