@@ -14,8 +14,9 @@ import (
 // The fused op takes float32 Q/K/V and internally handles quantization + attention.
 type QuantizedSDPAParams struct {
 	QInputName, KInputName, VInputName string
-	MaskInputName                      string  // empty if no mask
-	Scale                              float64 // attention scale (typically 1/√headDim)
+	MaskInputName                      string            // empty if no mask
+	BoolMask                           *sdpaBoolMaskExpr // non-nil when MaskInputName is converted from a sentinel additive mask to a Bool mask
+	Scale                              float64           // attention scale (typically 1/√headDim)
 	NumHeads                           int
 	NumKVHeads                         int
 	// KNeedsHeadsFirst is true when K is in [batch, kvLen, numKVHeads, headDim] layout
@@ -62,7 +63,9 @@ func (c *quantizedSDPACandidate) Emit(_ *model.Scope, g *Graph, convertedOutputs
 	}
 
 	var mask *Node
-	if p.MaskInputName != "" {
+	if p.BoolMask != nil {
+		mask = p.BoolMask.emit(g, convertedOutputs)
+	} else if p.MaskInputName != "" {
 		mask = convertedOutputs[p.MaskInputName]
 	}
 
@@ -318,8 +321,15 @@ func tryMatchQuantizedSDPA(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *quant
 		}
 	}
 
-	externalInputs := []string{qFloatName, kFloatName, vFloatName}
+	var boolMask *sdpaBoolMaskExpr
 	if maskInputName != "" {
+		boolMask = matchSDPABoolMask(m, maskInputName)
+	}
+
+	externalInputs := []string{qFloatName, kFloatName, vFloatName}
+	if boolMask != nil {
+		boolMask.collectExternalInputs(&externalInputs)
+	} else if maskInputName != "" {
 		externalInputs = append(externalInputs, maskInputName)
 	}
 
@@ -332,6 +342,7 @@ func tryMatchQuantizedSDPA(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *quant
 			KInputName:       kFloatName,
 			VInputName:       vFloatName,
 			MaskInputName:    maskInputName,
+			BoolMask:         boolMask,
 			Scale:            attentionScale,
 			NumHeads:         numHeads,
 			NumKVHeads:       numKVHeads,

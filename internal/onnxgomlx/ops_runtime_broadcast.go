@@ -48,6 +48,12 @@ func needsRuntimeBroadcast(operands []*Node) bool {
 	return false
 }
 
+// RuntimeBroadcast makes ONNX multidirectional positional broadcasting explicit when
+// dynamic dimensions have distinct symbolic names or broadcast against static dimensions.
+func RuntimeBroadcast(operands []*Node) []*Node {
+	return runtimeBroadcast(operands)
+}
+
 // runtimeBroadcast makes ONNX multidirectional positional broadcasting explicit when
 // dynamic dimensions have distinct symbolic names or broadcast against static dimensions.
 func runtimeBroadcast(operands []*Node) []*Node {

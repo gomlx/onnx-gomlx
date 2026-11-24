@@ -1568,6 +1568,9 @@ func TestSDPAExpandedKeyPaddingMask(t *testing.T) {
 	sdpa := cand.(*sdpaCandidate)
 	assert.True(t, sdpa.params.UseBSHD)
 	assert.Equal(t, "mask_4d#unexpanded", sdpa.params.MaskInputName, "expected trailing Expand to be unwrapped to [B, 1, 1, S] mask")
+	require.NotNil(t, sdpa.params.BoolMask, "expected sentinel Where mask to be converted to boolean mask")
+	assert.Equal(t, sdpaBoolMaskLeafEqualOne, sdpa.params.BoolMask.Op)
+	assert.Equal(t, "mask_4d_unexp", sdpa.params.BoolMask.SourceName)
 
 	nElems := int(batch * seqLen * numHeads * headDim)
 	qData := make([]float32, nElems)

@@ -1,3 +1,9 @@
+# 2026/11/24
+
+- Added sentinel-to-boolean attention mask conversion in SDPA fusion (`internal/onnxgomlx/fusion/sdpa_mask.go`, wired into `sdpa.go` and `quantized_sdpa.go`):
+  - Recognizes structured ONNX additive mask-builder subgraphs using hard masking sentinels (`<= -1e4`, `-65504`, `-1e9`, `float32`/`bfloat16` min, `-Inf`) — including `Where(cond, sentinel, 0)` / `Where(cond, 0, sentinel)` / `Where(Cast(bool, x), sentinel, x)` (HuggingFace MiniLM/RoBERTa, `Expand(0)` / `ConstantOfShape`), `Mul(Sub(1, x), sentinel)` / `Mul(Sub(x, 1), +sentinel)` (classic BERT/RoBERTa), `Mul(Cast(float, boolOrInverted), sentinel)`, float-to-float `Cast` wrappers, and combined `Add`/`Min` of two sentinel masks — and emits a shared `Bool` attention mask directly for `attention.Core` / `FusedScaledDotProductAttention`.
+  - Preserves arbitrary float additive masks and small/non-sentinel biases unchanged so exact additive semantics are maintained, while allowing backends (such as `gobackend`'s `sdpaTrimBoolKeyMask`) to skip padded KV positions losslessly.
+
 # 2026/11/18
 
 - Updated `convertQuantizedSDPA` (`internal/onnxgomlx/fusion/quantized_sdpa.go`) to call `nn.FusedScaledDotProductAttention` with `nn.FusedSDPAConfig` instead of removed `graph.Internal*` / `graph.Backend*` APIs.
