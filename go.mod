@@ -5,7 +5,7 @@ go 1.27
 require (
 	github.com/chewxy/math32 v1.11.1
 	github.com/daulet/tokenizers v1.27.0
-	github.com/gomlx/compute v0.1.33
+	github.com/gomlx/compute v0.1.34-0.20261124134422-9c85bf7fb05a
 	github.com/gomlx/compute-onnx v0.1.33
 	github.com/gomlx/exceptions v0.0.3
 	github.com/gomlx/go-huggingface v0.4.40
