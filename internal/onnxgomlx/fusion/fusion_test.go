@@ -1305,6 +1305,38 @@ func TestDecomposedLayerNormFusion(t *testing.T) {
 	runFusedVsUnfused(t, graph, map[string]*tensors.Tensor{
 		"X": tensors.FromFlatDataAndDimensions(xData, 2, 3, 4),
 	})
+
+	for _, variant := range []string{"all axes", "non-last axes input", "vector epsilon", "zero epsilon"} {
+		t.Run(variant, func(t *testing.T) {
+			graph := proto.Clone(graph).(*protos.GraphProto)
+			switch variant {
+			case "all axes":
+				graph.Node[0].Attribute = nil
+				graph.Node[3].Attribute = nil
+			case "non-last axes input":
+				graph.Initializer = append(graph.Initializer, &protos.TensorProto{
+					Name: "axis", DataType: int32(protos.TensorProto_INT64), Dims: []int64{1}, Int64Data: []int64{1},
+				})
+				for _, i := range []int{0, 3} {
+					graph.Node[i].Attribute = nil
+					graph.Node[i].Input = append(graph.Node[i].Input, "axis")
+				}
+			case "vector epsilon", "zero epsilon":
+				for _, tp := range graph.Initializer {
+					if tp.Name == "eps" {
+						tp.FloatData = []float32{0}
+						if variant == "vector epsilon" {
+							tp.Dims = []int64{4}
+							tp.FloatData = []float32{0.01, 0.25, 1, 2}
+						}
+					}
+				}
+			}
+			runFusedVsUnfused(t, graph, map[string]*tensors.Tensor{
+				"X": tensors.FromFlatDataAndDimensions(xData, 2, 3, 4),
+			})
+		})
+	}
 }
 
 func TestSDPABSHDTransposeAbsorption(t *testing.T) {

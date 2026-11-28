@@ -138,9 +138,9 @@ func tryMatchDecomposedLayerNorm(m *onnxgomlx.Model, consumers map[string][]*pro
 		return nil
 	}
 
-	axes := extractAxes(meanNode)
+	axes := layerNormAxes(m, meanNode)
 	if len(axes) == 0 {
-		axes = []int{-1}
+		return nil
 	}
 
 	subOut := subNode.Output[0]
@@ -180,10 +180,7 @@ func tryMatchDecomposedLayerNorm(m *onnxgomlx.Model, consumers map[string][]*pro
 	if varMeanNode == nil || varMeanNode.OpType != "ReduceMean" || len(varMeanNode.Output) == 0 {
 		return nil
 	}
-	varAxes := extractAxes(varMeanNode)
-	if len(varAxes) == 0 {
-		varAxes = []int{-1}
-	}
+	varAxes := layerNormAxes(m, varMeanNode)
 	if !equalIntSlices(axes, varAxes) {
 		return nil
 	}
@@ -197,9 +194,9 @@ func tryMatchDecomposedLayerNorm(m *onnxgomlx.Model, consumers map[string][]*pro
 	if epsName == "" || !m.IsConstant(epsName) {
 		return nil
 	}
-	epsilon := m.TryGetConstantScalar(epsName)
-	if epsilon <= 0 {
-		epsilon = 1e-5
+	epsilon, ok := tryGetConstantScalarOk(m, epsName)
+	if !ok || epsilon <= 0 {
+		return nil
 	}
 
 	// Downstream of addEpsNode: Sqrt
@@ -279,8 +276,34 @@ func tryMatchDecomposedLayerNorm(m *onnxgomlx.Model, consumers map[string][]*pro
 	}
 }
 
-func extractAxes(node *protos.NodeProto) []int {
-	return onnxgomlx.GetIntsAttrOr(node, "axes", nil)
+func layerNormAxes(m *onnxgomlx.Model, node *protos.NodeProto) []int {
+	if onnxgomlx.GetIntAttrOr(node, "keepdims", 1) != 1 {
+		return nil
+	}
+	if len(node.Input) < 2 || node.Input[1] == "" {
+		return onnxgomlx.GetIntsAttrOr(node, "axes", nil)
+	}
+	constant := m.VariableNameToValue[node.Input[1]]
+	if constant == nil {
+		producer := m.NodeOutputToNode[node.Input[1]]
+		if producer == nil || producer.OpType != "Constant" {
+			return nil
+		}
+		for _, attr := range producer.Attribute {
+			if attr.Name == "value" {
+				constant = attr.T
+			}
+		}
+	}
+	if constant == nil {
+		return nil
+	}
+	values := extractInt64SliceFromTensor(constant)
+	axes := make([]int, len(values))
+	for i, value := range values {
+		axes[i] = int(value)
+	}
+	return axes
 }
 
 func equalIntSlices(a, b []int) bool {
