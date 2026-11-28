@@ -1248,6 +1248,16 @@ func TestDecomposedGELUFusion(t *testing.T) {
 	runFusedVsUnfused(t, graph, map[string]*tensors.Tensor{
 		"X": tensors.FromFlatDataAndDimensions(xData, 2, 4),
 	})
+
+	t.Run("reversed division", func(t *testing.T) {
+		reversed := proto.Clone(graph).(*protos.GraphProto)
+		div := reversed.Node[2]
+		div.Input[0], div.Input[1] = div.Input[1], div.Input[0]
+		runFusedVsUnfused(t, reversed, map[string]*tensors.Tensor{
+			"X": tensors.FromFlatDataAndDimensions(xData, 2, 4),
+		})
+		assert.Nil(t, buildTestModel(t, reversed).DetectedFusions["output"])
+	})
 }
 
 func TestDecomposedLayerNormFusion(t *testing.T) {
@@ -1304,6 +1314,16 @@ func TestDecomposedLayerNormFusion(t *testing.T) {
 
 	runFusedVsUnfused(t, graph, map[string]*tensors.Tensor{
 		"X": tensors.FromFlatDataAndDimensions(xData, 2, 3, 4),
+	})
+
+	t.Run("reversed power", func(t *testing.T) {
+		reversed := proto.Clone(graph).(*protos.GraphProto)
+		pow := reversed.Node[2]
+		pow.Input[0], pow.Input[1] = pow.Input[1], pow.Input[0]
+		runFusedVsUnfused(t, reversed, map[string]*tensors.Tensor{
+			"X": tensors.FromFlatDataAndDimensions(xData, 2, 3, 4),
+		})
+		assert.Nil(t, buildTestModel(t, reversed).DetectedFusions["output"])
 	})
 }
 

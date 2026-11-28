@@ -233,7 +233,7 @@ func tryMatchDecomposedGelu(m *onnxgomlx.Model, consumers map[string][]*protos.N
 			other := onnxgraph.OtherBinaryOpInput(n, inName)
 			if other != "" && m.IsConstant(other) {
 				val := m.TryGetConstantScalar(other)
-				if (n.OpType == "Div" && math.Abs(val-math.Sqrt(2)) < 1e-2) ||
+				if (n.OpType == "Div" && n.Input[0] == inName && math.Abs(val-math.Sqrt(2)) < 1e-2) ||
 					(n.OpType == "Mul" && math.Abs(val-1.0/math.Sqrt(2)) < 1e-2) {
 					divOrMulSqrt = n
 					continue

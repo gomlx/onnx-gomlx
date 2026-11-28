@@ -156,8 +156,8 @@ func tryMatchDecomposedLayerNorm(m *onnxgomlx.Model, consumers map[string][]*pro
 	var divNode *protos.NodeProto
 
 	for _, c := range subConsumers {
-		if c.OpType == "Pow" && len(c.Input) == 2 {
-			other := onnxgraph.OtherBinaryOpInput(c, subOut)
+		if c.OpType == "Pow" && len(c.Input) == 2 && c.Input[0] == subOut {
+			other := c.Input[1]
 			if other != "" && m.IsConstant(other) && math.Abs(m.TryGetConstantScalar(other)-2.0) < 1e-4 {
 				varInputNode = c
 				continue
