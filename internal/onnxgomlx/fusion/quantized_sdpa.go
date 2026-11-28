@@ -160,8 +160,7 @@ func tryMatchQuantizedSDPA(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *quant
 	}
 
 	// Verify softmax axis is -1 (last axis).
-	softmaxAxis := onnxgomlx.GetIntAttrOr(softmaxNode, "axis", -1)
-	if softmaxAxis != -1 {
+	if !softmaxActsOnLastAxis(m, softmaxNode) {
 		return nil
 	}
 	if len(softmaxNode.Output) == 0 {

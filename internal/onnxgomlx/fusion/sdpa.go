@@ -372,8 +372,7 @@ func sdpaTryMatch(m *onnxgomlx.Model, matmul1 *protos.NodeProto) *sdpaCandidate 
 	}
 
 	// Verify softmax axis is -1 (last axis).
-	softmaxAxis := onnxgomlx.GetIntAttrOr(softmaxNode, "axis", -1)
-	if softmaxAxis != -1 {
+	if !softmaxActsOnLastAxis(m, softmaxNode) {
 		return nil
 	}
 
@@ -813,6 +812,14 @@ func sdpaLookThroughMulForShapeName(m *onnxgomlx.Model, name string) string {
 		return node.Input[1]
 	}
 	return name
+}
+
+func softmaxActsOnLastAxis(m *onnxgomlx.Model, node *protos.NodeProto) bool {
+	defaultAxis := -1
+	if m.GetOpsetVersion(13) < 13 {
+		defaultAxis = 1
+	}
+	return onnxgomlx.GetIntAttrOr(node, "axis", defaultAxis) == -1
 }
 
 // sdpaExtractScaleFromDiv extracts the scale factor from a Div node: result = x / divisor → scale = 1/divisor.
