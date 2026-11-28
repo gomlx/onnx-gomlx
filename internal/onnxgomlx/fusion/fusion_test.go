@@ -1594,3 +1594,31 @@ func TestSDPAExpandedKeyPaddingMask(t *testing.T) {
 		"attention_mask": tensors.FromFlatDataAndDimensions(maskData, int(batch), int(seqLen)),
 	})
 }
+
+func TestSDPASoftmaxDefaultAxis(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		version      int64
+		explicitLast bool
+		fused        bool
+	}{
+		{"legacy omitted", 11, false, false},
+		{"legacy last", 11, true, true},
+		{"modern omitted", 13, false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			graph := makeSDPAGraph(nil)
+			if !test.explicitLast {
+				graph.Node[3].Attribute = nil
+			}
+			content, err := proto.Marshal(&protos.ModelProto{
+				Graph: graph, OpsetImport: []*protos.OperatorSetIdProto{{Version: test.version}},
+			})
+			require.NoError(t, err)
+			m, err := onnxgomlx.Parse(content)
+			require.NoError(t, err)
+			_, fused := m.DetectedFusions["output"]
+			require.Equal(t, test.fused, fused)
+		})
+	}
+}
