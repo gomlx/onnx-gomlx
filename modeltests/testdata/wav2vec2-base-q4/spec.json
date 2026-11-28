@@ -1,0 +1,109 @@
+{
+  "name": "wav2vec2-base-q4",
+  "family": "tensor",
+  "repo_id": "Xenova/wav2vec2-base-960h",
+  "revision": "a19f851b3d42865797e410752b4c570c871e4825",
+  "size_tier": "small",
+  "tags": [
+    "audio",
+    "speech",
+    "q4",
+    "matmulnbits",
+    "dynamic"
+  ],
+  "provenance": {
+    "generator": "modeltests/internal/generators/ort",
+    "command": "GOWORK=off go run ./modeltests/internal/generators/ort -preset=wav2vec2-base-q4",
+    "runtime_version": "onnxruntime 1.31.1 (CPU)",
+    "generated_at": "2026-11-27T17:48:04Z"
+  },
+  "variants": [
+    {
+      "name": "q4",
+      "onnx_file": "onnx/model_q4.onnx",
+      "tensor": {
+        "dynamic_axes": {
+          "input_values": [
+            "batch",
+            "samples"
+          ]
+        },
+        "cases": [
+          {
+            "name": "batch1_16k",
+            "seed": 501,
+            "inputs": [
+              {
+                "name": "input_values",
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  16000
+                ],
+                "dist": "uniform_signed",
+                "scale": 0.5
+              }
+            ],
+            "outputs": [
+              {
+                "name": "logits",
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  49,
+                  32
+                ],
+                "file": "batch1_16k_out0_q4.f32",
+                "stats": {
+                  "min": -16.427446365356445,
+                  "max": 5.344167709350586,
+                  "mean": -2.6798561842309083,
+                  "l2_norm": 210.0434953244143
+                }
+              }
+            ]
+          },
+          {
+            "name": "batch2_8k",
+            "seed": 502,
+            "inputs": [
+              {
+                "name": "input_values",
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  8000
+                ],
+                "dist": "uniform_signed",
+                "scale": 0.5
+              }
+            ],
+            "outputs": [
+              {
+                "name": "logits",
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  24,
+                  32
+                ],
+                "file": "batch2_8k_out0_q4.f32",
+                "stats": {
+                  "min": -20.18375587463379,
+                  "max": 7.288857936859131,
+                  "mean": -3.1672660212546666,
+                  "l2_norm": 245.74514725440335
+                }
+              }
+            ]
+          }
+        ],
+        "tolerances": {
+          "min_cosine_sim": 0.999,
+          "max_abs_diff": 0.05,
+          "max_mean_abs_diff": 0.005
+        }
+      }
+    }
+  ]
+}

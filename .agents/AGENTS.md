@@ -100,7 +100,8 @@ Backends that do not support dynamic shapes (like static XLA PJRT) will pad inpu
   - **`materialize.go`**: Constant subexpression evaluation engine. Evaluates ONNX nodes that compute tensor parameters (shapes, slices, broadcasting dimensions) at graph building time, while letting dynamic dependencies fall back to runtime graph ops.
   - **`fusion/`**: Fused operation matchers (`sdpa.go`, `sdpa_mask.go`, `qkvdense.go`, `dense_gelu.go`, `quantized_dense.go`, `quantized_qkv.go`). Detects multi-op subgraphs and emits GoMLX `nn.` / `attention.` fused operations. `sdpa_mask.go` also converts structured ONNX sentinel-based additive mask builders (`Where`/`Mul(Sub(1, x), sentinel)`/`Add` of sentinel masks with sentinels `<= -1e4` or `-Inf`) into shared `Bool` masks for `attention.Core` while leaving arbitrary float masks/biases untouched.
 - **`internal/onnxgraph/`**: Topological ordering, dependency tracking, and graph representation of ONNX protobuf nodes.
-- **`internal/benchmarks/`**: Parity tests, benchmarks vs. ONNX Runtime, and integration tests across backends.
+- **`internal/benchmarks/`**: Throughput benchmarks vs. ONNX Runtime and integration tests across backends.
+- **`modeltests/`**: Unified opt-in (`-modeltests`) full-model parity test suite validating `onnx-gomlx` conversion (static and dynamic shapes) against golden outputs generated directly by ONNX Runtime (`modeltests/internal/generators/ort/`, isolated `go.mod`). See `docs/ModelTests.md`.
 
 ---
 

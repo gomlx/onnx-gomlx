@@ -1,0 +1,116 @@
+{
+  "name": "dino-vits16",
+  "family": "tensor",
+  "repo_id": "Xenova/dino-vits16",
+  "revision": "517e3f80ee1d5d063ca5306afa66863e28848869",
+  "size_tier": "small",
+  "tags": [
+    "vision",
+    "vit",
+    "fp32",
+    "dynamic"
+  ],
+  "provenance": {
+    "generator": "modeltests/internal/generators/ort",
+    "command": "GOWORK=off go run ./modeltests/internal/generators/ort -preset=dino-vits16",
+    "runtime_version": "onnxruntime 1.31.1 (CPU)",
+    "generated_at": "2026-11-27T17:48:04Z"
+  },
+  "variants": [
+    {
+      "name": "default",
+      "onnx_file": "onnx/model.onnx",
+      "tensor": {
+        "dynamic_axes": {
+          "pixel_values": [
+            "batch",
+            "",
+            "",
+            ""
+          ]
+        },
+        "cases": [
+          {
+            "name": "batch1_224",
+            "seed": 301,
+            "inputs": [
+              {
+                "name": "pixel_values",
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  3,
+                  224,
+                  224
+                ],
+                "dist": "normal",
+                "scale": 1
+              }
+            ],
+            "outputs": [
+              {
+                "name": "last_hidden_state",
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  197,
+                  384
+                ],
+                "file": "batch1_224_out0.f32",
+                "sample_stride": 19,
+                "stats": {
+                  "min": -17.384620666503906,
+                  "max": 28.09872055053711,
+                  "mean": -0.04582598152031267,
+                  "l2_norm": 1111.26647336083
+                }
+              }
+            ]
+          },
+          {
+            "name": "batch2_224",
+            "seed": 302,
+            "inputs": [
+              {
+                "name": "pixel_values",
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  3,
+                  224,
+                  224
+                ],
+                "dist": "normal",
+                "scale": 1
+              }
+            ],
+            "outputs": [
+              {
+                "name": "last_hidden_state",
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  197,
+                  384
+                ],
+                "file": "batch2_224_out0.f32",
+                "sample_stride": 37,
+                "stats": {
+                  "min": -18.142635345458984,
+                  "max": 27.66960334777832,
+                  "mean": -0.039587085685465366,
+                  "l2_norm": 1554.3979611008326
+                }
+              }
+            ]
+          }
+        ],
+        "tolerances": {
+          "min_cosine_sim": 0.99999,
+          "max_abs_diff": 0.005,
+          "max_mean_abs_diff": 0.001
+        }
+      }
+    }
+  ]
+}

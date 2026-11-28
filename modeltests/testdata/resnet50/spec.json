@@ -1,0 +1,114 @@
+{
+  "name": "resnet50",
+  "family": "tensor",
+  "repo_id": "KnightsAnalytics/resnet50",
+  "revision": "8ed0f05073f2c48b593e20aa9498009fa76a384c",
+  "size_tier": "small",
+  "tags": [
+    "vision",
+    "cnn",
+    "nchw",
+    "fp32",
+    "dynamic"
+  ],
+  "provenance": {
+    "generator": "modeltests/internal/generators/ort",
+    "command": "GOWORK=off go run ./modeltests/internal/generators/ort -preset=resnet50",
+    "runtime_version": "onnxruntime 1.31.1 (CPU)",
+    "generated_at": "2026-11-27T17:48:04Z"
+  },
+  "variants": [
+    {
+      "name": "default",
+      "onnx_file": "resnet50-v1-12.onnx",
+      "tensor": {
+        "dynamic_axes": {
+          "data": [
+            "batch",
+            "",
+            "",
+            ""
+          ]
+        },
+        "cases": [
+          {
+            "name": "batch1",
+            "seed": 101,
+            "inputs": [
+              {
+                "name": "data",
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  3,
+                  224,
+                  224
+                ],
+                "dist": "normal",
+                "scale": 1
+              }
+            ],
+            "outputs": [
+              {
+                "name": "resnetv17_dense0_fwd",
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  1000
+                ],
+                "file": "batch1_out0.f32",
+                "stats": {
+                  "min": -5.0648627281188965,
+                  "max": 9.03426742553711,
+                  "mean": 0.00008640988171100616,
+                  "l2_norm": 67.37153552069128
+                }
+              }
+            ]
+          },
+          {
+            "name": "batch2",
+            "seed": 102,
+            "inputs": [
+              {
+                "name": "data",
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  3,
+                  224,
+                  224
+                ],
+                "dist": "normal",
+                "scale": 1
+              }
+            ],
+            "outputs": [
+              {
+                "name": "resnetv17_dense0_fwd",
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  1000
+                ],
+                "file": "batch2_out0.f32",
+                "stats": {
+                  "min": -4.828012943267822,
+                  "max": 8.615674018859863,
+                  "mean": 0.00008126408793032169,
+                  "l2_norm": 90.84639802764463
+                }
+              }
+            ]
+          }
+        ],
+        "tolerances": {
+          "min_cosine_sim": 0.99999,
+          "max_abs_diff": 0.005,
+          "max_mean_abs_diff": 0.001,
+          "check_argmax": true
+        }
+      }
+    }
+  ]
+}

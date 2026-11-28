@@ -1,0 +1,114 @@
+{
+  "name": "inception-v3",
+  "family": "tensor",
+  "repo_id": "recursionerr/nsfw_01",
+  "revision": "816e195488ab12b4326bd737ea4819925d35eeb8",
+  "size_tier": "small",
+  "tags": [
+    "vision",
+    "cnn",
+    "nhwc",
+    "fp32",
+    "dynamic"
+  ],
+  "provenance": {
+    "generator": "modeltests/internal/generators/ort",
+    "command": "GOWORK=off go run ./modeltests/internal/generators/ort -preset=inception-v3",
+    "runtime_version": "onnxruntime 1.31.1 (CPU)",
+    "generated_at": "2026-11-27T17:48:04Z"
+  },
+  "variants": [
+    {
+      "name": "default",
+      "onnx_file": "inception_v3.onnx",
+      "tensor": {
+        "dynamic_axes": {
+          "input_1:0": [
+            "batch",
+            "",
+            "",
+            ""
+          ]
+        },
+        "cases": [
+          {
+            "name": "batch1",
+            "seed": 201,
+            "inputs": [
+              {
+                "name": "input_1:0",
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  299,
+                  299,
+                  3
+                ],
+                "dist": "uniform",
+                "scale": 1
+              }
+            ],
+            "outputs": [
+              {
+                "name": "Identity:0",
+                "dtype": "float32",
+                "shape": [
+                  1,
+                  5
+                ],
+                "file": "batch1_out0.f32",
+                "stats": {
+                  "min": 0.00020490633323788643,
+                  "max": 0.9933763146400452,
+                  "mean": 0.2000000048545189,
+                  "l2_norm": 0.9933859056456175
+                }
+              }
+            ]
+          },
+          {
+            "name": "batch2",
+            "seed": 202,
+            "inputs": [
+              {
+                "name": "input_1:0",
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  299,
+                  299,
+                  3
+                ],
+                "dist": "uniform",
+                "scale": 1
+              }
+            ],
+            "outputs": [
+              {
+                "name": "Identity:0",
+                "dtype": "float32",
+                "shape": [
+                  2,
+                  5
+                ],
+                "file": "batch2_out0.f32",
+                "stats": {
+                  "min": 0.00018192976131103933,
+                  "max": 0.9941321015357971,
+                  "mean": 0.20000000698200893,
+                  "l2_norm": 1.4050992026927127
+                }
+              }
+            ]
+          }
+        ],
+        "tolerances": {
+          "min_cosine_sim": 0.99999,
+          "max_abs_diff": 0.005,
+          "max_mean_abs_diff": 0.001,
+          "check_argmax": true
+        }
+      }
+    }
+  ]
+}

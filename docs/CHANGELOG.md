@@ -1,3 +1,10 @@
+# 2026/11/27
+
+- Added unified opt-in (`-modeltests`) end-to-end ONNX model parity test suite under `modeltests/` with direct ONNX Runtime (ORT) ground truth (`docs/ModelTests.md`):
+  - Supports multi-backend matrices (`-backends="go;go:ops_sequential;xla:cpu;onnx:cpu"`), both static and dynamic-axis (`WithDynamicAxes`) compilation modes (`-mode=both|static|dynamic`), tier/tag/cache filters (`-max_tier`, `-tag`, `-cached_only`, `-strict`, `-set`), and per-model peak RSS / Go heap / latency summary tables.
+  - Added isolated Go/ORT ground-truth generator in `modeltests/internal/generators/ort/` (own `go.mod` using `yalue/onnxruntime_go` directly without `onnx-gomlx` conversion).
+  - Populated ORT golden `testdata/` (~600 KiB total) for 14 diverse models (16 variants): `knights-all-minilm-l6-v2`, `sentence-transformers-all-minilm-l6-v2` (`fp32`, `qint8_avx512`, `quint8_avx2`), `all-mpnet-base-v2`, `distilbert-sst2`, `roberta-go-emotions`, `distilbert-ner`, `jina-reranker-v1-tiny-en`, `deberta-v3-zeroshot`, `iris-decision-tree`, `resnet50`, `inception-v3`, `dino-vits16`, `segformer-b0`, and `wav2vec2-base-q4`.
+
 # 2026/11/24
 
 - Added sentinel-to-boolean attention mask conversion in SDPA fusion (`internal/onnxgomlx/fusion/sdpa_mask.go`, wired into `sdpa.go` and `quantized_sdpa.go`):
