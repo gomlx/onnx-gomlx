@@ -1,8 +1,6 @@
 package fusion
 
 import (
-	"math"
-
 	"github.com/gomlx/compute-onnx/support/protos"
 	. "github.com/gomlx/gomlx/core/graph" //nolint
 	"github.com/gomlx/gomlx/ml/model"
@@ -158,7 +156,7 @@ func tryMatchDecomposedLayerNorm(m *onnxgomlx.Model, consumers map[string][]*pro
 	for _, c := range subConsumers {
 		if c.OpType == "Pow" && len(c.Input) == 2 {
 			other := onnxgraph.OtherBinaryOpInput(c, subOut)
-			if other != "" && m.IsConstant(other) && math.Abs(m.TryGetConstantScalar(other)-2.0) < 1e-4 {
+			if other != "" && m.IsConstant(other) && m.TryGetConstantScalar(other) == 2 {
 				varInputNode = c
 				continue
 			}
