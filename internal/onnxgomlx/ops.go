@@ -410,6 +410,22 @@ func GetStringsAttrOr(node *protos.NodeProto, attrName string, defaultValues []s
 
 // convertConstant converts a ONNX node to a GoMLX node.
 func convertConstant(m *Model, node *protos.NodeProto, g *Graph) *Node {
+	for _, attr := range node.Attribute {
+		switch attr.Name {
+		case "value_float":
+			assertNodeAttrType(node, attr, protos.AttributeProto_FLOAT)
+			return Const(g, attr.F)
+		case "value_floats":
+			assertNodeAttrType(node, attr, protos.AttributeProto_FLOATS)
+			return Const(g, attr.Floats)
+		case "value_int":
+			assertNodeAttrType(node, attr, protos.AttributeProto_INT)
+			return Const(g, attr.I)
+		case "value_ints":
+			assertNodeAttrType(node, attr, protos.AttributeProto_INTS)
+			return Const(g, attr.Ints)
+		}
+	}
 	valueAttr := GetNodeAttr(node, "value", true)
 	if valueAttr == nil {
 		panic(errors.Errorf("'value' attribute for ONNX node %s is nil!?", NodeToString(node)))

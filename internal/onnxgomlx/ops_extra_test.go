@@ -358,3 +358,23 @@ func TestSliceNegativeSteps(t *testing.T) {
 		[][]int32{{3, 1}, {6, 4}},
 	}, -1)
 }
+
+func TestNumericConstantAttributes(t *testing.T) {
+	m := createTestModelWithDTypePromoConfig(false, false)
+	for _, tc := range []struct {
+		attr *protos.AttributeProto
+		want any
+	}{
+		{intAttr("value_int", -7), int64(-7)},
+		{&protos.AttributeProto{Name: "value_float", Type: protos.AttributeProto_FLOAT, F: 0.125}, float32(0.125)},
+		{&protos.AttributeProto{Name: "value_ints", Type: protos.AttributeProto_INTS, Ints: []int64{2, -3}}, []int64{2, -3}},
+		{&protos.AttributeProto{Name: "value_floats", Type: protos.AttributeProto_FLOATS, Floats: []float32{0, 2.5}}, []float32{0, 2.5}},
+	} {
+		t.Run(tc.attr.Name, func(t *testing.T) {
+			runGoBackendTest(t, tc.attr.Name, func(g *Graph) (inputs, outputs []*Node) {
+				node := &protos.NodeProto{OpType: "Constant", Output: []string{"v"}, Attribute: []*protos.AttributeProto{tc.attr}}
+				return nil, convertTestNode(m, g, node, nil)
+			}, []any{tc.want}, 0)
+		})
+	}
+}
