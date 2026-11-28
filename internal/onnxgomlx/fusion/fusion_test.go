@@ -1305,6 +1305,12 @@ func TestDecomposedLayerNormFusion(t *testing.T) {
 	runFusedVsUnfused(t, graph, map[string]*tensors.Tensor{
 		"X": tensors.FromFlatDataAndDimensions(xData, 2, 3, 4),
 	})
+
+	t.Run("noninteger variance exponent", func(t *testing.T) {
+		modified := proto.Clone(graph).(*protos.GraphProto)
+		modified.Initializer[2] = makeScalarFloatTensorProto("two", math.Nextafter32(2, 3))
+		assert.Nil(t, buildTestModel(t, modified).DetectedFusions["output"])
+	})
 }
 
 func TestSDPABSHDTransposeAbsorption(t *testing.T) {
